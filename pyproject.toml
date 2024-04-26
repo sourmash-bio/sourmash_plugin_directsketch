@@ -1,26 +1,38 @@
-# CTB: search for XYZ and replace with plugin-specific information!
-
 [project]
-name = "sourmash_plugin_XYZ"
-description = "sourmash plugin to do XYZ."
+name = "sourmash_plugin_directsketch"
+description = "Download and Sketch GenBank Assembly Datasets"
 readme = "README.md"
-requires-python = ">=3.8"
-version = "0.1"
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: Implementation :: CPython",
+    "Programming Language :: Python :: Implementation :: PyPy",
+    ]
+dependencies = ["sourmash>=4.8.5,<5"]
 
-dependencies = ["sourmash>=4.8.0,<5"]
+authors = [
+  { name="N. Tessa Pierce-Ward", orcid="0000-0002-2942-5331" },
+]
 
-[metadata]
-license = { text = "BSD 3-Clause License" }
-
-# CTB note: you only need to include information about the entry points
-# that your plugin defines; remove the rest. Multiple entry points of
-# any particular type are perfectly fine too!
-
-[project.entry-points."sourmash.load_from"]
-xyz_reader = "sourmash_plugin_xyz:load_sketches"
-
-[project.entry-points."sourmash.save_to"]
-xyz_writer = "sourmash_plugin_xyz:SaveSignatures_XYZ"
+[build-system]
+requires = ["maturin>=1.4.0,<2"]
+build-backend = "maturin"
 
 [project.entry-points."sourmash.cli_script"]
-xyz_command = "sourmash_plugin_xyz:Command_XYZ"
+gbsketch = "sourmash_plugin_directsketch:Download_and_Sketch_Assemblies"
+
+[project.optional-dependencies]
+test = [
+  "pytest>=6.2.4,<8.2.0",
+  "pytest-cov>=2.12,<6.0",
+  "pytest-xdist",
+]
+
+[tool.maturin]
+python-source = "src/python"
+
+[tool.maturin.target.x86_64-apple-darwin]
+macos-deployment-target = "10.14"
+
+[metadata]
+license = { text = "GNU Affero General Public License v3" }
