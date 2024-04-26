@@ -9,8 +9,15 @@ use std::path::Path;
 use needletail::parse_fastx_reader;
 use std::io::Cursor;
 use tokio::task;
+use tokio::fs::File;
+// use zip::ZipWriter;
+use std::collections::HashMap;
+use async_zip::write::{EntryOptions, ZipFileWriter};
+use async_zip::Compression;
+
 
 use sourmash::signature::Signature;
+use sourmash::manifest::Record;
 
 use crate::utils::{build_siginfo, load_accession_info, parse_params_str}; //, sigwriter, Params, ZipMessage};
 
@@ -175,7 +182,7 @@ async fn process_accession(
     keep_fastas: bool,
     dna_sigs: Vec<Signature>,
     prot_sigs: Vec<Signature>,
-) -> Result<()> {
+) -> Result<Vec<Signature>> {
     let retry_count = retry.unwrap_or(3); // Default retry count
 
     let (base_url, full_name) = fetch_genbank_filename(client, accession.as_str()).await?;
@@ -223,7 +230,7 @@ async fn process_accession(
         }
     }
 
-    Ok(())
+    Ok(sigs)
 }
 
 #[tokio::main]
@@ -264,16 +271,28 @@ pub async fn download_and_sketch(
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
-    // if no sigs to build, skip this iteration
-    // if dna_sig_templates.is_empty() && prot_sig_templates.is_empty() {
-    //     if not keep_fastas:
-    //         bail!("No signatures to build. Not storin")
-    // }
-
     // Initialize the HTTP client
     let client = Client::new();
     let mut failed_writer = Writer::from_path(failed_csv)?;
     failed_writer.write_record(&["accession", "url"])?;
+
+    // set up sender, receiver
+    // let (_send, _recv) = tokio::sync::mpsc::channel(32);
+
+    // start zip file; set up trackers
+    let outpath: PathBuf = output_sigs.into();
+    // let file = File::create(outpath).await?;
+    let mut file = File::create(outpath).await?;
+    // let mut zipF = ZipWriter::new(file);
+    let mut zipF = ZipFileWriter::new(&mut file);
+
+    // let zip_options = EntryOptions::new()
+
+    // let zip_options = zip::write::FileOptions::default()
+    //     .compression_method(zip::CompressionMethod::Stored)
+    //     .large_file(true);
+    let mut manifest_rows: Vec<Record> = Vec::new();
+    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
     // Process each accession
     for accinfo in &accession_info {
@@ -289,12 +308,44 @@ pub async fn download_and_sketch(
         )
         .await
         {
-            Ok(_) => println!("Successfully processed accession: {}", &accinfo.accession),
+            Ok(mut processed_sigs) => {
+                for sig in &mut processed_sigs {
+                    let _md5sum_str = sig.md5sum();
+                    // let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+                    // *count += 1;
+                    // let sig_filename = if *count > 1 {
+                    //     format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+                    // } else {
+                    //     format!("signatures/{}.sig.gz", md5sum_str)
+                    // };
+                    // let wrapped_sig = vec![sig];
+                    // let json_bytes = serde_json::to_vec(&wrapped_sig)?;
+
+                    // let gzipped_buffer = {
+                    //     let mut buffer = std::io::Cursor::new(Vec::new());
+                    //     {
+                    //         let mut gz_writer = niffler::get_writer(
+                    //             Box::new(&mut buffer),
+                    //             niffler::compression::Format::Gzip,
+                    //             niffler::compression::Level::Nine,
+                    //         )?;
+                    //         gz_writer.write_all(&json_bytes).await?;
+                    //         gz_writer.shutdown().await?;
+                    //     }
+                    //     buffer.into_inner()
+                    // };
+
+                    // // zipF.start_file(sig_filename, zip_options)?;
+                    // // zipF.write_all(&gzipped_buffer).await?;
+                    // let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
+                    // manifest_rows.extend(records);
+                };
+                println!("Successfully processed accession: {}", &accinfo.accession);
+            }
             Err(e) => {
                 let err_message = e.to_string();
                 let parts: Vec<&str> = err_message.split("retries: ").collect();
                 let failed_url = parts.get(1).unwrap_or(&"Unknown URL").trim();
-
                 failed_writer.write_record(&[&accinfo.accession, &failed_url.to_string()])?;
                 eprintln!(
                     "Failed to process accession: {}. Error: {}",
@@ -302,15 +353,7 @@ pub async fn download_and_sketch(
                 );
             }
         }
-    }
+    };
 
     Ok(())
 }
-
-// #[tokio::main]
-// pub async fn download_accessions(
-//     input_csv: String,
-//     failed_csv: String,
-//     retry_times: u32,
-//     location: String,
-// }
