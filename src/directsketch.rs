@@ -10,6 +10,8 @@ use needletail::parse_fastx_reader;
 use std::io::Cursor;
 use tokio::task;
 
+use sourmash::signature::Signature;
+
 use crate::utils::{build_siginfo, load_accession_info, parse_params_str}; //, sigwriter, Params, ZipMessage};
 
 enum GenBankFileType {
@@ -150,6 +152,8 @@ async fn process_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
+    _dna_sigs: Vec<Signature>,
+    _prot_sigs: Vec<Signature>,
 ) -> Result<()> {
     let retry_count = retry.unwrap_or(3); // Default retry count
 
@@ -222,8 +226,8 @@ pub async fn download_and_sketch(
             bail!("Failed to parse params string");
         }
     };
-    let _dna_sig_templates = build_siginfo(&params_vec, "DNA");
-    let _prot_sig_templates = build_siginfo(&params_vec, "protein");
+    let dna_sig_templates = build_siginfo(&params_vec, "DNA");
+    let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
     // if no sigs to build, skip this iteration
     // if dna_sig_templates.is_empty() && prot_sig_templates.is_empty() {
@@ -245,6 +249,8 @@ pub async fn download_and_sketch(
             &download_path,
             Some(retry_times),
             keep_fastas,
+            dna_sig_templates.clone(),
+            prot_sig_templates.clone(),
         )
         .await
         {
