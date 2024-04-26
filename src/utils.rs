@@ -1,16 +1,16 @@
-use anyhow::{Result, anyhow};
-use sourmash::signature::Signature;
+use anyhow::{anyhow, Result};
 use sourmash::cmd::ComputeParameters;
+use sourmash::signature::Signature;
 use std::hash::Hash;
 use std::hash::Hasher;
 // use tokio::io::BufWriter; // or std::io::BufWriter???
 // use tokio::fs::File; // or std::fs::File;
-use std::fs::File;
 use camino::Utf8PathBuf as PathBuf;
-use std::io::{BufWriter, Write}; //BufReader, BufRead, 
-use sourmash::manifest::{Record, Manifest};
+use sourmash::manifest::{Manifest, Record};
 use std::collections::HashMap;
-// use csv::Reader;
+use std::fs::File;
+use std::io::{BufWriter, Write}; //BufReader, BufRead,
+                                 // use csv::Reader;
 
 pub struct AccessionData {
     pub accession: String,
@@ -55,17 +55,15 @@ pub fn load_accession_info(
             name: name.to_string(),
         });
     }
-        
+
     // Print warning if there were duplicated rows.
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
-    } 
+    }
     println!("Loaded {} rows in total", row_count);
 
     Ok((results, row_count))
 }
-
-
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Params {
@@ -193,7 +191,6 @@ pub fn build_siginfo(params: &[Params], moltype: &str) -> Vec<Signature> {
     sigs
 }
 
-
 pub enum ZipMessage {
     SignatureData(Vec<Signature>),
     WriteManifest,
@@ -278,7 +275,6 @@ pub fn write_signature(
     zip.start_file(sig_filename, zip_options).unwrap();
     zip.write_all(&gzipped_buffer).unwrap();
 }
-
 
 pub fn open_stdout_or_file(output: Option<String>) -> Box<dyn Write + Send + 'static> {
     // if output is a file, use open_output_file

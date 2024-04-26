@@ -4,8 +4,8 @@ use pyo3::prelude::*;
 // #[macro_use]
 extern crate simple_error;
 
-mod utils;
 mod directsketch;
+mod utils;
 
 #[pyfunction]
 fn set_global_thread_pool(num_threads: usize) -> PyResult<usize> {
@@ -24,7 +24,6 @@ fn set_global_thread_pool(num_threads: usize) -> PyResult<usize> {
     }
 }
 
-
 #[pyfunction]
 fn do_gbsketch(
     input_csv: String,
@@ -35,9 +34,8 @@ fn do_gbsketch(
     fasta_location: String,
     keep_fastas: bool,
 ) -> anyhow::Result<u8> {
-    
     // let runtime = tokio::runtime::Runtime::new().unwrap();
-    
+
     // runtime.block_on(async {
     //     download::download_accessions(input_csv, failed_csv, retry_times, fasta_location).await
     // }).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to process downloads: {}", e)))
