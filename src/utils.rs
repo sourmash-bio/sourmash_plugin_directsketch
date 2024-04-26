@@ -3,16 +3,6 @@ use sourmash::cmd::ComputeParameters;
 use sourmash::signature::Signature;
 use std::hash::Hash;
 use std::hash::Hasher;
-// use tokio::io::BufWriter; // or std::io::BufWriter???
-// use tokio::fs::File; // or std::fs::File;
-// use camino::Utf8PathBuf as PathBuf;
-// use sourmash::manifest::{Manifest, Record};
-// use std::collections::HashMap;
-// use std::io::{BufWriter, Write}; //BufReader, BufRead,
-                                 // use csv::Reader;
-//tokio async file writing
-// use tokio::io::AsyncWriteExt;
-// use tokio::fs::File;
 
 pub struct AccessionData {
     pub accession: String,
@@ -192,91 +182,3 @@ pub fn build_siginfo(params: &[Params], moltype: &str) -> Vec<Signature> {
 
     sigs
 }
-
-// pub enum ZipMessage {
-//     SignatureData(Vec<Signature>),
-//     WriteManifest,
-// }
-
-// pub async fn sigwriter(
-//     recv: tokio::sync::mpsc::Receiver<ZipMessage>,
-//     output: String,
-// ) -> Result<()> {
-//     let outpath: PathBuf = output.into();
-//     let file_writer = tokio::fs::File::create(&outpath).await?;
-//     let file_writer = BufWriter::new(file_writer);
-
-//     let options = zip::write::FileOptions::default()
-//         .compression_method(zip::CompressionMethod::Stored)
-//         .large_file(true);
-
-//     task::spawn(async move {
-//         let mut zip = zip::ZipWriter::new(file_writer);
-//         let mut manifest_rows: Vec<Record> = Vec::new();
-//         let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
-
-//         while let Some(message) = recv.recv().await {
-//             match message {
-//                 ZipMessage::SignatureData(sigs) => {
-//                     for sig in sigs.iter() {
-//                         let md5sum_str = sig.md5sum();
-//                         let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
-//                         *count += 1;
-//                         let sig_filename = if *count > 1 {
-//                             format!("signatures/{}_{}.sig.gz", md5sum_str, count)
-//                         } else {
-//                             format!("signatures/{}.sig.gz", md5sum_str)
-//                         };
-//                         write_signature(sig, &mut zip, options, &sig_filename);
-//                         let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
-//                         manifest_rows.extend(records);
-//                     }
-//                 }
-//                 ZipMessage::WriteManifest => {
-//                     println!("Writing manifest");
-//                     zip.start_file("SOURMASH-MANIFEST.csv", options)?;
-//                     let manifest: Manifest = manifest_rows.clone().into();
-//                     manifest.to_writer(&mut zip)?;
-
-//                     if let Err(e) = zip.finish() {
-//                         eprintln!("Error finalizing ZIP file: {:?}", e);
-//                     }
-//                 }
-//             }
-//         }
-//     });
-//     Ok(())
-// }
-
-// pub async fn write_signature(
-//     sig: &Signature,
-//     zip: &mut zip::ZipWriter<BufWriter<File>>,
-//     zip_options: zip::write::FileOptions,
-//     sig_filename: &str,
-// ) -> Result<()> {
-//     let wrapped_sig = vec![sig];
-//     let json_bytes = serde_json::to_vec(&wrapped_sig)?;
-
-//     let gzipped_buffer = {
-//         let mut buffer = std::io::Cursor::new(Vec::new());
-//         {
-//             let mut gz_writer = niffler::get_writer(
-//                 Box::new(&mut buffer),
-//                 niffler::compression::Format::Gzip,
-//                 niffler::compression::Level::Nine,
-//             )?;
-//             gz_writer.write_all(&json_bytes).await?;
-//             gz_writer.shutdown().await?;
-//         }
-//         buffer.into_inner()
-//     };
-
-//     zip.start_file(sig_filename, zip_options)?;
-//     zip.write_all(&gzipped_buffer).await?;
-
-//     Ok(())
-// }
-
-// async fn open_output_file(path: &PathBuf) -> Result<File> {
-//     File::create(path).await.map_err(|e| zip::result::ZipError::Io(e))
-// }

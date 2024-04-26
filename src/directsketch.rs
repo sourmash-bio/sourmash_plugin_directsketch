@@ -3,23 +3,20 @@ use camino::Utf8PathBuf as PathBuf;
 use csv::Writer;
 use regex::Regex;
 use reqwest::Client;
-use std::fs::{self, create_dir_all}; //File
+use std::fs::{self, create_dir_all};
 use std::path::Path;
-// use niffler::get_reader;
 use needletail::parse_fastx_reader;
 use std::io::Cursor;
-use tokio::task;
 use tokio::fs::File;
-// use zip::ZipWriter;
-use std::collections::HashMap;
+use tokio::task;
 use async_zip::write::{EntryOptions, ZipFileWriter};
 use async_zip::Compression;
+use std::collections::HashMap;
 
-
+use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
-use sourmash::manifest::{Record, Manifest};
 
-use crate::utils::{build_siginfo, load_accession_info, parse_params_str}; //, sigwriter, Params, ZipMessage};
+use crate::utils::{build_siginfo, load_accession_info, parse_params_str};
 
 enum GenBankFileType {
     Genomic,
@@ -170,7 +167,7 @@ async fn sketch_data(
     })
 }
 
-async fn process_accession(
+async fn dl_sketch_accession(
     client: &Client,
     accession: String,
     name: String,
@@ -203,25 +200,27 @@ async fn process_accession(
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
         match file_type {
-            GenBankFileType::Genomic => {
-                sigs.extend(sketch_data(
+            GenBankFileType::Genomic => sigs.extend(
+                sketch_data(
                     name.as_str(),
                     file_name.as_str(),
                     data,
                     dna_sigs.clone(),
                     "dna",
                 )
-                .await?)
-            }
+                .await?,
+            ),
             GenBankFileType::Protein => {
-                 sigs.extend(sketch_data(
-                    name.as_str(),
-                    file_name.as_str(),
-                    data,
-                    prot_sigs.clone(),
-                    "protein",
-                )
-                .await?);
+                sigs.extend(
+                    sketch_data(
+                        name.as_str(),
+                        file_name.as_str(),
+                        data,
+                        prot_sigs.clone(),
+                        "protein",
+                    )
+                    .await?,
+                );
             }
             _ => {} // Do nothing for other file types
         }
@@ -273,9 +272,6 @@ pub async fn download_and_sketch(
     let mut failed_writer = Writer::from_path(failed_csv)?;
     failed_writer.write_record(&["accession", "url"])?;
 
-    // set up sender, receiver
-    // let (_send, _recv) = tokio::sync::mpsc::channel(32);
-
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
     let mut file = File::create(outpath).await?;
@@ -286,7 +282,7 @@ pub async fn download_and_sketch(
 
     // Process each accession
     for accinfo in &accession_info {
-        match process_accession(
+        match dl_sketch_accession(
             &client,
             accinfo.accession.clone(),
             accinfo.name.clone(),
@@ -313,7 +309,7 @@ pub async fn download_and_sketch(
 
                     let wrapped_sig = vec![sig];
                     let json_bytes = serde_json::to_vec(&wrapped_sig)?;
-                    
+
                     let gzipped_buffer = {
                         let mut buffer = std::io::Cursor::new(Vec::new());
                         {
@@ -328,7 +324,7 @@ pub async fn download_and_sketch(
                     };
                     let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored); //need this clone?
                     zipF.write_entry_whole(opts, &gzipped_buffer).await?;
-                };
+                }
                 println!("Successfully processed accession: {}", &accinfo.accession);
             }
             Err(e) => {
@@ -342,11 +338,11 @@ pub async fn download_and_sketch(
                 );
             }
         }
-    };
+    }
 
     // write the manifest
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
-    let manifest:Manifest = manifest_rows.clone().into();
+    let manifest: Manifest = manifest_rows.clone().into();
     // Create a temporary buffer to hold the manifest data
     let mut manifest_buffer = Vec::new();
     // Use manifest.to_writer to write the manifest to the buffer
