@@ -180,6 +180,7 @@ async fn process_accession(
 
     let (base_url, full_name) = fetch_genbank_filename(client, accession.as_str()).await?;
 
+    let mut sigs = Vec::<Signature>::new();
     // Combine all file types into a single vector
     let file_types = vec![
         GenBankFileType::Genomic,
@@ -198,26 +199,25 @@ async fn process_accession(
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
         match file_type {
-            // also pass in hashfunction to determine dna vs prot sketch
             GenBankFileType::Genomic => {
-                decompress_and_parse_data(
+                sigs.extend(decompress_and_parse_data(
                     name.as_str(),
                     file_name.as_str(),
                     data,
                     dna_sigs.clone(),
                     "dna",
                 )
-                .await?;
+                .await?)
             }
             GenBankFileType::Protein => {
-                decompress_and_parse_data(
+                 sigs.extend(decompress_and_parse_data(
                     name.as_str(),
                     file_name.as_str(),
                     data,
                     prot_sigs.clone(),
                     "protein",
                 )
-                .await?;
+                .await?);
             }
             _ => {} // Do nothing for other file types
         }
