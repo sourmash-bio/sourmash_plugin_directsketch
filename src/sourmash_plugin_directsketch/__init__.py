@@ -1,21 +1,37 @@
-"""DirectSketch plugin description"""
-
-usage="""
-   sourmash scripts gbsketch
-"""
-
-epilog="""
-See https://github.com/xyz for more examples.
-
-Need help? Have questions? Ask at http://github.com/sourmash-bio/sourmash/issues!
-"""
-
+#! /usr/bin/env python
+import os
+import sys
 import argparse
-import sourmash
-
-from sourmash.logging import debug_literal, notify
+from sourmash.logging import notify
 from sourmash.plugins import CommandLinePlugin
+import importlib.metadata
 
+from . import sourmash_plugin_directsketch
+
+__version__ = importlib.metadata.version("sourmash_plugin_directsketch")
+def print_version():
+    notify(f"=> sourmash_plugin_directsketch {__version__}")
+
+def get_max_cores():
+    try:
+        if 'SLURM_CPUS_ON_NODE' in os.environ:
+            return int(os.environ['SLURM_CPUS_ON_NODE'])
+        elif 'SLURM_JOB_CPUS_PER_NODE' in os.environ:
+            cpus_per_node_str = os.environ['SLURM_JOB_CPUS_PER_NODE']
+            return int(cpus_per_node_str.split('x')[0])
+        else:
+            return os.cpu_count()
+    except Exception:
+        return os.cpu_count()
+
+
+def set_thread_pool(user_cores):
+    avail_threads = get_max_cores()
+    num_threads = min(avail_threads, user_cores) if user_cores else avail_threads
+    if user_cores and user_cores > avail_threads:
+        notify(f"warning: only {avail_threads} threads available, using {avail_threads}")
+    actual_rayon_cores = sourmash_plugin_directsketch.set_global_thread_pool(num_threads)
+    return actual_rayon_cores
 
 class Download_and_Sketch_Assemblies(CommandLinePlugin):
     command = 'gbsketch'
@@ -51,14 +67,16 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         # lowercase the param string
         args.param_string = args.param_string.lower()
 
-        # num_threads = set_thread_pool(args.cores)
+        num_threads = set_thread_pool(args.cores)
 
-        # notify(f"sketching all files in '{args.fromfile_csv}' using {num_threads} threads")
+        notify(f"downloading and sketching all accessions in '{args.input_csv}' using {num_threads} threads")
 
         super().main(args)
         status = sourmash_plugin_directsketch.do_gbsketch(args.accessions_csv,
                                                            args.param_string,
+                                                           args.failed,
                                                            args.output,
+                                                           args.retry_times,
                                                            args.fasta_output,
                                                            args.keep_all_fastas)
         
