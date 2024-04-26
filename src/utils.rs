@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use sourmash::signature::Signature;
 use sourmash::cmd::ComputeParameters;
 use std::hash::Hash;
@@ -7,9 +7,65 @@ use std::hash::Hasher;
 // use tokio::fs::File; // or std::fs::File;
 use std::fs::File;
 use camino::Utf8PathBuf as PathBuf;
-use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::io::{BufWriter, Write}; //BufReader, BufRead, 
 use sourmash::manifest::{Record, Manifest};
 use std::collections::HashMap;
+// use csv::Reader;
+
+pub struct AccessionData {
+    pub accession: String,
+    pub name: String,
+    // pub moltype: String,
+    // pub url: Some(Vec<PathBuf>),
+}
+
+pub fn load_accession_info(
+    input_csv: String,
+    // include_genomic: bool,
+    // include_protein: bool,
+) -> Result<(Vec<AccessionData>, usize)> {
+    let mut results = Vec::new();
+    let mut row_count = 0;
+    let mut processed_rows = std::collections::HashSet::new();
+    let mut duplicate_count = 0;
+    // to do - maybe use HashSet for accessions too to avoid dupes
+    let mut rdr = csv::Reader::from_path(input_csv)?;
+
+    for result in rdr.records() {
+        let record = result?;
+        let row_string = record.iter().collect::<Vec<_>>().join(",");
+        if processed_rows.contains(&row_string) {
+            duplicate_count += 1;
+            continue;
+        }
+        processed_rows.insert(row_string.clone());
+        row_count += 1;
+        let acc = record
+            .get(0)
+            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
+            .to_string();
+        let name = record
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing 'name' field"))?
+            .to_string();
+
+        // store accession data
+        results.push(AccessionData {
+            accession: acc.to_string(),
+            name: name.to_string(),
+        });
+    }
+        
+    // Print warning if there were duplicated rows.
+    if duplicate_count > 0 {
+        println!("Warning: {} duplicated rows were skipped.", duplicate_count);
+    } 
+    println!("Loaded {} rows in total", row_count);
+
+    Ok((results, row_count))
+}
+
+
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Params {

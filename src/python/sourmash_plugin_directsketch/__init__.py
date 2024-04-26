@@ -77,5 +77,5 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.keep_all_fastas)
         
         if status == 0:
-            notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'")
+            notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")
         return status

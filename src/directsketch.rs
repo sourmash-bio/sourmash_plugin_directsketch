@@ -1,17 +1,16 @@
 use anyhow::{Result, Context, anyhow, bail};
 use camino::Utf8PathBuf as PathBuf;
-use csv::Reader;
+use std::path::Path;
 use regex::Regex;
 use reqwest::Client;
-use std::{collections::HashSet, fs};
-use std::fs::{File, create_dir_all};
+use std::fs::{self, create_dir_all}; //File
 use csv::Writer;
 // use niffler::get_reader;
 use needletail::parse_fastx_reader;
 use std::io::Cursor;
 use tokio::task;
 
-use crate::utils::parse_params_str; //, sigwriter, Params, ZipMessage};
+use crate::utils::{parse_params_str, load_accession_info}; //, sigwriter, Params, ZipMessage};
 
 enum GenBankFileType {
     Genomic,
@@ -90,7 +89,7 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
 }
 
 
-async fn decompress_and_parse_data(compressed_data: Vec<u8>) -> Result<()> {
+async fn decompress_and_parse_data(_accession: &str, _name: &str, compressed_data: Vec<u8>) -> Result<()> {
     task::block_in_place(|| {
         let cursor = Cursor::new(compressed_data);
 
@@ -99,19 +98,19 @@ async fn decompress_and_parse_data(compressed_data: Vec<u8>) -> Result<()> {
 
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
-            println!("Record ID: {}", std::str::from_utf8(record.id())?);
-            // println!("Sequence: {}", std::str::from_utf8(record.seq())?);
             // Process each record
+            println!("Record ID: {}", std::str::from_utf8(&record.id())?);
+            println!("Sequence: {}", std::str::from_utf8(&record.seq())?);
         }
 
         Ok(())
     })
 }
 
-async fn process_accession(client: &Client, accession: &str, location: &PathBuf, retry: Option<u32>, keep_fastas: bool) -> Result<()> {
+async fn process_accession(client: &Client, accession: String, name: String, location: &PathBuf, retry: Option<u32>, keep_fastas: bool) -> Result<()> {
     let retry_count = retry.unwrap_or(3);  // Default retry count
 
-    let (base_url, full_name) = fetch_genbank_filename(client, accession).await?;
+    let (base_url, full_name) = fetch_genbank_filename(client, accession.as_str()).await?;
 
     // Combine all file types into a single vector
     let file_types = vec![
@@ -126,28 +125,21 @@ async fn process_accession(client: &Client, accession: &str, location: &PathBuf,
         let data = download_with_retry(client, &url, retry_count).await?;
 
         if keep_fastas {
-            let file_name = file_type.filename(accession);
+            let file_name = file_type.filename(&accession);
             let path = location.join(&file_name);
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
-        // match file_type {
-        //     FileType::Genomic => {
-        //         decompress_and_parse_data(data).await?;
-        //     },
-        //     // FileType::Protein => {
-        //     //     sketch_protein(&data).await?;
-        //     // },
-        //     _ => {}  // Do nothing for other file types
-        // }
+        match file_type {
+            // also pass in hashfunction to determine dna vs prot sketch
+            GenBankFileType::Genomic => {
+                decompress_and_parse_data(accession.as_str(), name.as_str(), data).await?;
+            },
+            GenBankFileType::Protein => {
+                decompress_and_parse_data(accession.as_str(), name.as_str(), data).await?;
+            },
+            _ => {}  // Do nothing for other file types
+        }
     }
-    // to download md5sum. To do -- download this + check md5sum on the fly?
-    // for filename in standalone {
-    //     let url = format!("{}/{}", base_url, filename);
-    //     let data = download_with_retry(client, &url, retry_count).await?;
-    //     let file_name = format!("{}_{}", accession, filename);  // Generate file name using the directory name and suffix
-    //     let path = location.join(&file_name);  // Create the full path for the file
-    //     download_with_retry(client, &url, retry_count).await?;
-    // }
 
     Ok(())
 }
@@ -168,25 +160,20 @@ pub async fn download_and_sketch(
         create_dir_all(&download_path)?;
     }
 
-    // Open the file containing the accessions synchronously
-    let file = File::open(input_csv)?;
-    let mut rdr = Reader::from_reader(file);
-
-    // Initialize a HashSet to store unique accessions
-    let mut accessions = HashSet::new();
-
-    // Read all accessions into the HashSet to remove duplicates
-    for result in rdr.deserialize::<(String,)>() {
-        let record = result?;
-        let accession = record.0.trim();
-        if !accession.is_empty() {
-            accessions.insert(accession.to_string());
-        }
+    // if sig output doesn't end in zip, bail
+    if Path::new(&output_sigs)
+        .extension()
+        .map_or(true, |ext| ext != "zip")
+    {
+        bail!("Output must be a zip file.");
     }
+
+    // Open the file containing the accessions synchronously
+    let (accession_info, _n_accs) = load_accession_info(input_csv)?;
 
      // parse param string into params_vec, print error if fail
      let param_result = parse_params_str(param_str);
-     let params_vec = match param_result {
+     let _params_vec = match param_result {
          Ok(params) => params,
          Err(e) => {
              eprintln!("Error parsing params string: {}", e);
@@ -200,16 +187,16 @@ pub async fn download_and_sketch(
     failed_writer.write_record(&["accession", "url"])?;
 
     // Process each unique accession in the HashSet
-    for accession in &accessions {
-        match process_accession(&client, accession, &download_path, Some(retry_times), keep_fastas).await {
-            Ok(_) => println!("Successfully processed accession: {}", accession),
+    for accinfo in &accession_info {
+        match process_accession(&client, accinfo.accession.clone(), accinfo.name.clone(), &download_path, Some(retry_times), keep_fastas).await {
+            Ok(_) => println!("Successfully processed accession: {}", &accinfo.accession),
             Err(e) => {
                 let err_message = e.to_string();
                 let parts: Vec<&str> = err_message.split("retries: ").collect();
                 let failed_url = parts.get(1).unwrap_or(&"Unknown URL").trim();
                 
-                failed_writer.write_record(&[accession, failed_url])?;
-                eprintln!("Failed to process accession: {}. Error: {}", accession, err_message);
+                failed_writer.write_record(&[&accinfo.accession, &failed_url.to_string()])?;
+                eprintln!("Failed to process accession: {}. Error: {}", &accinfo.accession, err_message);
             }
         }
     }
