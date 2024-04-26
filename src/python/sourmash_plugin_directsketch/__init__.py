@@ -1,7 +1,5 @@
 #! /usr/bin/env python
 import os
-import sys
-import argparse
 from sourmash.logging import notify
 from sourmash.plugins import CommandLinePlugin
 import importlib.metadata
@@ -35,7 +33,7 @@ def set_thread_pool(user_cores):
 
 class Download_and_Sketch_Assemblies(CommandLinePlugin):
     command = 'gbsketch'
-    description = 'sourmash plugin to do Download and Sketch GenBank Assembly Datasets'
+    description = 'download and sketch GenBank assembly datasets'
 
     def __init__(self, p):
         super().__init__(p)
@@ -46,7 +44,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='Write fastas here')
         p.add_argument('-k', '--keep-all-fastas',
                        help="keep all fastas after sketching. Default: just keep genomes for failed protein downloads.")
-        p.add_argument('--failed', 'csv of failed accessions and download links (should be mostly protein).')
+        p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
         p.add_argument('-p', '--param-string', action='append', type=str, default=[],
                           help='parameter string for sketching (default: k=31,scaled=1000)')
         p.add_argument('-c', '--cores', default=0, type=int,
@@ -57,7 +55,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         #                help='build one sketch per FASTA record, i.e. multiple sketches per FASTA file')
 
     def main(self, args):
-        # print_version()
+        print_version()
         if not args.param_string:
             args.param_string = ["k=31,scaled=1000"]
         notify(f"params: {args.param_string}")

@@ -8,7 +8,7 @@ use std::{collections::HashSet, fs};
 use std::fs::{File, create_dir_all};
 use csv::Writer;
 
-async fn fetch_full_filename(client: &Client, accession: &str) -> Result<(String, String)> {
+async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(String, String)> {
     let (db, acc) = accession.trim().split_once('_').ok_or_else(|| anyhow!("Invalid accession format"))?;
     let (number, _) = acc.split_once('.').unwrap_or((acc, "1"));
     let number_path = number.chars().collect::<Vec<_>>().chunks(3).map(|chunk| chunk.iter().collect::<String>()).collect::<Vec<_>>().join("/");
@@ -59,7 +59,7 @@ async fn download_with_retry(client: &Client, url: &str, file_name: PathBuf, ret
 async fn process_accession(client: &Client, accession: &str, location: &PathBuf, retry: Option<u32>) -> Result<()> {
     let retry_count = retry.unwrap_or(3);  // Default retry count
 
-    let (base_url, full_name) = fetch_full_filename(client, accession).await?;
+    let (base_url, full_name) = fetch_genbank_filename(client, accession).await?;
 
     
     let suffixes = vec!["_genomic.fna.gz", "_protein.faa.gz", "_assembly_report.txt"];

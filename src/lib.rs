@@ -59,5 +59,6 @@ fn do_gbsketch(
 #[pymodule]
 fn sourmash_plugin_directsketch(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(do_gbsketch, m)?)?;
+    m.add_function(wrap_pyfunction!(set_global_thread_pool, m)?)?;
     Ok(())
 }
