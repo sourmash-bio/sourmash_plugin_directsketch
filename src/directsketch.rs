@@ -281,16 +281,9 @@ pub async fn download_and_sketch(
 
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
-    // let file = File::create(outpath).await?;
     let mut file = File::create(outpath).await?;
-    // let mut zipF = ZipWriter::new(file);
     let mut zipF = ZipFileWriter::new(&mut file);
 
-    // let zip_options = EntryOptions::new()
-
-    // let zip_options = zip::write::FileOptions::default()
-    //     .compression_method(zip::CompressionMethod::Stored)
-    //     .large_file(true);
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
@@ -310,35 +303,34 @@ pub async fn download_and_sketch(
         {
             Ok(mut processed_sigs) => {
                 for sig in &mut processed_sigs {
-                    let _md5sum_str = sig.md5sum();
-                    // let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
-                    // *count += 1;
-                    // let sig_filename = if *count > 1 {
-                    //     format!("signatures/{}_{}.sig.gz", md5sum_str, count)
-                    // } else {
-                    //     format!("signatures/{}.sig.gz", md5sum_str)
-                    // };
-                    // let wrapped_sig = vec![sig];
-                    // let json_bytes = serde_json::to_vec(&wrapped_sig)?;
+                    let md5sum_str = sig.md5sum();
+                    let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+                    *count += 1;
+                    let sig_filename = if *count > 1 {
+                        format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+                    } else {
+                        format!("signatures/{}.sig.gz", md5sum_str)
+                    };
+                    let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
+                    manifest_rows.extend(records);
 
-                    // let gzipped_buffer = {
-                    //     let mut buffer = std::io::Cursor::new(Vec::new());
-                    //     {
-                    //         let mut gz_writer = niffler::get_writer(
-                    //             Box::new(&mut buffer),
-                    //             niffler::compression::Format::Gzip,
-                    //             niffler::compression::Level::Nine,
-                    //         )?;
-                    //         gz_writer.write_all(&json_bytes).await?;
-                    //         gz_writer.shutdown().await?;
-                    //     }
-                    //     buffer.into_inner()
-                    // };
-
-                    // // zipF.start_file(sig_filename, zip_options)?;
-                    // // zipF.write_all(&gzipped_buffer).await?;
-                    // let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
-                    // manifest_rows.extend(records);
+                    let wrapped_sig = vec![sig];
+                    let json_bytes = serde_json::to_vec(&wrapped_sig)?;
+                    
+                    let gzipped_buffer = {
+                        let mut buffer = std::io::Cursor::new(Vec::new());
+                        {
+                            let mut gz_writer = niffler::get_writer(
+                                Box::new(&mut buffer),
+                                niffler::compression::Format::Gzip,
+                                niffler::compression::Level::Nine,
+                            )?;
+                            gz_writer.write_all(&json_bytes)?;
+                        }
+                        buffer.into_inner()
+                    };
+                    let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored);
+                    zipF.write_entry_whole(opts, &gzipped_buffer).await?;
                 };
                 println!("Successfully processed accession: {}", &accinfo.accession);
             }
