@@ -17,7 +17,7 @@ use async_zip::Compression;
 
 
 use sourmash::signature::Signature;
-use sourmash::manifest::Record;
+use sourmash::manifest::{Record, Manifest};
 
 use crate::utils::{build_siginfo, load_accession_info, parse_params_str}; //, sigwriter, Params, ZipMessage};
 
@@ -130,7 +130,7 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
     ))
 }
 
-async fn decompress_and_parse_data(
+async fn sketch_data(
     name: &str,
     filename: &str,
     compressed_data: Vec<u8>,
@@ -164,9 +164,6 @@ async fn decompress_and_parse_data(
             if !set_name {
                 set_name = true;
             }
-            // Process each record
-            println!("Record ID: {}", std::str::from_utf8(&record.id())?);
-            println!("Sequence: {}", std::str::from_utf8(&record.seq())?);
         }
 
         Ok(sigs)
@@ -207,7 +204,7 @@ async fn process_accession(
         }
         match file_type {
             GenBankFileType::Genomic => {
-                sigs.extend(decompress_and_parse_data(
+                sigs.extend(sketch_data(
                     name.as_str(),
                     file_name.as_str(),
                     data,
@@ -217,7 +214,7 @@ async fn process_accession(
                 .await?)
             }
             GenBankFileType::Protein => {
-                 sigs.extend(decompress_and_parse_data(
+                 sigs.extend(sketch_data(
                     name.as_str(),
                     file_name.as_str(),
                     data,
@@ -329,7 +326,7 @@ pub async fn download_and_sketch(
                         }
                         buffer.into_inner()
                     };
-                    let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored);
+                    let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored); //need this clone?
                     zipF.write_entry_whole(opts, &gzipped_buffer).await?;
                 };
                 println!("Successfully processed accession: {}", &accinfo.accession);
@@ -346,6 +343,20 @@ pub async fn download_and_sketch(
             }
         }
     };
+
+    // write the manifest
+    let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+    let manifest:Manifest = manifest_rows.clone().into();
+    // Create a temporary buffer to hold the manifest data
+    let mut manifest_buffer = Vec::new();
+    // Use manifest.to_writer to write the manifest to the buffer
+    manifest.to_writer(&mut manifest_buffer)?;
+
+    // write manifest to zipfile
+    let opts = EntryOptions::new(manifest_filename, Compression::Stored);
+    zipF.write_entry_whole(opts, &manifest_buffer).await?;
+    // close zipfile
+    zipF.close().await?;
 
     Ok(())
 }
