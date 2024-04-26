@@ -37,12 +37,12 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
 
     def __init__(self, p):
         super().__init__(p)
-        p.add_argument('accessions_csv', help="a txt file or csv file containing accessions in the first column")
+        p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
         p.add_argument('-o', '--output', required=True,
                        help='output zip file for the signatures')
-        p.add_argument('-f', '--fasta-output',
+        p.add_argument('-f', '--fastas',
                        help='Write fastas here')
-        p.add_argument('-k', '--keep-all-fastas',
+        p.add_argument('-k', '--keep-all-fastas', action='store_true',
                        help="keep all fastas after sketching. Default: just keep genomes for failed protein downloads.")
         p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
         p.add_argument('-p', '--param-string', action='append', type=str, default=[],
@@ -51,8 +51,6 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads)')
-        # p.add_argument('-s', '--singleton', action="store_true",
-        #                help='build one sketch per FASTA record, i.e. multiple sketches per FASTA file')
 
     def main(self, args):
         print_version()
@@ -70,14 +68,14 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         notify(f"downloading and sketching all accessions in '{args.input_csv}' using {num_threads} threads")
 
         super().main(args)
-        status = sourmash_plugin_directsketch.do_gbsketch(args.accessions_csv,
+        status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,
                                                            args.param_string,
                                                            args.failed,
                                                            args.output,
                                                            args.retry_times,
-                                                           args.fasta_output,
+                                                           args.fastas,
                                                            args.keep_all_fastas)
         
         if status == 0:
-            notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fasta_output}'")
+            notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'")
         return status

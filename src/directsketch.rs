@@ -6,140 +6,40 @@ use reqwest::Client;
 use std::{collections::HashSet, fs};
 use std::fs::{File, create_dir_all};
 use csv::Writer;
-use niffler::get_reader;
+// use niffler::get_reader;
 use needletail::parse_fastx_reader;
 use std::io::Cursor;
-use std::hash::Hash;
-use std::hash::Hasher;
-use sourmash::signature::Signature;
-use sourmash::cmd::ComputeParameters;
 use tokio::task;
 
+use crate::utils::parse_params_str; //, sigwriter, Params, ZipMessage};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Params {
-    pub ksize: u32,
-    pub track_abundance: bool,
-    pub num: u32,
-    pub scaled: u64,
-    pub seed: u32,
-    pub is_protein: bool,
-    pub is_dna: bool,
+enum GenBankFileType {
+    Genomic,
+    Protein,
+    AssemblyReport,
+    Checksum,
 }
 
-impl Hash for Params {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ksize.hash(state);
-        self.track_abundance.hash(state);
-        self.num.hash(state);
-        self.scaled.hash(state);
-        self.seed.hash(state);
-        self.is_protein.hash(state);
-        self.is_dna.hash(state);
-    }
-}
-
-fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
-    let mut unique_params: std::collections::HashSet<Params> = std::collections::HashSet::new();
-
-    // split params_strs by _ and iterate over each param
-    for p_str in params_strs.split('_').collect::<Vec<&str>>().iter() {
-        let items: Vec<&str> = p_str.split(',').collect();
-
-        let mut ksizes = Vec::new();
-        let mut track_abundance = false;
-        let mut num = 0;
-        let mut scaled = 1000;
-        let mut seed = 42;
-        let mut is_protein = false;
-        let mut is_dna = true;
-
-        for item in items.iter() {
-            match *item {
-                _ if item.starts_with("k=") => {
-                    let k_value = item[2..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse k='{}' as a number", &item[2..]))?;
-                    ksizes.push(k_value);
-                }
-                "abund" => track_abundance = true,
-                "noabund" => track_abundance = false,
-                _ if item.starts_with("num=") => {
-                    num = item[4..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse num='{}' as a number", &item[4..]))?;
-                }
-                _ if item.starts_with("scaled=") => {
-                    scaled = item[7..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse scaled='{}' as a number", &item[7..]))?;
-                }
-                _ if item.starts_with("seed=") => {
-                    seed = item[5..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse seed='{}' as a number", &item[5..]))?;
-                }
-                "protein" => {
-                    is_protein = true;
-                    is_dna = false;
-                }
-                "dna" => {
-                    is_protein = false;
-                    is_dna = true;
-                }
-                _ => return Err(format!("unknown component '{}' in params string", item)),
-            }
-        }
-
-        for &k in &ksizes {
-            let param = Params {
-                ksize: k,
-                track_abundance,
-                num,
-                scaled,
-                seed,
-                is_protein,
-                is_dna,
-            };
-            unique_params.insert(param);
+impl GenBankFileType {
+    fn suffix(&self) -> &'static str {
+        match self {
+            GenBankFileType::Genomic => "_genomic.fna.gz",
+            GenBankFileType::Protein => "_protein.faa.gz",
+            GenBankFileType::AssemblyReport => "_assembly_report.txt",
+            GenBankFileType::Checksum => "md5checksums.txt",
         }
     }
 
-    Ok(unique_params.into_iter().collect())
-}
-
-fn build_siginfo(params: &[Params], moltype: &str) -> Vec<Signature> {
-    let mut sigs = Vec::new();
-
-    for param in params.iter().cloned() {
-        match moltype {
-            // if dna, only build dna sigs. if protein, only build protein sigs
-            "dna" | "DNA" if !param.is_dna => continue,
-            "protein" if !param.is_protein => continue,
-            _ => (),
+    fn filename(&self, accession: &str) -> String {
+        match self {
+            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
+            _ => format!("{}{}", accession, self.suffix()),
         }
-
-        // Adjust ksize value based on the is_protein flag
-        let adjusted_ksize = if param.is_protein {
-            param.ksize * 3
-        } else {
-            param.ksize
-        };
-
-        let cp = ComputeParameters::builder()
-            .ksizes(vec![adjusted_ksize])
-            .scaled(param.scaled)
-            .protein(param.is_protein)
-            .dna(param.is_dna)
-            .num_hashes(param.num)
-            .track_abundance(param.track_abundance)
-            .build();
-
-        let sig = Signature::from_params(&cp);
-        sigs.push(sig);
     }
 
-    sigs
+    fn url(&self, base_url: &str, full_name: &str) -> String {
+        format!("{}/{}{}", base_url, full_name, self.suffix())
+    }
 }
 
 async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(String, String)> {
@@ -168,6 +68,7 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
     Err(anyhow!("No matching genome found for accession {}", accession))
 }
 
+
 // download and return data directly instead of saving to file
 async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Result<Vec<u8>> {
     let mut attempts = retry_count;
@@ -188,34 +89,6 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
     Err(anyhow!("Failed to download file after {} retries: {}", retry_count, url))
 }
 
-enum FileType {
-    Genomic,
-    Protein,
-    AssemblyReport,
-    Checksum,
-}
-
-impl FileType {
-    fn suffix(&self) -> &'static str {
-        match self {
-            FileType::Genomic => "_genomic.fna.gz",
-            FileType::Protein => "_protein.faa.gz",
-            FileType::AssemblyReport => "_assembly_report.txt",
-            FileType::Checksum => "md5checksums.txt",
-        }
-    }
-
-    fn filename(&self, accession: &str) -> String {
-        match self {
-            FileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    fn url(&self, base_url: &str, full_name: &str) -> String {
-        format!("{}/{}{}", base_url, full_name, self.suffix())
-    }
-}
 
 async fn decompress_and_parse_data(compressed_data: Vec<u8>) -> Result<()> {
     task::block_in_place(|| {
@@ -226,7 +99,7 @@ async fn decompress_and_parse_data(compressed_data: Vec<u8>) -> Result<()> {
 
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
-            // println!("Record ID: {}", std::str::from_utf8(record.id())?);
+            println!("Record ID: {}", std::str::from_utf8(record.id())?);
             // println!("Sequence: {}", std::str::from_utf8(record.seq())?);
             // Process each record
         }
@@ -242,10 +115,10 @@ async fn process_accession(client: &Client, accession: &str, location: &PathBuf,
 
     // Combine all file types into a single vector
     let file_types = vec![
-        FileType::Genomic,
-        FileType::Protein,
-        FileType::AssemblyReport,
-        FileType::Checksum, // Including standalone files like checksums here
+        GenBankFileType::Genomic,
+        GenBankFileType::Protein,
+        // GenBankFileType::AssemblyReport,
+        // GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
 
     for file_type in &file_types {
@@ -257,15 +130,15 @@ async fn process_accession(client: &Client, accession: &str, location: &PathBuf,
             let path = location.join(&file_name);
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
-        match file_type {
-            FileType::Genomic => {
-                decompress_and_parse_data(data).await?;
-            },
-            // FileType::Protein => {
-            //     sketch_protein(&data).await?;
-            // },
-            _ => {}  // Do nothing for other file types
-        }
+        // match file_type {
+        //     FileType::Genomic => {
+        //         decompress_and_parse_data(data).await?;
+        //     },
+        //     // FileType::Protein => {
+        //     //     sketch_protein(&data).await?;
+        //     // },
+        //     _ => {}  // Do nothing for other file types
+        // }
     }
     // to download md5sum. To do -- download this + check md5sum on the fly?
     // for filename in standalone {
@@ -282,6 +155,7 @@ async fn process_accession(client: &Client, accession: &str, location: &PathBuf,
 #[tokio::main]
 pub async fn download_and_sketch(
     input_csv: String,
+    output_sigs: String,
     param_str: String,
     failed_csv: String,
     retry_times: u32,

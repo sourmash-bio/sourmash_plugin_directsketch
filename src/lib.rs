@@ -4,6 +4,7 @@ use pyo3::prelude::*;
 // #[macro_use]
 extern crate simple_error;
 
+mod utils;
 mod directsketch;
 
 #[pyfunction]
@@ -28,9 +29,10 @@ fn set_global_thread_pool(num_threads: usize) -> PyResult<usize> {
 fn do_gbsketch(
     input_csv: String,
     param_str: String,
-    fasta_location: String,
     failed_csv: String,
+    output_sigs: String,
     retry_times: u32,
+    fasta_location: String,
     keep_fastas: bool,
 ) -> anyhow::Result<u8> {
     
@@ -42,6 +44,7 @@ fn do_gbsketch(
 
     match directsketch::download_and_sketch(
         input_csv,
+        output_sigs,
         param_str,
         failed_csv,
         retry_times,
@@ -57,7 +60,7 @@ fn do_gbsketch(
 }
 
 #[pymodule]
-fn sourmash_plugin_directsketch(_py: Python, m: &PyModule) -> PyResult<()> {
+fn sourmash_plugin_directsketch(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(do_gbsketch, m)?)?;
     m.add_function(wrap_pyfunction!(set_global_thread_pool, m)?)?;
     Ok(())

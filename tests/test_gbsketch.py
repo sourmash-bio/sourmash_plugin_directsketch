@@ -1,5 +1,5 @@
 """
-Tests for sourmash_plugin_xyz.
+Tests for gbsketch
 """
 import os
 import pytest
