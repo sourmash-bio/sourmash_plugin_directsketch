@@ -124,24 +124,45 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
 }
 
 async fn decompress_and_parse_data(
-    _accession: &str,
-    _name: &str,
+    name: &str,
+    filename: &str,
     compressed_data: Vec<u8>,
-) -> Result<()> {
+    mut sigs: Vec<Signature>,
+    moltype: &str,
+) -> Result<Vec<Signature>> {
     task::block_in_place(|| {
         let cursor = Cursor::new(compressed_data);
 
         let mut fastx_reader =
             parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
+        // for each sig in template list, add sequence to sketch
+        let mut set_name = false;
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
+            sigs.iter_mut().for_each(|sig| {
+                if !set_name {
+                    sig.set_name(name);
+                    sig.set_filename(filename);
+                };
+                if moltype == "protein" {
+                    sig.add_protein(&record.seq())
+                        .expect("Failed to add protein");
+                } else {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                }
+            });
+            if !set_name {
+                set_name = true;
+            }
             // Process each record
             println!("Record ID: {}", std::str::from_utf8(&record.id())?);
             println!("Sequence: {}", std::str::from_utf8(&record.seq())?);
         }
 
-        Ok(())
+        Ok(sigs)
     })
 }
 
@@ -152,8 +173,8 @@ async fn process_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    _dna_sigs: Vec<Signature>,
-    _prot_sigs: Vec<Signature>,
+    dna_sigs: Vec<Signature>,
+    prot_sigs: Vec<Signature>,
 ) -> Result<()> {
     let retry_count = retry.unwrap_or(3); // Default retry count
 
@@ -170,19 +191,33 @@ async fn process_accession(
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
         let data = download_with_retry(client, &url, retry_count).await?;
+        let file_name = file_type.filename(&accession);
 
         if keep_fastas {
-            let file_name = file_type.filename(&accession);
             let path = location.join(&file_name);
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
         match file_type {
             // also pass in hashfunction to determine dna vs prot sketch
             GenBankFileType::Genomic => {
-                decompress_and_parse_data(accession.as_str(), name.as_str(), data).await?;
+                decompress_and_parse_data(
+                    name.as_str(),
+                    file_name.as_str(),
+                    data,
+                    dna_sigs.clone(),
+                    "dna",
+                )
+                .await?;
             }
             GenBankFileType::Protein => {
-                decompress_and_parse_data(accession.as_str(), name.as_str(), data).await?;
+                decompress_and_parse_data(
+                    name.as_str(),
+                    file_name.as_str(),
+                    data,
+                    prot_sigs.clone(),
+                    "protein",
+                )
+                .await?;
             }
             _ => {} // Do nothing for other file types
         }
