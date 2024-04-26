@@ -10,7 +10,7 @@ pip install sourmash_plugin_directsketch
 First, create a file, e.g. `acc.csv` with GenBank identifiers and sketch names.
 ```
 ident,name
-GCA_000961135.2, GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
 GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 ```
 > Extra columns are ok, as long as the first two columns contain the identifier and sketch name
