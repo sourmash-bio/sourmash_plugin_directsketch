@@ -42,15 +42,15 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='output zip file for the signatures')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here')
-        p.add_argument('-k', '--keep-all-fastas', action='store_true',
-                       help="keep all fastas after sketching. Default: just keep genomes for failed protein downloads.")
+        p.add_argument('-k', '--keep-fastas', action='store_true',
+                       help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
         p.add_argument('-p', '--param-string', action='append', type=str, default=[],
                           help='parameter string for sketching (default: k=31,scaled=1000)')
         p.add_argument('-c', '--cores', default=0, type=int,
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
-                       help='number of times to retry failed downloads)')
+                       help='number of times to retry failed downloads')
 
     def main(self, args):
         print_version()
@@ -74,7 +74,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.output,
                                                            args.retry_times,
                                                            args.fastas,
-                                                           args.keep_all_fastas)
+                                                           args.keep_fastas)
         
         if status == 0:
             notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")
