@@ -17,7 +17,7 @@ GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 
 Run:
 ```
-sourmash scripts gbsketch acc.csv -o test.zip -f output_fasta_dir -k --failed test.failed.csv -p k=21,k=31,scaled=1000,abund -r 1
+sourmash scripts gbsketch acc.csv -o test.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
 ```
 
 Full Usage:

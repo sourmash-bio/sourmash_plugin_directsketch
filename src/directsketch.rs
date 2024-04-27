@@ -1,17 +1,17 @@
 use anyhow::{anyhow, bail, Context, Result};
-use camino::Utf8PathBuf as PathBuf;
-use csv::Writer;
-use regex::Regex;
-use reqwest::Client;
-use std::fs::{self, create_dir_all};
-use std::path::Path;
-use needletail::parse_fastx_reader;
-use std::io::Cursor;
-use tokio::fs::File;
-use tokio::task;
 use async_zip::write::{EntryOptions, ZipFileWriter};
 use async_zip::Compression;
+use camino::Utf8PathBuf as PathBuf;
+use csv::Writer;
+use needletail::parse_fastx_reader;
+use regex::Regex;
+use reqwest::Client;
 use std::collections::HashMap;
+use std::fs::{self, create_dir_all};
+use std::io::Cursor;
+use std::path::Path;
+use tokio::fs::File;
+use tokio::task;
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
@@ -44,6 +44,14 @@ impl GenBankFileType {
 
     fn url(&self, base_url: &str, full_name: &str) -> String {
         format!("{}/{}{}", base_url, full_name, self.suffix())
+    }
+
+    fn moltype(&self) -> String {
+        match self {
+            GenBankFileType::Genomic => "DNA".to_string(),
+            GenBankFileType::Protein => "protein".to_string(),
+            _ => "".to_string(),
+        }
     }
 }
 
@@ -167,6 +175,12 @@ async fn sketch_data(
     })
 }
 
+struct FailedDownload {
+    accession: String,
+    url: String,
+    moltype: String,
+}
+
 async fn dl_sketch_accession(
     client: &Client,
     accession: String,
@@ -176,23 +190,37 @@ async fn dl_sketch_accession(
     keep_fastas: bool,
     dna_sigs: Vec<Signature>,
     prot_sigs: Vec<Signature>,
-) -> Result<Vec<Signature>> {
+) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
 
     let (base_url, full_name) = fetch_genbank_filename(client, accession.as_str()).await?;
 
     let mut sigs = Vec::<Signature>::new();
+    let mut failed = Vec::<FailedDownload>::new();
     // Combine all file types into a single vector
     let file_types = vec![
         GenBankFileType::Genomic,
-        // GenBankFileType::Protein,
+        GenBankFileType::Protein,
         // GenBankFileType::AssemblyReport,
         // GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
 
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
-        let data = download_with_retry(client, &url, retry_count).await?;
+        let data = match download_with_retry(client, &url, retry_count).await {
+            Ok(data) => data,
+            Err(err) => {
+                // here --> keep track of accession errors + filetype
+                eprintln!("Failed to download file: {}. Error: {}", url, err);
+                let failed_download = FailedDownload {
+                    accession: accession.clone(),
+                    url: url.clone(),
+                    moltype: file_type.moltype(),
+                };
+                failed.push(failed_download);
+                continue;
+            }
+        };
         let file_name = file_type.filename(&accession);
 
         if keep_fastas {
@@ -226,7 +254,7 @@ async fn dl_sketch_accession(
         }
     }
 
-    Ok(sigs)
+    Ok((sigs, failed))
 }
 
 #[tokio::main]
@@ -253,7 +281,7 @@ pub async fn download_and_sketch(
     }
 
     // Open the file containing the accessions synchronously
-    let (accession_info, _n_accs) = load_accession_info(input_csv)?;
+    let (accession_info, n_accs) = load_accession_info(input_csv)?;
 
     // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
@@ -269,8 +297,9 @@ pub async fn download_and_sketch(
 
     // Initialize the HTTP client
     let client = Client::new();
+    // init failed file
     let mut failed_writer = Writer::from_path(failed_csv)?;
-    failed_writer.write_record(&["accession", "url"])?;
+    failed_writer.write_record(&["accession", "moltype", "url"])?;
 
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
@@ -280,9 +309,23 @@ pub async fn download_and_sketch(
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
+    // report every percent (or ever 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+
     // Process each accession
-    for accinfo in &accession_info {
-        match dl_sketch_accession(
+    for (i, accinfo) in accession_info.iter().enumerate() {
+        // progress report at threshold
+        if (i + 1) % reporting_threshold == 0 {
+            let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+            eprintln!(
+                "Starting accession {}/{} ({}%)",
+                (i + 1),
+                n_accs,
+                percent_processed
+            );
+        }
+
+        let result = dl_sketch_accession(
             &client,
             accinfo.accession.clone(),
             accinfo.name.clone(),
@@ -292,52 +335,44 @@ pub async fn download_and_sketch(
             dna_sig_templates.clone(),
             prot_sig_templates.clone(),
         )
-        .await
-        {
-            Ok(mut processed_sigs) => {
-                for sig in &mut processed_sigs {
-                    let md5sum_str = sig.md5sum();
-                    let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
-                    *count += 1;
-                    let sig_filename = if *count > 1 {
-                        format!("signatures/{}_{}.sig.gz", md5sum_str, count)
-                    } else {
-                        format!("signatures/{}.sig.gz", md5sum_str)
-                    };
-                    let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
-                    manifest_rows.extend(records);
+        .await;
 
-                    let wrapped_sig = vec![sig];
-                    let json_bytes = serde_json::to_vec(&wrapped_sig)?;
+        if let Ok((mut processed_sigs, failed_downloads)) = result {
+            for sig in &mut processed_sigs {
+                let md5sum_str = sig.md5sum();
+                let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+                *count += 1;
+                let sig_filename = if *count > 1 {
+                    format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+                } else {
+                    format!("signatures/{}.sig.gz", md5sum_str)
+                };
+                let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
+                manifest_rows.extend(records);
 
-                    let gzipped_buffer = {
-                        let mut buffer = std::io::Cursor::new(Vec::new());
-                        {
-                            let mut gz_writer = niffler::get_writer(
-                                Box::new(&mut buffer),
-                                niffler::compression::Format::Gzip,
-                                niffler::compression::Level::Nine,
-                            )?;
-                            gz_writer.write_all(&json_bytes)?;
-                        }
-                        buffer.into_inner()
-                    };
-                    let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored); //need this clone?
-                    zipF.write_entry_whole(opts, &gzipped_buffer).await?;
-                }
-                println!("Successfully processed accession: {}", &accinfo.accession);
-                // need this?
-                processed_sigs.clear();
+                let wrapped_sig = vec![sig];
+                let json_bytes = serde_json::to_vec(&wrapped_sig)?;
+
+                let gzipped_buffer = {
+                    let mut buffer = std::io::Cursor::new(Vec::new());
+                    {
+                        let mut gz_writer = niffler::get_writer(
+                            Box::new(&mut buffer),
+                            niffler::compression::Format::Gzip,
+                            niffler::compression::Level::Nine,
+                        )?;
+                        gz_writer.write_all(&json_bytes)?;
+                    }
+                    buffer.into_inner()
+                };
+                let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored); //need this clone?
+                zipF.write_entry_whole(opts, &gzipped_buffer).await?;
             }
-            Err(e) => {
-                let err_message = e.to_string();
-                let parts: Vec<&str> = err_message.split("retries: ").collect();
-                let failed_url = parts.get(1).unwrap_or(&"Unknown URL").trim();
-                failed_writer.write_record(&[&accinfo.accession, &failed_url.to_string()])?;
-                eprintln!(
-                    "Failed to process accession: {}. Error: {}",
-                    &accinfo.accession, err_message
-                );
+            processed_sigs.clear(); // do we need this?
+
+            // now write failed_downloads to fail file
+            for dl in failed_downloads {
+                failed_writer.write_record(&[dl.accession, dl.moltype, dl.url])?;
             }
         }
     }
