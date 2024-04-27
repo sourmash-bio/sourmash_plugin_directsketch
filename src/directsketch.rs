@@ -185,7 +185,7 @@ async fn dl_sketch_accession(
     // Combine all file types into a single vector
     let file_types = vec![
         GenBankFileType::Genomic,
-        GenBankFileType::Protein,
+        // GenBankFileType::Protein,
         // GenBankFileType::AssemblyReport,
         // GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
@@ -326,6 +326,8 @@ pub async fn download_and_sketch(
                     zipF.write_entry_whole(opts, &gzipped_buffer).await?;
                 }
                 println!("Successfully processed accession: {}", &accinfo.accession);
+                // need this?
+                processed_sigs.clear();
             }
             Err(e) => {
                 let err_message = e.to_string();
