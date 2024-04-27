@@ -2,9 +2,16 @@
 
 ## Installation
 
+For now, git clone the repository and cd in.
 ```
-pip install sourmash_plugin_directsketch
+mamba env create -f environment.yml
+pip install -e .
 ```
+
+> When it's released, you'll be able to:
+> ```
+> pip install sourmash_plugin_directsketch
+> ```
 
 ## Usage
 First, create a file, e.g. `acc.csv` with GenBank identifiers and sketch names.
