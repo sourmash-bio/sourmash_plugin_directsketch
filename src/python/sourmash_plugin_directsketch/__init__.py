@@ -41,7 +41,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument('-o', '--output', required=True,
                        help='output zip file for the signatures')
         p.add_argument('-f', '--fastas',
-                       help='Write fastas here')
+                       help='Write fastas here', default = '.')
         p.add_argument('-k', '--keep-fastas', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
