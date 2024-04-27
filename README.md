@@ -23,8 +23,10 @@ GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 > Extra columns are ok, as long as the first two columns contain the identifier and sketch name
 
 Run:
+
+To run the test accession file at `tests/test-data/acc.csv`, run:
 ```
-sourmash scripts gbsketch acc.csv -o test.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
+sourmash scripts gbsketch tests/test-data/acc.csv -o test.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
 ```
 
 Full Usage:
