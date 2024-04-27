@@ -1,0 +1,13 @@
+name: directsketch
+channels:
+  - conda-forge
+  - bioconda
+  - defaults
+dependencies:
+  - sourmash>=4.8,<5
+  - pip
+  - rust
+  - maturin>=1,<2
+  - pytest
+  - pandas
+  - compilers
