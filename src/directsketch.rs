@@ -194,6 +194,7 @@ async fn dl_sketch_accession(
     prot_sigs: Vec<Signature>,
     genomes_only: bool,
     proteomes_only: bool,
+    download_only: bool,
 ) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let mut sigs = Vec::<Signature>::new();
@@ -259,30 +260,33 @@ async fn dl_sketch_accession(
             let path = location.join(&file_name);
             fs::write(&path, &data).context("Failed to write data to file")?;
         }
-        match file_type {
-            GenBankFileType::Genomic => sigs.extend(
-                sketch_data(
-                    name.as_str(),
-                    file_name.as_str(),
-                    data,
-                    dna_sigs.clone(),
-                    "dna",
-                )
-                .await?,
-            ),
-            GenBankFileType::Protein => {
-                sigs.extend(
+        if !download_only {
+            // sketch data
+            match file_type {
+                GenBankFileType::Genomic => sigs.extend(
                     sketch_data(
                         name.as_str(),
                         file_name.as_str(),
                         data,
-                        prot_sigs.clone(),
-                        "protein",
+                        dna_sigs.clone(),
+                        "dna",
                     )
                     .await?,
-                );
-            }
-            _ => {} // Do nothing for other file types
+                ),
+                GenBankFileType::Protein => {
+                    sigs.extend(
+                        sketch_data(
+                            name.as_str(),
+                            file_name.as_str(),
+                            data,
+                            prot_sigs.clone(),
+                            "protein",
+                        )
+                        .await?,
+                    );
+                }
+                _ => {} // Do nothing for other file types
+            };
         }
     }
 
@@ -345,6 +349,7 @@ pub async fn download_and_sketch(
     keep_fastas: bool,
     genomes_only: bool,
     proteomes_only: bool,
+    download_only: bool,
 ) -> Result<(), anyhow::Error> {
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
@@ -358,6 +363,13 @@ pub async fn download_and_sketch(
     {
         bail!("Output must be a zip file.");
     }
+    // start zip file; set up trackers
+    let outpath: PathBuf = output_sigs.into();
+    let mut file = File::create(outpath).await?;
+    let mut zipF = ZipFileWriter::new(&mut file);
+
+    let mut manifest_rows: Vec<Record> = Vec::new();
+    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
     // Open the file containing the accessions synchronously
     let (accession_info, n_accs) = load_accession_info(input_csv)?;
@@ -376,14 +388,6 @@ pub async fn download_and_sketch(
     };
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
-
-    // start zip file; set up trackers
-    let outpath: PathBuf = output_sigs.into();
-    let mut file = File::create(outpath).await?;
-    let mut zipF = ZipFileWriter::new(&mut file);
-
-    let mut manifest_rows: Vec<Record> = Vec::new();
-    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
     // failures
     let file = std::fs::File::create(failed_csv)?;
@@ -421,6 +425,7 @@ pub async fn download_and_sketch(
             prot_sig_templates.clone(),
             genomes_only,
             proteomes_only,
+            download_only,
         )
         .await;
 
@@ -443,7 +448,7 @@ pub async fn download_and_sketch(
         }
     }
     // if no signatures were written, bail so user knows something went wrong
-    if !wrote_sigs {
+    if !wrote_sigs && !download_only {
         bail!("No signatures written.")
     }
 

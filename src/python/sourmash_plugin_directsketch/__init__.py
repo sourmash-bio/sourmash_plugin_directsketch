@@ -1,5 +1,6 @@
 #! /usr/bin/env python
 import os
+import sys
 from sourmash.logging import notify
 from sourmash.plugins import CommandLinePlugin
 import importlib.metadata
@@ -44,6 +45,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='Write fastas here', default = '.')
         p.add_argument('-k', '--keep-fastas', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
+        p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
         p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
         p.add_argument('-p', '--param-string', action='append', type=str, default=[],
                           help='parameter string for sketching (default: k=31,scaled=1000)')
@@ -55,11 +57,17 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
         group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
 
+
     def main(self, args):
         print_version()
         if not args.param_string:
             args.param_string = ["k=31,scaled=1000"]
         notify(f"params: {args.param_string}")
+
+        if args.download_only and not args.keep_fastas:
+            notify("Error: '--download-only' requires '--keep-fastas'.")
+            sys.exit(-1)
+            
 
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
@@ -79,7 +87,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.fastas,
                                                            args.keep_fastas,
                                                            args.genomes_only,
-                                                           args.proteomes_only)
+                                                           args.proteomes_only,
+                                                           args.download_only)
         
         if status == 0:
             notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")

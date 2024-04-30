@@ -150,6 +150,31 @@ def test_gbsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+def test_gbsketch_download_only(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+
+    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output, '--download-only',
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output) # would be better if this didn't exist
+    assert not runtmp.last_result.out # stdout should be empty
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000175555.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+   
+
 def test_gbsketch_bad_acc(runtmp):
     acc_csv = get_test_data('acc.csv')
     acc_mod = runtmp.output('acc_mod.csv')

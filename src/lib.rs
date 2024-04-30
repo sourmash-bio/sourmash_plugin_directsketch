@@ -35,6 +35,7 @@ fn do_gbsketch(
     keep_fastas: bool,
     genomes_only: bool,
     proteomes_only: bool,
+    download_only: bool,
 ) -> anyhow::Result<u8> {
     // let runtime = tokio::runtime::Runtime::new().unwrap();
 
@@ -52,6 +53,7 @@ fn do_gbsketch(
         keep_fastas,
         genomes_only,
         proteomes_only,
+        download_only,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {
