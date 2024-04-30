@@ -12,8 +12,8 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::task;
 
-use tokio::sync::Semaphore;
-use tokio::time::{self, Duration};
+// use tokio::sync::Semaphore;
+// use tokio::time::{self, Duration};
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
@@ -178,6 +178,7 @@ async fn sketch_data(
 
 struct FailedDownload {
     accession: String,
+    name: String,
     url: String,
     moltype: String,
 }
@@ -207,6 +208,7 @@ async fn dl_sketch_accession(
             if !proteomes_only {
                 let failed_download_dna = FailedDownload {
                     accession: accession.clone(),
+                    name: name.clone(),
                     url: "".to_string(),
                     moltype: "dna".to_string(),
                 };
@@ -215,6 +217,7 @@ async fn dl_sketch_accession(
             if !genomes_only {
                 let failed_download_protein = FailedDownload {
                     accession: accession.clone(),
+                    name: name.clone(),
                     url: "".to_string(),
                     moltype: "protein".to_string(),
                 };
@@ -246,6 +249,7 @@ async fn dl_sketch_accession(
                 eprintln!("Failed to download file: {}. Error: {}", url, err);
                 let failed_download = FailedDownload {
                     accession: accession.clone(),
+                    name: name.clone(),
                     url: url.clone(),
                     moltype: file_type.moltype(),
                 };
@@ -391,7 +395,7 @@ pub async fn download_and_sketch(
     // failures
     let file = std::fs::File::create(failed_csv)?;
     let mut failed_writer = csv::Writer::from_writer(file);
-    failed_writer.write_record(&["accession", "moltype", "url"])?;
+    failed_writer.write_record(&["accession", "name", "moltype", "url"])?;
 
     // report every percent (or ever 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
@@ -405,7 +409,7 @@ pub async fn download_and_sketch(
         // progress report at threshold
         if (i + 1) % reporting_threshold == 0 {
             let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-            eprintln!(
+            println!(
                 "Starting accession {}/{} ({}%)",
                 (i + 1),
                 n_accs,
@@ -442,7 +446,7 @@ pub async fn download_and_sketch(
             }
             processed_sigs.clear(); // do we need this?
             for dl in failed_downloads {
-                failed_writer.write_record(&[dl.accession, dl.moltype, dl.url])?;
+                failed_writer.write_record(&[dl.accession, dl.name, dl.moltype, dl.url])?;
             }
         }
     }
