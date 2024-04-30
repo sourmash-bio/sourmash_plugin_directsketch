@@ -195,11 +195,30 @@ async fn dl_sketch_accession(
     prot_sigs: Vec<Signature>,
 ) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-
-    let (base_url, full_name) = fetch_genbank_filename(client, accession.as_str()).await?;
-
     let mut sigs = Vec::<Signature>::new();
     let mut failed = Vec::<FailedDownload>::new();
+
+    // keep track of any accessions for which we fail to find URLs
+    let (base_url, full_name) = match fetch_genbank_filename(client, accession.as_str()).await {
+        Ok(result) => result,
+        Err(err) => {
+            // Add accession to failed downloads with each moltype
+            let failed_download_dna = FailedDownload {
+                accession: accession.clone(),
+                url: "".to_string(),
+                moltype: "dna".to_string(),
+            };
+            let failed_download_protein = FailedDownload {
+                accession: accession.clone(),
+                url: "".to_string(),
+                moltype: "protein".to_string(),
+            };
+            failed.push(failed_download_dna);
+            failed.push(failed_download_protein);
+            return Ok((sigs, failed));
+        }
+    };
+
     // Combine all file types into a single vector
     let file_types = vec![
         GenBankFileType::Genomic,
@@ -344,8 +363,12 @@ pub async fn download_and_sketch(
         // Note, this may not be the best approach. If download is v short (< 1/3 of second),
         // this may result in more than 3 requests per second.
         let elapsed = last_request_time.elapsed();
+        // eprintln!("elapsed time: {:?}", elapsed);
         if elapsed < interval {
-            time::sleep(interval / requests_per_second.try_into().unwrap() - elapsed).await;
+            let sleep_duration = interval / requests_per_second.try_into().unwrap();
+            if sleep_duration > elapsed {
+                time::sleep(sleep_duration - elapsed).await;
+            }
         }
         last_request_time = Instant::now();
 
