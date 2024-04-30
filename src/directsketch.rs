@@ -348,6 +348,9 @@ pub async fn download_and_sketch(
 
     // Open the file containing the accessions synchronously
     let (accession_info, n_accs) = load_accession_info(input_csv)?;
+    if n_accs == 0 {
+        bail!("No accessions to download and sketch.")
+    }
 
     // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
@@ -378,8 +381,9 @@ pub async fn download_and_sketch(
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
     let client = Client::new();
-    let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
-    let mut interval = time::interval(Duration::from_secs(1));
+    let mut wrote_sigs = false;
+    // let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
+    // let mut interval = time::interval(Duration::from_secs(1));
 
     for (i, accinfo) in accession_info.iter().enumerate() {
         // progress report at threshold
@@ -407,6 +411,9 @@ pub async fn download_and_sketch(
 
         if let Ok((mut processed_sigs, failed_downloads)) = result {
             for sig in &mut processed_sigs {
+                if !wrote_sigs {
+                    wrote_sigs = true;
+                }
                 write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zipF)
                     .await
                     .map_err(|e| {
@@ -419,6 +426,10 @@ pub async fn download_and_sketch(
                 failed_writer.write_record(&[dl.accession, dl.moltype, dl.url])?;
             }
         }
+    }
+    // if no signatures were written, bail so user knows something went wrong
+    if !wrote_sigs {
+        bail!("No signatures written.")
     }
 
     // Finalize the ZIP file and manifest
