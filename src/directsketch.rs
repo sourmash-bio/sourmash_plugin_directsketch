@@ -124,7 +124,6 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
                 return Ok(data.to_vec()); // Return the downloaded data as Vec<u8>
             }
             _ => {
-                eprintln!("Failed to download file: {}. Retrying...", url);
                 attempts -= 1;
             }
         }
