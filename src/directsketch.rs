@@ -192,6 +192,8 @@ async fn dl_sketch_accession(
     keep_fastas: bool,
     dna_sigs: Vec<Signature>,
     prot_sigs: Vec<Signature>,
+    genomes_only: bool,
+    proteomes_only: bool,
 ) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let mut sigs = Vec::<Signature>::new();
@@ -202,29 +204,38 @@ async fn dl_sketch_accession(
         Ok(result) => result,
         Err(_err) => {
             // Add accession to failed downloads with each moltype
-            let failed_download_dna = FailedDownload {
-                accession: accession.clone(),
-                url: "".to_string(),
-                moltype: "dna".to_string(),
-            };
-            let failed_download_protein = FailedDownload {
-                accession: accession.clone(),
-                url: "".to_string(),
-                moltype: "protein".to_string(),
-            };
-            failed.push(failed_download_dna);
-            failed.push(failed_download_protein);
+            if !proteomes_only {
+                let failed_download_dna = FailedDownload {
+                    accession: accession.clone(),
+                    url: "".to_string(),
+                    moltype: "dna".to_string(),
+                };
+                failed.push(failed_download_dna);
+            }
+            if !genomes_only {
+                let failed_download_protein = FailedDownload {
+                    accession: accession.clone(),
+                    url: "".to_string(),
+                    moltype: "protein".to_string(),
+                };
+                failed.push(failed_download_protein);
+            }
+
             return Ok((sigs, failed));
         }
     };
 
-    // Combine all file types into a single vector
-    let file_types = vec![
+    let mut file_types = vec![
         GenBankFileType::Genomic,
         GenBankFileType::Protein,
         // GenBankFileType::AssemblyReport,
         // GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
+    if genomes_only {
+        file_types = vec![GenBankFileType::Genomic];
+    } else if proteomes_only {
+        file_types = vec![GenBankFileType::Protein];
+    }
 
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
@@ -332,6 +343,8 @@ pub async fn download_and_sketch(
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
+    genomes_only: bool,
+    proteomes_only: bool,
 ) -> Result<(), anyhow::Error> {
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
@@ -406,6 +419,8 @@ pub async fn download_and_sketch(
             keep_fastas,
             dna_sig_templates.clone(),
             prot_sig_templates.clone(),
+            genomes_only,
+            proteomes_only,
         )
         .await;
 

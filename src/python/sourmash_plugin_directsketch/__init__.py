@@ -51,6 +51,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
+        group = p.add_mutually_exclusive_group()
+        group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
+        group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
 
     def main(self, args):
         print_version()
@@ -74,7 +77,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.output,
                                                            args.retry_times,
                                                            args.fastas,
-                                                           args.keep_fastas)
+                                                           args.keep_fastas,
+                                                           args.genomes_only,
+                                                           args.proteomes_only)
         
         if status == 0:
             notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")
