@@ -2,7 +2,6 @@ use anyhow::{anyhow, bail, Context, Result};
 use async_zip::write::{EntryOptions, ZipFileWriter};
 use async_zip::Compression;
 use camino::Utf8PathBuf as PathBuf;
-use csv::Writer;
 use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
@@ -14,7 +13,7 @@ use tokio::fs::File;
 use tokio::task;
 
 use tokio::sync::Semaphore;
-use tokio::time::{self, Duration, Instant};
+use tokio::time::{self, Duration};
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
@@ -201,7 +200,7 @@ async fn dl_sketch_accession(
     // keep track of any accessions for which we fail to find URLs
     let (base_url, full_name) = match fetch_genbank_filename(client, accession.as_str()).await {
         Ok(result) => result,
-        Err(err) => {
+        Err(_err) => {
             // Add accession to failed downloads with each moltype
             let failed_download_dna = FailedDownload {
                 accession: accession.clone(),
@@ -279,6 +278,51 @@ async fn dl_sketch_accession(
     Ok((sigs, failed))
 }
 
+async fn write_sig(
+    sig: &Signature,
+    md5sum_occurrences: &mut HashMap<String, usize>,
+    manifest_rows: &mut Vec<Record>,
+    zipF: &mut ZipFileWriter<&mut File>,
+) -> Result<()> {
+    let md5sum_str = sig.md5sum();
+    let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+    *count += 1;
+
+    let sig_filename = if *count > 1 {
+        format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+    } else {
+        format!("signatures/{}.sig.gz", md5sum_str)
+    };
+
+    let records: Vec<Record> = Record::from_sig(sig, &sig_filename);
+    manifest_rows.extend(records);
+
+    let wrapped_sig = vec![sig.clone()];
+    let json_bytes = serde_json::to_vec(&wrapped_sig)
+        .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
+
+    let gzipped_buffer = {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut gz_writer = niffler::get_writer(
+                Box::new(&mut buffer),
+                niffler::compression::Format::Gzip,
+                niffler::compression::Level::Nine,
+            )?;
+            //     .map_err(|e| anyhow!("Error creating gzip writer: {}", e))?;
+            gz_writer.write_all(&json_bytes)?;
+            //         .map_err(|e| anyhow!("Error writing gzip data: {}", e))?;
+        }
+
+        buffer.into_inner()
+    };
+
+    let opts = EntryOptions::new(sig_filename, Compression::Stored);
+    zipF.write_entry_whole(opts, &gzipped_buffer)
+        .await
+        .map_err(|e| anyhow!("Error writing zip entry: {}", e))
+}
+
 #[tokio::main]
 pub async fn download_and_sketch(
     input_csv: String,
@@ -317,12 +361,6 @@ pub async fn download_and_sketch(
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
-    // Initialize the HTTP client
-    let client = Client::new();
-    // init failed file
-    let mut failed_writer = Writer::from_path(failed_csv)?;
-    failed_writer.write_record(&["accession", "moltype", "url"])?;
-
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
     let mut file = File::create(outpath).await?;
@@ -331,17 +369,18 @@ pub async fn download_and_sketch(
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
+    // failures
+    let file = std::fs::File::create(failed_csv)?;
+    let mut failed_writer = csv::Writer::from_writer(file);
+    failed_writer.write_record(&["accession", "moltype", "url"])?;
+
     // report every percent (or ever 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
-    // Define the rate limit parameters
-    let requests_per_second = 3;
-    let interval = Duration::from_secs(1);
-    let semaphore = Semaphore::new(requests_per_second);
+    let client = Client::new();
+    let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
+    let mut interval = time::interval(Duration::from_secs(1));
 
-    let mut last_request_time = Instant::now();
-
-    // Process each accession
     for (i, accinfo) in accession_info.iter().enumerate() {
         // progress report at threshold
         if (i + 1) % reporting_threshold == 0 {
@@ -353,25 +392,7 @@ pub async fn download_and_sketch(
                 percent_processed
             );
         }
-
-        let permit = semaphore
-            .acquire()
-            .await
-            .expect("Failed to acquire semaphore permit");
-
-        // do we need to sleep to respect API rate limit?
-        // Note, this may not be the best approach. If download is v short (< 1/3 of second),
-        // this may result in more than 3 requests per second.
-        let elapsed = last_request_time.elapsed();
-        // eprintln!("elapsed time: {:?}", elapsed);
-        if elapsed < interval {
-            let sleep_duration = interval / requests_per_second.try_into().unwrap();
-            if sleep_duration > elapsed {
-                time::sleep(sleep_duration - elapsed).await;
-            }
-        }
-        last_request_time = Instant::now();
-
+        // Process each accession
         let result = dl_sketch_accession(
             &client,
             accinfo.accession.clone(),
@@ -384,49 +405,23 @@ pub async fn download_and_sketch(
         )
         .await;
 
-        // Release the semaphore permit
-        drop(permit);
-
         if let Ok((mut processed_sigs, failed_downloads)) = result {
             for sig in &mut processed_sigs {
-                let md5sum_str = sig.md5sum();
-                let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
-                *count += 1;
-                let sig_filename = if *count > 1 {
-                    format!("signatures/{}_{}.sig.gz", md5sum_str, count)
-                } else {
-                    format!("signatures/{}.sig.gz", md5sum_str)
-                };
-                let records: Vec<Record> = Record::from_sig(sig, sig_filename.as_str());
-                manifest_rows.extend(records);
-
-                let wrapped_sig = vec![sig];
-                let json_bytes = serde_json::to_vec(&wrapped_sig)?;
-
-                let gzipped_buffer = {
-                    let mut buffer = std::io::Cursor::new(Vec::new());
-                    {
-                        let mut gz_writer = niffler::get_writer(
-                            Box::new(&mut buffer),
-                            niffler::compression::Format::Gzip,
-                            niffler::compression::Level::Nine,
-                        )?;
-                        gz_writer.write_all(&json_bytes)?;
-                    }
-                    buffer.into_inner()
-                };
-                let opts = EntryOptions::new(sig_filename.clone(), Compression::Stored); //need this clone?
-                zipF.write_entry_whole(opts, &gzipped_buffer).await?;
+                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zipF)
+                    .await
+                    .map_err(|e| {
+                        eprintln!("Error processing signature: {}", e);
+                        e
+                    })?;
             }
             processed_sigs.clear(); // do we need this?
-
-            // now write failed_downloads to fail file
             for dl in failed_downloads {
                 failed_writer.write_record(&[dl.accession, dl.moltype, dl.url])?;
             }
         }
     }
 
+    // Finalize the ZIP file and manifest
     // write the manifest
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
     let manifest: Manifest = manifest_rows.clone().into();
@@ -440,6 +435,5 @@ pub async fn download_and_sketch(
     zipF.write_entry_whole(opts, &manifest_buffer).await?;
     // close zipfile
     zipF.close().await?;
-
     Ok(())
 }
