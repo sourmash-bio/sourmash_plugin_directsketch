@@ -13,6 +13,9 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::task;
 
+use tokio::sync::Semaphore;
+use tokio::time::{self, Duration, Instant};
+
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
@@ -312,6 +315,13 @@ pub async fn download_and_sketch(
     // report every percent (or ever 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
+    // Define the rate limit parameters
+    let requests_per_second = 3;
+    let interval = Duration::from_secs(1);
+    let semaphore = Semaphore::new(requests_per_second);
+
+    let mut last_request_time = Instant::now();
+
     // Process each accession
     for (i, accinfo) in accession_info.iter().enumerate() {
         // progress report at threshold
@@ -325,6 +335,20 @@ pub async fn download_and_sketch(
             );
         }
 
+        let permit = semaphore
+            .acquire()
+            .await
+            .expect("Failed to acquire semaphore permit");
+
+        // do we need to sleep to respect API rate limit?
+        // Note, this may not be the best approach. If download is v short (< 1/3 of second),
+        // this may result in more than 3 requests per second.
+        let elapsed = last_request_time.elapsed();
+        if elapsed < interval {
+            time::sleep(interval / requests_per_second.try_into().unwrap() - elapsed).await;
+        }
+        last_request_time = Instant::now();
+
         let result = dl_sketch_accession(
             &client,
             accinfo.accession.clone(),
@@ -336,6 +360,9 @@ pub async fn download_and_sketch(
             prot_sig_templates.clone(),
         )
         .await;
+
+        // Release the semaphore permit
+        drop(permit);
 
         if let Ok((mut processed_sigs, failed_downloads)) = result {
             for sig in &mut processed_sigs {
