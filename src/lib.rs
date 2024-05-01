@@ -37,11 +37,6 @@ fn do_gbsketch(
     proteomes_only: bool,
     download_only: bool,
 ) -> anyhow::Result<u8> {
-    // let runtime = tokio::runtime::Runtime::new().unwrap();
-
-    // runtime.block_on(async {
-    //     download::download_accessions(input_csv, failed_csv, retry_times, fasta_location).await
-    // }).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("Failed to process downloads: {}", e)))
 
     match directsketch::download_and_sketch(
         input_csv,
