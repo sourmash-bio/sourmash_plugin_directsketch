@@ -238,7 +238,7 @@ def test_gbsketch_bad_acc(runtmp):
     
 
 def test_gbsketch_missing_accfile(runtmp, capfd):
-    acc_csv = get_test_data('acc1.csv')
+    acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
@@ -249,7 +249,7 @@ def test_gbsketch_missing_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert "Error: No accessions to download and sketch." in captured.err
+    assert "Error: No such file or directory" in captured.err
 
 def test_gbsketch_empty_accfile(runtmp, capfd):
     acc_csv = get_test_data('acc1.csv')
