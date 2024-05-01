@@ -248,7 +248,6 @@ async fn dl_sketch_accession(
             Ok(data) => data,
             Err(err) => {
                 // here --> keep track of accession errors + filetype
-                eprintln!("Failed to download file: {}. Error: {}", url, err);
                 let failed_download = FailedDownload {
                     accession: accession.clone(),
                     name: name.clone(),
