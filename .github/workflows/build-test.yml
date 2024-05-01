@@ -2,7 +2,7 @@ name: "maturin build"
 on:
   pull_request:
   push:
-    branches: [latest]
+    branches: [main]
 jobs:
   mamba:
     runs-on: ubuntu-latest
