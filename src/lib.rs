@@ -26,6 +26,7 @@ fn set_global_thread_pool(num_threads: usize) -> PyResult<usize> {
 
 #[pyfunction]
 fn do_gbsketch(
+    py: Python,
     input_csv: String,
     param_str: String,
     failed_csv: String,
@@ -37,8 +38,8 @@ fn do_gbsketch(
     proteomes_only: bool,
     download_only: bool,
 ) -> anyhow::Result<u8> {
-
     match directsketch::download_and_sketch(
+        py,
         input_csv,
         output_sigs,
         param_str,
@@ -59,7 +60,7 @@ fn do_gbsketch(
 }
 
 #[pymodule]
-fn sourmash_plugin_directsketch(m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn sourmash_plugin_directsketch(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(do_gbsketch, m)?)?;
     m.add_function(wrap_pyfunction!(set_global_thread_pool, m)?)?;
     Ok(())

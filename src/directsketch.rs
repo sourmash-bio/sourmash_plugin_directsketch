@@ -12,6 +12,8 @@ use std::path::Path;
 use tokio::fs::File;
 use tokio::task;
 
+use pyo3::prelude::*;
+
 // use tokio::sync::Semaphore;
 // use tokio::time::{self, Duration};
 
@@ -343,6 +345,7 @@ async fn write_sig(
 
 #[tokio::main]
 pub async fn download_and_sketch(
+    py: Python,
     input_csv: String,
     output_sigs: String,
     param_str: String,
@@ -416,6 +419,12 @@ pub async fn download_and_sketch(
                 percent_processed
             );
         }
+
+        if i % 100 == 0 {
+            // Check for interrupt periodically
+            py.check_signals()?; // If interrupted, return an Err automatically
+        }
+
         // Process each accession
         let result = dl_sketch_accession(
             &client,
