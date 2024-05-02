@@ -185,6 +185,7 @@ struct FailedDownload {
     moltype: String,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn dl_sketch_accession(
     client: &Client,
     accession: String,
@@ -233,8 +234,8 @@ async fn dl_sketch_accession(
     let mut file_types = vec![
         GenBankFileType::Genomic,
         GenBankFileType::Protein,
-        // GenBankFileType::AssemblyReport,
-        // GenBankFileType::Checksum, // Including standalone files like checksums here
+        GenBankFileType::AssemblyReport,
+        GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
     if genomes_only {
         file_types = vec![GenBankFileType::Genomic];
@@ -246,7 +247,7 @@ async fn dl_sketch_accession(
         let url = file_type.url(&base_url, &full_name);
         let data = match download_with_retry(client, &url, retry_count).await {
             Ok(data) => data,
-            Err(err) => {
+            Err(_err) => {
                 // here --> keep track of accession errors + filetype
                 let failed_download = FailedDownload {
                     accession: accession.clone(),
@@ -301,7 +302,7 @@ async fn write_sig(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
-    zipF: &mut ZipFileWriter<&mut File>,
+    zip_f: &mut ZipFileWriter<&mut File>,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
@@ -337,12 +338,14 @@ async fn write_sig(
     };
 
     let opts = EntryOptions::new(sig_filename, Compression::Stored);
-    zipF.write_entry_whole(opts, &gzipped_buffer)
+    zip_f
+        .write_entry_whole(opts, &gzipped_buffer)
         .await
         .map_err(|e| anyhow!("Error writing zip entry: {}", e))
 }
 
 #[tokio::main]
+#[allow(clippy::too_many_arguments)]
 pub async fn download_and_sketch(
     py: Python,
     input_csv: String,
@@ -371,7 +374,7 @@ pub async fn download_and_sketch(
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
     let mut file = File::create(outpath).await?;
-    let mut zipF = ZipFileWriter::new(&mut file);
+    let mut zip_f = ZipFileWriter::new(&mut file);
 
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
@@ -397,7 +400,7 @@ pub async fn download_and_sketch(
     // failures
     let file = std::fs::File::create(failed_csv)?;
     let mut failed_writer = csv::Writer::from_writer(file);
-    failed_writer.write_record(&["accession", "name", "moltype", "url"])?;
+    failed_writer.write_record(["accession", "name", "moltype", "url"])?;
 
     // report every percent (or ever 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
@@ -445,7 +448,7 @@ pub async fn download_and_sketch(
                 if !wrote_sigs {
                     wrote_sigs = true;
                 }
-                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zipF)
+                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zip_f)
                     .await
                     .map_err(|e| {
                         eprintln!("Error processing signature: {}", e);
@@ -474,8 +477,8 @@ pub async fn download_and_sketch(
 
     // write manifest to zipfile
     let opts = EntryOptions::new(manifest_filename, Compression::Stored);
-    zipF.write_entry_whole(opts, &manifest_buffer).await?;
+    zip_f.write_entry_whole(opts, &manifest_buffer).await?;
     // close zipfile
-    zipF.close().await?;
+    zip_f.close().await?;
     Ok(())
 }

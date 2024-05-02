@@ -25,6 +25,7 @@ fn set_global_thread_pool(num_threads: usize) -> PyResult<usize> {
 }
 
 #[pyfunction]
+#[allow(clippy::too_many_arguments)]
 fn do_gbsketch(
     py: Python,
     input_csv: String,
@@ -60,7 +61,7 @@ fn do_gbsketch(
 }
 
 #[pymodule]
-fn sourmash_plugin_directsketch(py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
+fn sourmash_plugin_directsketch(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(do_gbsketch, m)?)?;
     m.add_function(wrap_pyfunction!(set_global_thread_pool, m)?)?;
     Ok(())
