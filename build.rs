@@ -1,4 +1,3 @@
-
 use pyo3_build_config;
 
 fn main() {
