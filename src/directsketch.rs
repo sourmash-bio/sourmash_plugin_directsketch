@@ -234,8 +234,8 @@ async fn dl_sketch_accession(
     let mut file_types = vec![
         GenBankFileType::Genomic,
         GenBankFileType::Protein,
-        GenBankFileType::AssemblyReport,
-        GenBankFileType::Checksum, // Including standalone files like checksums here
+        // GenBankFileType::AssemblyReport,
+        // GenBankFileType::Checksum, // Including standalone files like checksums here
     ];
     if genomes_only {
         file_types = vec![GenBankFileType::Genomic];
