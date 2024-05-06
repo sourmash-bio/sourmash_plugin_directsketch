@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Result};
-use async_zip::write::{EntryOptions, ZipFileWriter};
+use async_zip::base::write::ZipFileWriter;
+use async_zip::ZipEntryBuilder; 
 use async_zip::Compression;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parse_fastx_reader;
@@ -302,7 +303,8 @@ async fn write_sig(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
-    zip_f: &mut ZipFileWriter<&mut File>,
+    // zip_writer: &mut ZipFileWriter<&mut File>,
+    zip_writer: &mut ZipFileWriter<tokio_util::compat::Compat<&mut tokio::fs::File>>,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
@@ -337,11 +339,14 @@ async fn write_sig(
         buffer.into_inner()
     };
 
-    let opts = EntryOptions::new(sig_filename, Compression::Stored);
-    zip_f
-        .write_entry_whole(opts, &gzipped_buffer)
-        .await
-        .map_err(|e| anyhow!("Error writing zip entry: {}", e))
+    // let opts = EntryOptions::new(sig_filename, Compression::Stored);
+    // zip_f
+    //     .write_entry_whole(opts, &gzipped_buffer)
+    //     .await
+    //     .map_err(|e| anyhow!("Error writing zip entry: {}", e))
+    let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored);
+    zip_writer.write_entry_whole(builder, &gzipped_buffer).await.map_err(|e| anyhow!("Error writing zip entry: {}", e))
+
 }
 
 #[tokio::main]
@@ -373,8 +378,8 @@ pub async fn download_and_sketch(
     }
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
-    let mut file = File::create(outpath).await?;
-    let mut zip_f = ZipFileWriter::new(&mut file);
+    let mut file = tokio::fs::File::create(outpath).await?;
+    let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
 
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
@@ -448,7 +453,7 @@ pub async fn download_and_sketch(
                 if !wrote_sigs {
                     wrote_sigs = true;
                 }
-                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zip_f)
+                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zip_writer)
                     .await
                     .map_err(|e| {
                         eprintln!("Error processing signature: {}", e);
@@ -476,9 +481,11 @@ pub async fn download_and_sketch(
     manifest.to_writer(&mut manifest_buffer)?;
 
     // write manifest to zipfile
-    let opts = EntryOptions::new(manifest_filename, Compression::Stored);
-    zip_f.write_entry_whole(opts, &manifest_buffer).await?;
+    // let opts = EntryOptions::new(manifest_filename, Compression::Stored);
+    // zip_f.write_entry_whole(opts, &manifest_buffer).await?;
+    let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored);
+    zip_writer.write_entry_whole(builder, &manifest_buffer).await?;
     // close zipfile
-    zip_f.close().await?;
+    zip_writer.close().await?;
     Ok(())
 }
