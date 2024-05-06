@@ -408,7 +408,7 @@ pub async fn download_and_sketch(
     failed_writer.write_record(["accession", "name", "moltype", "url"])?;
 
     // report every percent (or ever 1, whichever is larger)
-    let _reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
     let mut wrote_sigs = false;
     let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
@@ -421,10 +421,13 @@ pub async fn download_and_sketch(
     let mut accessions = accession_info.into_iter().peekable();
 
     let mut futures = Vec::new();
+    let mut dispatched_count = 0;
+    dispatched_count += 1;
 
     while accessions.peek().is_some() {
         // Wait for the next interval to allow starting new tasks
         interval.tick().await;
+        py.check_signals()?; // If interrupted, return an Err automatically
 
         // Start up to 3 tasks at once per second
         for _ in 0..3 {
@@ -457,6 +460,14 @@ pub async fn download_and_sketch(
                     .await
                 });
                 futures.push(fut);
+                if dispatched_count % reporting_threshold == 0 {
+                    let percent_processed =
+                        ((dispatched_count as f64 / n_accs as f64) * 100.0).round();
+                    println!(
+                        "Starting accession {}/{} ({}%)",
+                        dispatched_count, n_accs, percent_processed
+                    );
+                }
             } else {
                 break; // If no more accessions, break out of the loop
             }
@@ -555,20 +566,3 @@ pub async fn download_and_sketch(
     }
     Ok(())
 }
-
-// for (i, accinfo) in accession_info.iter().enumerate() {
-//     // progress report at threshold
-//     if (i + 1) % reporting_threshold == 0 {
-//         let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-//         println!(
-//             "Starting accession {}/{} ({}%)",
-//             (i + 1),
-//             n_accs,
-//             percent_processed
-//         );
-//     }
-
-//     if i % 100 == 0 {
-//         // Check for interrupt periodically
-//         py.check_signals()?; // If interrupted, return an Err automatically
-//     }
