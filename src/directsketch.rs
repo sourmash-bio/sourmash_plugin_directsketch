@@ -15,8 +15,8 @@ use zip::ZipWriter;
 
 use pyo3::prelude::*;
 
-// use tokio::sync::Semaphore;
-// use tokio::time::{self, Duration};
+use tokio::sync::Semaphore;
+use tokio::time::{interval, Duration};
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
@@ -411,42 +411,104 @@ pub async fn download_and_sketch(
     let _reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
     let mut wrote_sigs = false;
-    // let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
-    // let mut interval = time::interval(Duration::from_secs(1));
+    let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
+                                                 // Interval ticker set to tick every second
+    let mut interval = interval(Duration::from_secs(1));
 
     let mut batch_sigs = Vec::new();
-    for chunk in accession_info.chunks(batch_size) {
-        let mut futures = Vec::new();
 
-        for accinfo in chunk {
-            let client = client.clone();
-            let download_path = arc_download_path.clone();
-            let dna_sigs = dna_sig_templates.clone();
-            let prot_sigs = prot_sig_templates.clone();
-            let accinfo = accinfo.clone();
-            futures.push(tokio::spawn(async move {
-                dl_sketch_accession(
-                    &client,
-                    accinfo.accession,
-                    accinfo.name,
-                    &download_path,
-                    Some(retry_times),
-                    keep_fastas,
-                    dna_sigs,
-                    prot_sigs,
-                    genomes_only,
-                    proteomes_only,
-                    download_only,
-                )
-                .await
-            }));
+    // let mut accessions = accession_info.into_iter();
+    let mut accessions = accession_info.into_iter().peekable();
+
+    let mut futures = Vec::new();
+
+    while accessions.peek().is_some() {
+        // Wait for the next interval to allow starting new tasks
+        interval.tick().await;
+
+        // Start up to 3 tasks at once per second
+        for _ in 0..3 {
+            if let Some(accinfo) = accessions.next() {
+                let semaphore = Arc::clone(&semaphore);
+                let client = Arc::clone(&client);
+                let download_path = Arc::clone(&arc_download_path);
+
+                let dna_sigs = dna_sig_templates.clone();
+                let prot_sigs = prot_sig_templates.clone();
+
+                let fut = tokio::spawn(async move {
+                    let _permit = semaphore
+                        .acquire()
+                        .await
+                        .expect("Failed to acquire semaphore permit");
+                    dl_sketch_accession(
+                        &client,
+                        accinfo.accession,
+                        accinfo.name,
+                        &download_path,
+                        Some(retry_times),
+                        keep_fastas,
+                        dna_sigs,
+                        prot_sigs,
+                        genomes_only,
+                        proteomes_only,
+                        download_only,
+                    )
+                    .await
+                });
+                futures.push(fut);
+            } else {
+                break; // If no more accessions, break out of the loop
+            }
         }
-        let results = futures::future::join_all(futures).await;
 
-        // collect all sigs from the batch
-        for result in results {
+        // Check if enough tasks have been collected for a batch
+        if futures.len() >= batch_size {
+            let results = futures::future::join_all(futures.drain(..batch_size)).await;
+            for result in results {
+                match result.expect("Task panicked") {
+                    Ok((processed_sigs, failed_downloads)) => {
+                        // collect all sigs from the batch
+                        batch_sigs.extend(processed_sigs);
+
+                        for dl in failed_downloads {
+                            failed_writer.write_record(&[
+                                dl.accession,
+                                dl.name,
+                                dl.moltype,
+                                dl.url,
+                            ])?;
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+            // Now write batched sketches to the ZIP file synchronously
+            for sig in batch_sigs.drain(..) {
+                if !wrote_sigs {
+                    wrote_sigs = true;
+                }
+                write_sig(
+                    &sig,
+                    &mut md5sum_occurrences,
+                    &mut manifest_rows,
+                    &mut zip_f,
+                    options,
+                )
+                .map_err(|e| {
+                    eprintln!("Error processing signature: {}", e);
+                    e
+                })?;
+            }
+        }
+    }
+    // Ensure all remaining futures are completed
+    if !futures.is_empty() {
+        let remaining_results = futures::future::join_all(futures).await;
+        for result in remaining_results {
             match result.expect("Task panicked") {
                 Ok((processed_sigs, failed_downloads)) => {
+                    // collect all sigs from the batch
                     batch_sigs.extend(processed_sigs);
 
                     for dl in failed_downloads {
