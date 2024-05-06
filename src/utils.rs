@@ -4,11 +4,12 @@ use sourmash::signature::Signature;
 use std::hash::Hash;
 use std::hash::Hasher;
 
+#[derive(Clone)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
-    // pub moltype: String,
     // pub url: Some(Vec<PathBuf>),
+    // pub moltype: String,
 }
 
 pub fn load_accession_info(

@@ -56,6 +56,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         group = p.add_mutually_exclusive_group()
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
         group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
+        group.add_argument('-b', '--batch-size',type=int, default=500, help='batch size (number of accessions to download and sketch prior to writing)')
 
 
     def main(self, args):
@@ -88,7 +89,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.keep_fastas,
                                                            args.genomes_only,
                                                            args.proteomes_only,
-                                                           args.download_only)
+                                                           args.download_only,
+                                                           args.batch_size)
         
         if status == 0:
             notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")

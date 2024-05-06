@@ -1,16 +1,17 @@
 use anyhow::{anyhow, bail, Context, Result};
-use async_zip::write::{EntryOptions, ZipFileWriter};
-use async_zip::Compression;
 use camino::Utf8PathBuf as PathBuf;
+use futures;
 use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::io::Cursor;
+use std::io::Write;
 use std::path::Path;
-use tokio::fs::File;
+use std::sync::Arc;
 use tokio::task;
+use zip::ZipWriter;
 
 use pyo3::prelude::*;
 
@@ -298,11 +299,12 @@ async fn dl_sketch_accession(
     Ok((sigs, failed))
 }
 
-async fn write_sig(
+fn write_sig(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
-    zip_f: &mut ZipFileWriter<&mut File>,
+    zip_f: &mut ZipWriter<std::fs::File>,
+    zip_options: zip::write::FileOptions,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
@@ -337,11 +339,9 @@ async fn write_sig(
         buffer.into_inner()
     };
 
-    let opts = EntryOptions::new(sig_filename, Compression::Stored);
-    zip_f
-        .write_entry_whole(opts, &gzipped_buffer)
-        .await
-        .map_err(|e| anyhow!("Error writing zip entry: {}", e))
+    zip_f.start_file(sig_filename, zip_options)?;
+    zip_f.write_all(&gzipped_buffer)?;
+    Ok(())
 }
 
 #[tokio::main]
@@ -358,11 +358,13 @@ pub async fn download_and_sketch(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
+    batch_size: usize,
 ) -> Result<(), anyhow::Error> {
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
+    let arc_download_path = Arc::new(download_path);
 
     // if sig output doesn't end in zip, bail
     if Path::new(&output_sigs)
@@ -373,8 +375,11 @@ pub async fn download_and_sketch(
     }
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
-    let mut file = File::create(outpath).await?;
-    let mut zip_f = ZipFileWriter::new(&mut file);
+    let mut zip_f = ZipWriter::new(std::fs::File::create(&outpath)?);
+    // zip options
+    let options = zip::write::FileOptions::default()
+        .compression_method(zip::CompressionMethod::Stored)
+        .large_file(true);
 
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
@@ -384,7 +389,6 @@ pub async fn download_and_sketch(
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
-
     // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
     let params_vec = match param_result {
@@ -396,6 +400,7 @@ pub async fn download_and_sketch(
     };
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
+    let client = Arc::new(Client::new());
 
     // failures
     let file = std::fs::File::create(failed_csv)?;
@@ -403,82 +408,105 @@ pub async fn download_and_sketch(
     failed_writer.write_record(["accession", "name", "moltype", "url"])?;
 
     // report every percent (or ever 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    let _reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
-    let client = Client::new();
     let mut wrote_sigs = false;
     // let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
     // let mut interval = time::interval(Duration::from_secs(1));
 
-    for (i, accinfo) in accession_info.iter().enumerate() {
-        // progress report at threshold
-        if (i + 1) % reporting_threshold == 0 {
-            let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-            println!(
-                "Starting accession {}/{} ({}%)",
-                (i + 1),
-                n_accs,
-                percent_processed
-            );
+    let mut batch_sigs = Vec::new();
+    for chunk in accession_info.chunks(batch_size) {
+        let mut futures = Vec::new();
+
+        for accinfo in chunk {
+            let client = client.clone();
+            let download_path = arc_download_path.clone();
+            let dna_sigs = dna_sig_templates.clone();
+            let prot_sigs = prot_sig_templates.clone();
+            let accinfo = accinfo.clone();
+            futures.push(tokio::spawn(async move {
+                dl_sketch_accession(
+                    &client,
+                    accinfo.accession,
+                    accinfo.name,
+                    &download_path,
+                    Some(retry_times),
+                    keep_fastas,
+                    dna_sigs,
+                    prot_sigs,
+                    genomes_only,
+                    proteomes_only,
+                    download_only,
+                )
+                .await
+            }));
         }
+        let results = futures::future::join_all(futures).await;
 
-        if i % 100 == 0 {
-            // Check for interrupt periodically
-            py.check_signals()?; // If interrupted, return an Err automatically
-        }
+        // collect all sigs from the batch
+        for result in results {
+            match result.expect("Task panicked") {
+                Ok((processed_sigs, failed_downloads)) => {
+                    batch_sigs.extend(processed_sigs);
 
-        // Process each accession
-        let result = dl_sketch_accession(
-            &client,
-            accinfo.accession.clone(),
-            accinfo.name.clone(),
-            &download_path,
-            Some(retry_times),
-            keep_fastas,
-            dna_sig_templates.clone(),
-            prot_sig_templates.clone(),
-            genomes_only,
-            proteomes_only,
-            download_only,
-        )
-        .await;
-
-        if let Ok((mut processed_sigs, failed_downloads)) = result {
-            for sig in &mut processed_sigs {
-                if !wrote_sigs {
-                    wrote_sigs = true;
+                    for dl in failed_downloads {
+                        failed_writer.write_record(&[dl.accession, dl.name, dl.moltype, dl.url])?;
+                    }
                 }
-                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zip_f)
-                    .await
-                    .map_err(|e| {
-                        eprintln!("Error processing signature: {}", e);
-                        e
-                    })?;
+                Err(_) => {}
             }
-            processed_sigs.clear(); // do we need this?
-            for dl in failed_downloads {
-                failed_writer.write_record(&[dl.accession, dl.name, dl.moltype, dl.url])?;
+        }
+
+        // Now write batched sketches to the ZIP file synchronously
+        for sig in batch_sigs.drain(..) {
+            if !wrote_sigs {
+                wrote_sigs = true;
             }
+            write_sig(
+                &sig,
+                &mut md5sum_occurrences,
+                &mut manifest_rows,
+                &mut zip_f,
+                options,
+            )
+            .map_err(|e| {
+                eprintln!("Error processing signature: {}", e);
+                e
+            })?;
         }
     }
+
     // if no signatures were written, bail so user knows something went wrong
     if !wrote_sigs && !download_only {
         bail!("No signatures written.")
     }
 
-    // Finalize the ZIP file and manifest
-    // write the manifest
+    // write manifest and close zip file
+    println!("Writing manifest");
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
     let manifest: Manifest = manifest_rows.clone().into();
-    // Create a temporary buffer to hold the manifest data
-    let mut manifest_buffer = Vec::new();
-    // Use manifest.to_writer to write the manifest to the buffer
-    manifest.to_writer(&mut manifest_buffer)?;
+    zip_f.start_file(manifest_filename, options).unwrap();
+    manifest.to_writer(&mut zip_f)?;
 
-    // write manifest to zipfile
-    let opts = EntryOptions::new(manifest_filename, Compression::Stored);
-    zip_f.write_entry_whole(opts, &manifest_buffer).await?;
-    // close zipfile
-    zip_f.close().await?;
+    if let Err(e) = zip_f.finish() {
+        eprintln!("Error finalizing ZIP file: {:?}", e);
+    }
     Ok(())
 }
+
+// for (i, accinfo) in accession_info.iter().enumerate() {
+//     // progress report at threshold
+//     if (i + 1) % reporting_threshold == 0 {
+//         let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+//         println!(
+//             "Starting accession {}/{} ({}%)",
+//             (i + 1),
+//             n_accs,
+//             percent_processed
+//         );
+//     }
+
+//     if i % 100 == 0 {
+//         // Check for interrupt periodically
+//         py.check_signals()?; // If interrupted, return an Err automatically
+//     }

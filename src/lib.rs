@@ -38,6 +38,7 @@ fn do_gbsketch(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
+    batch_size: usize,
 ) -> anyhow::Result<u8> {
     match directsketch::download_and_sketch(
         py,
@@ -51,6 +52,7 @@ fn do_gbsketch(
         genomes_only,
         proteomes_only,
         download_only,
+        batch_size,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {
