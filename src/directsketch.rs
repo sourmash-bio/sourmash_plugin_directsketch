@@ -421,8 +421,7 @@ pub async fn download_and_sketch(
     let mut accessions = accession_info.into_iter().peekable();
 
     let mut futures = Vec::new();
-    let mut dispatched_count = 0;
-    dispatched_count += 1;
+    let mut n_processed = 0;
 
     while accessions.peek().is_some() {
         // Wait for the next interval to allow starting new tasks
@@ -460,14 +459,6 @@ pub async fn download_and_sketch(
                     .await
                 });
                 futures.push(fut);
-                if dispatched_count % reporting_threshold == 0 {
-                    let percent_processed =
-                        ((dispatched_count as f64 / n_accs as f64) * 100.0).round();
-                    println!(
-                        "Starting accession {}/{} ({}%)",
-                        dispatched_count, n_accs, percent_processed
-                    );
-                }
             } else {
                 break; // If no more accessions, break out of the loop
             }
@@ -475,9 +466,16 @@ pub async fn download_and_sketch(
 
         // Check if enough tasks have been collected for a batch
         if futures.len() >= batch_size {
+            // report n_processed
+            n_processed += futures.len();
+            let percent_processed = ((n_processed as f64 / n_accs as f64) * 100.0).round();
+            println!(
+                "Sketched accession {}/{} ({}%)",
+                n_processed, n_accs, percent_processed
+            );
             let results = futures::future::join_all(futures.drain(..batch_size)).await;
             for result in results {
-                match result.expect("Task panicked") {
+                match result.expect("download panicked") {
                     Ok((processed_sigs, failed_downloads)) => {
                         // collect all sigs from the batch
                         batch_sigs.extend(processed_sigs);
