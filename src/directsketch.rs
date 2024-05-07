@@ -3,24 +3,26 @@ use async_zip::base::write::ZipFileWriter;
 use async_zip::Compression;
 use async_zip::{ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf as PathBuf;
-use chrono::{DateTime, Utc};
+use chrono::Utc;
 use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::io::Cursor;
+use std::os::unix::process;
 use std::path::Path;
 use tokio::fs::File;
 use tokio::task;
+use tokio_util::compat::Compat;
 
 use pyo3::prelude::*;
 
 use std::sync::Arc;
 use tokio::sync::Mutex;
 
-// use tokio::sync::Semaphore;
-// use tokio::time::{self, Duration};
+use tokio::sync::Semaphore;
+use tokio::time::{interval, Duration};
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
@@ -82,14 +84,21 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
         "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
         db, number_path
     );
+    eprintln!("base url for accession {}", base_url);
     let directory_response = client.get(&base_url).send().await?;
     if !directory_response.status().is_success() {
+        eprintln!(
+            "Failed to open genome directory: HTTP {}",
+            directory_response.status()
+        );
         return Err(anyhow!(
             "Failed to open genome directory: HTTP {}",
             directory_response.status()
         ));
     }
+    eprintln!("getting response text for accession {}", base_url);
     let text = directory_response.text().await?;
+    eprintln!("got response text for accession {}", base_url);
     let link_regex = Regex::new(r#"<a href="([^"]*)""#)?;
 
     for cap in link_regex.captures_iter(&text) {
@@ -107,10 +116,12 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
                 .map_or(false, |x| x.starts_with(number))
         {
             // Formulate the correct URL by ensuring no double slashes
+            eprintln!("base url: {}, clean_name: {}", base_url, clean_name);
             return Ok((format!("{}/{}", base_url, clean_name), clean_name.into()));
         }
     }
 
+    eprintln!("No matching genome found for accession {}", accession);
     Err(anyhow!(
         "No matching genome found for accession {}",
         accession
@@ -212,6 +223,7 @@ async fn dl_sketch_accession(
     let (base_url, full_name) = match fetch_genbank_filename(client, accession.as_str()).await {
         Ok(result) => result,
         Err(_err) => {
+            eprintln!("download error for acc {}", accession);
             // Add accession to failed downloads with each moltype
             if !proteomes_only {
                 let failed_download_dna = FailedDownload {
@@ -231,6 +243,11 @@ async fn dl_sketch_accession(
                 };
                 failed.push(failed_download_protein);
             }
+            eprintln!(
+                "dl+sketched {} sigs for accession {}!",
+                sigs.len(),
+                accession
+            );
 
             return Ok((sigs, failed));
         }
@@ -308,7 +325,8 @@ async fn write_sig(
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
     // zip_writer: &mut ZipFileWriter<&mut File>,
-    zip_writer: &mut ZipFileWriter<tokio_util::compat::Compat<&mut tokio::fs::File>>,
+    // zip_writer: &mut ZipFileWriter<Compat<&mut tokio::fs::File>>,
+    zip_writer: &mut ZipFileWriter<Compat<tokio::fs::File>>,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
@@ -371,6 +389,7 @@ pub async fn download_and_sketch(
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
+    let arc_download_path = Arc::new(download_path);
 
     // if sig output doesn't end in zip, bail
     if Path::new(&output_sigs)
@@ -381,12 +400,32 @@ pub async fn download_and_sketch(
     }
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
-    let mut file = tokio::fs::File::create(outpath).await?;
-    let zip_writer = ZipFileWriter::with_tokio(&mut file);
+    // let mut file = tokio::fs::File::create(outpath).await?;
+    // let zip_f = ZipFileWriter::with_tokio(&mut file);
+    // let mut zip_f = ZipFileWriter::with_tokio(&mut file);
+    // let mut file = File::create(outpath).await?;
+    // let mut file = tokio::fs::File::create(outpath).await?;
+    // let arc_zip_writer = Arc::clone(&Arc::new(Mutex::new(ZipFileWriter::with_tokio(&mut file))));
+    let file = tokio::fs::File::create(outpath).await?;
+    let zip_writer = ZipFileWriter::with_tokio(file);
     let arc_zip_writer = Arc::new(Mutex::new(zip_writer));
 
-    let mut manifest_rows: Vec<Record> = Vec::new();
-    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
+    // let arc_zip_writer = Arc::new(Mutex::new(ZipFileWriter::with_tokio(&mut file)));
+    // let arc_zip_writer = Arc::new(Mutex::new(ZipFileWriter::with_tokio(file)));
+    // let file = tokio::fs::File::create(outpath).await?;
+    // let compat_file = Compat::new(file);
+    // let mut zip_writer = ZipFileWriter::with_tokio(&mut compat_file);
+
+    // failures
+    let fail_file = std::fs::File::create(failed_csv)?;
+    let mut failed_writer = csv::Writer::from_writer(fail_file);
+    failed_writer.write_record(["accession", "name", "moltype", "url"])?;
+    let arc_failed_writer = Arc::new(Mutex::new(failed_writer));
+
+    // let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
+    let mut md5sum_occurrences = Arc::new(Mutex::new(HashMap::new()));
+    let mut arc_manifest_rows = Arc::new(Mutex::new(Vec::new()));
+    // let mut manifest_rows: Vec<Record> = Vec::new();
 
     // Open the file containing the accessions synchronously
     let (accession_info, n_accs) = load_accession_info(input_csv)?;
@@ -406,76 +445,89 @@ pub async fn download_and_sketch(
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
-    // failures
-    let file = std::fs::File::create(failed_csv)?;
-    let mut failed_writer = csv::Writer::from_writer(file);
-    failed_writer.write_record(["accession", "name", "moltype", "url"])?;
-
     // report every percent (or ever 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    // let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
-    let client = Client::new();
+    let client = Arc::new(Client::new());
     let mut wrote_sigs = false;
-    // let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
-    // let mut interval = time::interval(Duration::from_secs(1));
+    let semaphore = Arc::new(Semaphore::new(3)); // Allows up to 3 concurrent tasks
+    let mut interval = tokio::time::interval(Duration::from_secs(1));
+    let mut accessions = accession_info.into_iter().peekable();
 
-    for (i, accinfo) in accession_info.iter().enumerate() {
-        // progress report at threshold
-        if (i + 1) % reporting_threshold == 0 {
-            let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-            println!(
-                "Starting accession {}/{} ({}%)",
-                (i + 1),
-                n_accs,
-                percent_processed
-            );
-        }
+    while accessions.peek().is_some() {
+        interval.tick().await;
+        py.check_signals()?; // If interrupted, return an Err automatically
 
-        if i % 100 == 0 {
-            // Check for interrupt periodically
-            py.check_signals()?; // If interrupted, return an Err automatically
-        }
+        // Start up to 3 tasks at once per second
+        for _ in 0..3 {
+            if let Some(accinfo) = accessions.next() {
+                let semaphore_clone = Arc::clone(&semaphore);
+                let client_clone = Arc::clone(&client);
+                let arc_zip_writer_clone = Arc::clone(&arc_zip_writer);
+                let arc_failed_writer_clone = Arc::clone(&arc_failed_writer);
+                let arc_manifest_rows_clone = Arc::clone(&arc_manifest_rows);
+                let md5sum_occurrences_clone = Arc::clone(&md5sum_occurrences);
+                let download_path_clone = Arc::clone(&arc_download_path);
 
-        // Process each accession
-        let result = dl_sketch_accession(
-            &client,
-            accinfo.accession.clone(),
-            accinfo.name.clone(),
-            &download_path,
-            Some(retry_times),
-            keep_fastas,
-            dna_sig_templates.clone(),
-            prot_sig_templates.clone(),
-            genomes_only,
-            proteomes_only,
-            download_only,
-        )
-        .await;
+                let dna_sigs = dna_sig_templates.clone();
+                let prot_sigs = prot_sig_templates.clone();
 
-        if let Ok((mut processed_sigs, failed_downloads)) = result {
-            let mut zip_writer = arc_zip_writer.lock().await;
-            for sig in &mut processed_sigs {
-                if !wrote_sigs {
-                    wrote_sigs = true;
-                }
-                write_sig(
-                    sig,
-                    &mut md5sum_occurrences,
-                    &mut manifest_rows,
-                    &mut zip_writer,
-                )
-                .await
-                .map_err(|e| {
-                    eprintln!("Error processing signature: {}", e);
-                    e
-                })?;
-            }
-            processed_sigs.clear(); // do we need this?
-            for dl in failed_downloads {
-                failed_writer.write_record(&[dl.accession, dl.name, dl.moltype, dl.url])?;
+                tokio::spawn(async move {
+                    let _permit = semaphore_clone
+                        .acquire()
+                        .await
+                        .expect("Failed to acquire semaphore permit");
+
+                    match dl_sketch_accession(
+                        &client_clone,
+                        accinfo.accession,
+                        accinfo.name,
+                        &download_path_clone,
+                        Some(retry_times),
+                        keep_fastas,
+                        dna_sigs,
+                        prot_sigs,
+                        genomes_only,
+                        proteomes_only,
+                        download_only,
+                    )
+                    .await
+                    {
+                        Ok((mut processed_sigs, failed_downloads)) => {
+                            eprintln!("HERE, n sigs here: {:?}", processed_sigs.len());
+                            let mut zip_w = arc_zip_writer_clone.lock().await;
+                            let mut failed_w = arc_failed_writer_clone.lock().await;
+                            let mut mf_rows = arc_manifest_rows_clone.lock().await;
+                            let mut md5s = md5sum_occurrences_clone.lock().await;
+                            for sig in processed_sigs.iter_mut() {
+                                //keep track of whether we've written any sigs
+                                if !wrote_sigs {
+                                    wrote_sigs = true;
+                                }
+                                if let Err(e) =
+                                    write_sig(sig, &mut md5s, &mut mf_rows, &mut *zip_w).await
+                                {
+                                    eprintln!("Error processing signature: {}", e);
+                                }
+                            }
+                            for dl in failed_downloads {
+                                if let Err(e) = failed_w.write_record(&[
+                                    dl.accession,
+                                    dl.name,
+                                    dl.moltype,
+                                    dl.url,
+                                ]) {
+                                    eprintln!("Error writing failed download record: {}", e);
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("Error during download and sketch: {}", e),
+                    }
+                });
             }
         }
     }
+
     // if no signatures were written, bail so user knows something went wrong
     if !wrote_sigs && !download_only {
         bail!("No signatures written.")
@@ -489,7 +541,8 @@ pub async fn download_and_sketch(
 
     // write the manifest
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
-    let manifest: Manifest = manifest_rows.clone().into();
+    let mf_rows = arc_manifest_rows.lock().await;
+    let manifest: Manifest = mf_rows.clone().into();
     // Create a temporary buffer to hold the manifest data
     let mut manifest_buffer = Vec::new();
     // Use manifest.to_writer to write the manifest to the buffer
@@ -507,3 +560,82 @@ pub async fn download_and_sketch(
     zip_writer.close().await?;
     Ok(())
 }
+
+// progress report at threshold
+// if (i + 1) % reporting_threshold == 0 {
+//     let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+//     println!(
+//         "Starting accession {}/{} ({}%)",
+//         (i + 1),
+//         n_accs,
+//         percent_processed
+//     );
+// }
+
+// if i % 100 == 0 {
+//     // Check for interrupt periodically
+//     py.check_signals()?; // If interrupted, return an Err automatically
+// }
+
+// Process each accession
+// let result = dl_sketch_accession(
+//     &client,
+//     accinfo.accession.clone(),
+//     accinfo.name.clone(),
+//     &download_path,
+//     Some(retry_times),
+//     keep_fastas,
+//     dna_sig_templates.clone(),
+//     prot_sig_templates.clone(),
+//     genomes_only,
+//     proteomes_only,
+//     download_only,
+// )
+// .await;
+
+//     tokio::spawn(async move {
+//         let _permit = semaphore
+//             .acquire()
+//             .await
+//             .expect("Failed to acquire semaphore permit");
+
+//         let result = dl_sketch_accession(
+//             &client,
+//             accinfo.accession,
+//             accinfo.name,
+//             &download_path,
+//             Some(retry_times),
+//             keep_fastas,
+//             dna_sigs,
+//             prot_sigs,
+//             genomes_only,
+//             proteomes_only,
+//             download_only,
+//         )
+//         .await;
+
+//         if let Ok((mut processed_sigs, failed_downloads)) = result {
+//             let mut zip_writer = arc_zip_writer.lock().await;
+//             for sig in &mut processed_sigs {
+//                 if !wrote_sigs {
+//                     wrote_sigs = true;
+//                 }
+//                 write_sig(
+//                     sig,
+//                     &mut md5sum_occurrences,
+//                     &mut manifest_rows,
+//                     &mut zip_writer,
+//                 )
+//                 .await
+//                 .map_err(|e| {
+//                     eprintln!("Error processing signature: {}", e);
+//                     e
+//                 })?;
+//             }
+//             processed_sigs.clear(); // do we need this?
+//             for dl in failed_downloads {
+//                 failed_writer.write_record(&[dl.accession, dl.name, dl.moltype, dl.url])?;
+//             }
+//         }
+
+//     });
