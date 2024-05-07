@@ -299,12 +299,12 @@ async fn dl_sketch_accession(
     Ok((sigs, failed))
 }
 
-fn write_sig(
+fn write_sig<T: zip::write::FileOptionExtension>(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
     zip_f: &mut ZipWriter<std::fs::File>,
-    zip_options: zip::write::FileOptions,
+    zip_options: zip::write::FileOptions<T>,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
@@ -377,7 +377,7 @@ pub async fn download_and_sketch(
     let outpath: PathBuf = output_sigs.into();
     let mut zip_f = ZipWriter::new(std::fs::File::create(&outpath)?);
     // zip options
-    let options = zip::write::FileOptions::default()
+    let options = zip::write::SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Stored)
         .large_file(true);
 
