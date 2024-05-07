@@ -1,8 +1,9 @@
 use anyhow::{anyhow, bail, Context, Result};
 use async_zip::base::write::ZipFileWriter;
-use async_zip::ZipEntryBuilder; 
 use async_zip::Compression;
+use async_zip::{ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf as PathBuf;
+use chrono::{DateTime, Utc};
 use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
@@ -14,6 +15,9 @@ use tokio::fs::File;
 use tokio::task;
 
 use pyo3::prelude::*;
+
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 // use tokio::sync::Semaphore;
 // use tokio::time::{self, Duration};
@@ -339,14 +343,13 @@ async fn write_sig(
         buffer.into_inner()
     };
 
-    // let opts = EntryOptions::new(sig_filename, Compression::Stored);
-    // zip_f
-    //     .write_entry_whole(opts, &gzipped_buffer)
-    //     .await
-    //     .map_err(|e| anyhow!("Error writing zip entry: {}", e))
-    let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored);
-    zip_writer.write_entry_whole(builder, &gzipped_buffer).await.map_err(|e| anyhow!("Error writing zip entry: {}", e))
-
+    let now = Utc::now();
+    let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
+        .last_modification_date(ZipDateTime::from_chrono(&now));
+    zip_writer
+        .write_entry_whole(builder, &gzipped_buffer)
+        .await
+        .map_err(|e| anyhow!("Error writing zip entry: {}", e))
 }
 
 #[tokio::main]
@@ -379,7 +382,8 @@ pub async fn download_and_sketch(
     // start zip file; set up trackers
     let outpath: PathBuf = output_sigs.into();
     let mut file = tokio::fs::File::create(outpath).await?;
-    let mut zip_writer = ZipFileWriter::with_tokio(&mut file);
+    let zip_writer = ZipFileWriter::with_tokio(&mut file);
+    let arc_zip_writer = Arc::new(Mutex::new(zip_writer));
 
     let mut manifest_rows: Vec<Record> = Vec::new();
     let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
@@ -449,16 +453,22 @@ pub async fn download_and_sketch(
         .await;
 
         if let Ok((mut processed_sigs, failed_downloads)) = result {
+            let mut zip_writer = arc_zip_writer.lock().await;
             for sig in &mut processed_sigs {
                 if !wrote_sigs {
                     wrote_sigs = true;
                 }
-                write_sig(sig, &mut md5sum_occurrences, &mut manifest_rows, &mut zip_writer)
-                    .await
-                    .map_err(|e| {
-                        eprintln!("Error processing signature: {}", e);
-                        e
-                    })?;
+                write_sig(
+                    sig,
+                    &mut md5sum_occurrences,
+                    &mut manifest_rows,
+                    &mut zip_writer,
+                )
+                .await
+                .map_err(|e| {
+                    eprintln!("Error processing signature: {}", e);
+                    e
+                })?;
             }
             processed_sigs.clear(); // do we need this?
             for dl in failed_downloads {
@@ -472,6 +482,11 @@ pub async fn download_and_sketch(
     }
 
     // Finalize the ZIP file and manifest
+    let zip_writer_mutex = Arc::try_unwrap(arc_zip_writer)
+        .map_err(|_| anyhow::anyhow!("Lock still has multiple owners"))?;
+
+    let mut zip_writer = Mutex::into_inner(zip_writer_mutex);
+
     // write the manifest
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
     let manifest: Manifest = manifest_rows.clone().into();
@@ -481,10 +496,13 @@ pub async fn download_and_sketch(
     manifest.to_writer(&mut manifest_buffer)?;
 
     // write manifest to zipfile
-    // let opts = EntryOptions::new(manifest_filename, Compression::Stored);
-    // zip_f.write_entry_whole(opts, &manifest_buffer).await?;
-    let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored);
-    zip_writer.write_entry_whole(builder, &manifest_buffer).await?;
+    let now = Utc::now();
+    let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
+        .last_modification_date(ZipDateTime::from_chrono(&now));
+
+    zip_writer
+        .write_entry_whole(builder, &manifest_buffer)
+        .await?;
     // close zipfile
     zip_writer.close().await?;
     Ok(())
