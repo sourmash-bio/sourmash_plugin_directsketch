@@ -224,6 +224,43 @@ async fn sketch_data(
     })
 }
 
+// async fn sketch_data(
+//     name: &str,
+//     filename: &str,
+//     compressed_data: Vec<u8>,
+//     mut sigs: Vec<Signature>,
+//     moltype: &str,
+// ) -> Result<Vec<Signature>> {
+//     // Assuming there's an async version or non-blocking workaround
+//     let cursor = Cursor::new(compressed_data);
+
+//     task::spawn_blocking(move || {
+//         let mut fastx_reader = parse_fastx_reader(cursor)
+//             .context("Failed to parse FASTA/FASTQ data")?;
+
+//         let mut set_name = false;
+//         while let Some(record) = fastx_reader.next() {
+//             let record = record.context("Failed to read record")?;
+//             sigs.iter_mut().for_each(|sig| {
+//                 if !set_name {
+//                     sig.set_name(name);
+//                     sig.set_filename(filename);
+//                 }
+//                 if moltype == "protein" {
+//                     sig.add_protein(&record.seq())
+//                         .expect("Failed to add protein");
+//                 } else {
+//                     sig.add_sequence(&record.seq(), true)
+//                         .expect("Failed to add sequence");
+//                 }
+//             });
+//             set_name = true; // This ensures the name is set only once
+//         }
+
+//         Ok(sigs)
+//     }).await?
+// }
+
 pub struct FailedDownload {
     accession: String,
     name: String,
@@ -354,8 +391,6 @@ async fn write_sig(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
-    // zip_writer: &mut ZipFileWriter<&mut File>,
-    // zip_writer: &mut ZipFileWriter<Compat<&mut tokio::fs::File>>,
     zip_writer: &mut ZipFileWriter<Compat<tokio::fs::File>>,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
@@ -474,10 +509,11 @@ pub fn sigwriter_handle(
         } else {
             let error = anyhow::Error::new(std::io::Error::new(
                 std::io::ErrorKind::Other,
-                "No signatures were processed",
+                "No signatures written",
             ));
-            let _ = error_sender.send(error).await; // Send error about no signatures processed
+            let _ = error_sender.send(error).await; // Send error about no signatures written
         }
+        drop(error_sender);
     })
 }
 
@@ -526,6 +562,7 @@ pub fn failures_handle(
                 let _ = error_sender.send(error).await;
             }
         }
+        drop(error_sender);
     })
 }
 
@@ -551,32 +588,27 @@ pub async fn download_and_sketch(
     {
         bail!("Output must be a zip file.");
     }
-
     // set up fasta download path
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
 
-    // create channels. buffer size can be changed - here it is 4 b/c we can do 3 downloads simultaneously
-    // to do: see whether increasing buffer size speeds things up
+    // // create channels. buffer size can be changed - here it is 4 b/c we can do 3 downloads simultaneously
+    // // to do: see whether increasing buffer size speeds things up
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
-    // Error channel for handling task errors
+    // // Error channel for handling task errors
     let (error_sender, mut error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    //  // Set up collector/writing tasks
+    // //  // Set up collector/writing tasks
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
-    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender);
+    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
-    // set up error handling
-    while let Some(error) = error_receiver.recv().await {
-        eprintln!("Error occurred: {}", error);
-    }
 
-    // Worker tasks
+    // // Worker tasks
     // let client = Client::new();
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
@@ -589,7 +621,7 @@ pub async fn download_and_sketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // parse param string into params_vec, print error if fail
+    // // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
     let params_vec = match param_result {
         Ok(params) => params,
@@ -604,8 +636,9 @@ pub async fn download_and_sketch(
     // report every percent (or ever 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
-    // for accinfo in accession_info {
     for (i, accinfo) in accession_info.into_iter().enumerate() {
+        py.check_signals()?; // If interrupted, return an Err automatically
+        interval.tick().await; // Wait for the next interval tick before continuing
         let semaphore_clone = Arc::clone(&semaphore);
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
@@ -614,12 +647,6 @@ pub async fn download_and_sketch(
 
         let dna_sigs = dna_sig_templates.clone();
         let prot_sigs = prot_sig_templates.clone();
-
-        // Check for interrupt periodically
-        if i % 100 == 0 {
-            py.check_signals()?; // If interrupted, return an Err automatically
-        }
-        interval.tick().await; // Wait for the next interval tick before continuing
 
         if (i + 1) % reporting_threshold == 0 {
             let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
@@ -630,7 +657,6 @@ pub async fn download_and_sketch(
                 percent_processed
             );
         }
-
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
             // Perform download and sketch
@@ -663,16 +689,23 @@ pub async fn download_and_sketch(
             }
         });
     }
+    // drop senders as we're done sending data
+    drop(send_sigs);
+    drop(send_failed);
+    drop(error_sender);
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {
             eprintln!("A task encountered an error: {}", e);
         }
     }
-
-    // Handle errors received from the error channel
+    // // Handle errors received from the error channel
     while let Some(error) = error_receiver.recv().await {
-        eprintln!("Error occurred: {}", error);
+        eprintln!("Error: {}", error);
+        // Check if the error message contains "No signatures written"
+        if error.to_string().contains("No signatures written") & !download_only {
+            bail!("{}.", error);
+        }
     }
     Ok(())
 }
