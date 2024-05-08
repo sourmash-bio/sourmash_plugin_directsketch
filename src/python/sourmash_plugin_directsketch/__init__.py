@@ -25,12 +25,12 @@ def get_max_cores():
 
 
 def set_thread_pool(user_cores):
-    avail_threads = get_max_cores()
+    avail_threads = get_max_cores()  # Define how to get the maximum available cores
     num_threads = min(avail_threads, user_cores) if user_cores else avail_threads
     if user_cores and user_cores > avail_threads:
         notify(f"warning: only {avail_threads} threads available, using {avail_threads}")
-    actual_rayon_cores = sourmash_plugin_directsketch.set_global_thread_pool(num_threads)
-    return actual_rayon_cores
+    actual_tokio_cores = sourmash_plugin_directsketch.set_tokio_thread_pool(num_threads)
+    return actual_tokio_cores
 
 class Download_and_Sketch_Assemblies(CommandLinePlugin):
     command = 'gbsketch'
@@ -76,7 +76,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
 
         num_threads = set_thread_pool(args.cores)
 
-        notify(f"downloading and sketching all accessions in '{args.input_csv}'") #using {num_threads} threads")
+        notify(f"downloading and sketching all accessions in '{args.input_csv} using {num_threads} threads")
 
         super().main(args)
         status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,

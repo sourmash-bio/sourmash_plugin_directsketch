@@ -23,13 +23,14 @@ gbsketch = "sourmash_plugin_directsketch:Download_and_Sketch_Assemblies"
 
 [project.optional-dependencies]
 test = [
-  "pytest>=6.2.4,<8.2.0",
+  "pytest>=6.2.4,<8.3.0",
   "pytest-cov>=2.12,<6.0",
   "pytest-xdist",
 ]
 
 [tool.maturin]
 python-source = "src/python"
+features = ["pyo3/extension-module"]
 
 [tool.maturin.target.x86_64-apple-darwin]
 macos-deployment-target = "10.14"

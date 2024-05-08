@@ -11,6 +11,8 @@ updates:
     interval: weekly
   allow:
     - dependency-type: "direct"
+  ignore:
+    - dependency-name: "chrono"
   open-pull-requests-limit: 10
 - package-ecosystem: "github-actions"
   directory: "/"
