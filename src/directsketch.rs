@@ -638,8 +638,8 @@ pub async fn download_and_sketch(
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
-    // report every 5 percent (or ever 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 20, 1);
+    // report every 1 percent (or every 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
