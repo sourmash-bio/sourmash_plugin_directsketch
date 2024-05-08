@@ -654,17 +654,18 @@ pub async fn download_and_sketch(
         let dna_sigs = dna_sig_templates.clone();
         let prot_sigs = prot_sig_templates.clone();
 
-        if (i + 1) % reporting_threshold == 0 {
-            let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-            println!(
-                "Starting accession {}/{} ({}%)",
-                (i + 1),
-                n_accs,
-                percent_processed
-            );
-        }
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
+            // Report when the permit is available and processing begins
+            if (i + 1) % reporting_threshold == 0 {
+                let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+                println!(
+                    "Starting accession {}/{} ({}%)",
+                    (i + 1),
+                    n_accs,
+                    percent_processed
+                );
+            }
             // Perform download and sketch
             let result = dl_sketch_accession(
                 &client_clone,
