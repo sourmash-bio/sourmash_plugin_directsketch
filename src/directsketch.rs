@@ -165,7 +165,11 @@ async fn download_and_parse_md5(client: &Client, url: &str) -> Result<HashMap<St
             let filename = parts[1].trim_start_matches(" ./"); // remove any ' ', '.', '/' from front
             checksums.insert(filename.to_string(), parts[0].to_string());
         } else {
-            eprintln!("Invalid checksum line format: {}", line);
+            return Err(anyhow!(
+                "Invalid checksum line format in URL {}: {}",
+                url,
+                line
+            ));
         }
     }
 
@@ -314,9 +318,14 @@ async fn dl_sketch_accession(
         }
     };
 
-    // to do: download and parse md5sum file
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
-    let checksums = download_and_parse_md5(&client, &md5sum_url).await?;
+
+    let checksums = match download_and_parse_md5(client, &md5sum_url).await {
+        Ok(cs) => cs,
+        Err(e) => {
+            return Err(e);
+        }
+    };
 
     let mut file_types = vec![
         GenBankFileType::Genomic,
@@ -473,7 +482,6 @@ pub fn sigwriter_handle(
                     Err(e) => {
                         let error = e.context("Error processing signature");
                         if let Err(send_error) = error_sender.send(error).await {
-                            eprintln!("Error sending to error channel: {}", send_error);
                             return; // Exit on failure to send error
                         }
                     }
@@ -628,15 +636,14 @@ pub async fn download_and_sketch(
     let params_vec = match param_result {
         Ok(params) => params,
         Err(e) => {
-            eprintln!("Error parsing params string: {}", e);
-            bail!("Failed to parse params string");
+            bail!("Failed to parse params string: {}", e);
         }
     };
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
-    // report every percent (or ever 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    // report every 5 percent (or ever 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_accs / 20, 1);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
@@ -646,6 +653,7 @@ pub async fn download_and_sketch(
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
+        let send_errors = error_sender.clone();
 
         let dna_sigs = dna_sig_templates.clone();
         let prot_sigs = prot_sig_templates.clone();
@@ -680,15 +688,20 @@ pub async fn download_and_sketch(
                 Ok((sigs, failed_downloads)) => {
                     if let Err(e) = send_sigs.send(sigs).await {
                         eprintln!("Failed to send signatures: {}", e);
+                        let _ = send_errors.send(e.into()).await; // Send the error through the channel
                     }
                     for fail in failed_downloads {
                         if let Err(e) = send_failed.send(fail).await {
                             eprintln!("Failed to send failed download info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
                 }
-                Err(e) => eprintln!("Error during download and sketch: {}", e),
+                Err(e) => {
+                    let _ = send_errors.send(e.into()).await;
+                }
             }
+            drop(send_errors);
         });
     }
     // drop senders as we're done sending data
