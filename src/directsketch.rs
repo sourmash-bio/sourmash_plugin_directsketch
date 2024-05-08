@@ -185,26 +185,24 @@ async fn download_with_retry(client: &Client, url: &str, retry_count: u32) -> Re
 }
 
 async fn sketch_data(
-    name: &str,
-    filename: &str,
+    name: String,
+    filename: String,
     compressed_data: Vec<u8>,
     mut sigs: Vec<Signature>,
-    moltype: &str,
+    moltype: String,
 ) -> Result<Vec<Signature>> {
-    task::block_in_place(|| {
+    tokio::task::spawn_blocking(move || {
         let cursor = Cursor::new(compressed_data);
-
         let mut fastx_reader =
             parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
-        // for each sig in template list, add sequence to sketch
         let mut set_name = false;
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
             sigs.iter_mut().for_each(|sig| {
                 if !set_name {
-                    sig.set_name(name);
-                    sig.set_filename(filename);
+                    sig.set_name(&name);
+                    sig.set_filename(&filename);
                 };
                 if moltype == "protein" {
                     sig.add_protein(&record.seq())
@@ -219,47 +217,10 @@ async fn sketch_data(
                 set_name = true;
             }
         }
-
-        Ok(sigs)
+        Result::<Vec<Signature>, anyhow::Error>::Ok(sigs)
     })
+    .await?
 }
-
-// async fn sketch_data(
-//     name: &str,
-//     filename: &str,
-//     compressed_data: Vec<u8>,
-//     mut sigs: Vec<Signature>,
-//     moltype: &str,
-// ) -> Result<Vec<Signature>> {
-//     // Assuming there's an async version or non-blocking workaround
-//     let cursor = Cursor::new(compressed_data);
-
-//     task::spawn_blocking(move || {
-//         let mut fastx_reader = parse_fastx_reader(cursor)
-//             .context("Failed to parse FASTA/FASTQ data")?;
-
-//         let mut set_name = false;
-//         while let Some(record) = fastx_reader.next() {
-//             let record = record.context("Failed to read record")?;
-//             sigs.iter_mut().for_each(|sig| {
-//                 if !set_name {
-//                     sig.set_name(name);
-//                     sig.set_filename(filename);
-//                 }
-//                 if moltype == "protein" {
-//                     sig.add_protein(&record.seq())
-//                         .expect("Failed to add protein");
-//                 } else {
-//                     sig.add_sequence(&record.seq(), true)
-//                         .expect("Failed to add sequence");
-//                 }
-//             });
-//             set_name = true; // This ensures the name is set only once
-//         }
-
-//         Ok(sigs)
-//     }).await?
-// }
 
 pub struct FailedDownload {
     accession: String,
@@ -359,22 +320,22 @@ async fn dl_sketch_accession(
             match file_type {
                 GenBankFileType::Genomic => sigs.extend(
                     sketch_data(
-                        name.as_str(),
-                        file_name.as_str(),
+                        name.clone(),
+                        file_name.clone(),
                         data,
                         dna_sigs.clone(),
-                        "dna",
+                        "dna".to_string(),
                     )
                     .await?,
                 ),
                 GenBankFileType::Protein => {
                     sigs.extend(
                         sketch_data(
-                            name.as_str(),
-                            file_name.as_str(),
+                            name.clone(),
+                            file_name.clone(),
                             data,
                             prot_sigs.clone(),
-                            "protein",
+                            "protein".to_string(),
                         )
                         .await?,
                     );
