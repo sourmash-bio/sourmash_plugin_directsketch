@@ -1,5 +1,10 @@
 # sourmash_plugin_directsketch
 
+[![PyPI](https://img.shields.io/pypi/v/sourmash_plugin_directsketch)](https://pypi.org/project/sourmash_plugin_directsketch/)
+
+
+tl;dr download and sketch NCBI Assembly Datasets by accession
+
 ## Installation
 
 ```
@@ -51,9 +56,17 @@ options:
                         number of times to retry failed downloads
 ```
 
+## Code of Conduct
+
+This project is under the [sourmash Code of Conduct](https://github.com/sourmash-bio/sourmash/blob/latest/CODE_OF_CONDUCT.rst).
+
 ## Support
 
-We suggest filing issues in [the main sourmash issue tracker](https://github.com/dib-lab/sourmash/issues) as that receives more attention!
+We suggest filing issues in [the directsketch issue tracker](https://github.com/bluegenes/sourmash_plugin_directsketch/issues) or [the main sourmash issue tracker](https://github.com/dib-lab/sourmash/issues).
+
+## Authors
+
+* N. Tessa Pierce-Ward
 
 ## Dev docs
 
