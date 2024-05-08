@@ -643,7 +643,7 @@ pub async fn download_and_sketch(
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
-        interval.tick().await; // Wait for the next interval tick before continuing
+        // interval.tick().await; // Wait for the next interval tick before continuing
         let semaphore_clone = Arc::clone(&semaphore);
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
