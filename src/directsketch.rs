@@ -698,7 +698,6 @@ pub async fn download_and_sketch(
                     }
                 }
                 Err(e) => {
-                    eprintln!("Error during download and sketch: {}", e);
                     let _ = send_errors.send(e.into()).await;
                 }
             }
