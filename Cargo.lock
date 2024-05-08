@@ -1776,6 +1776,7 @@ dependencies = [
  "camino",
  "chrono",
  "csv",
+ "lazy_static",
  "needletail",
  "niffler",
  "openssl",
