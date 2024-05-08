@@ -27,9 +27,6 @@ tokio = { version = "1.37.0", features = ["full"] }
 regex = "1.10.4"
 openssl = { version = "0.10", features = ["vendored"] }
 
-[build-dependencies]
-pyo3-build-config = { version = "0.21.2", features = ["resolve-config"] }
-
 [profile.release]
 #target-cpu=native
 lto = "thin"

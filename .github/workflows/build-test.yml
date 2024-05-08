@@ -12,17 +12,14 @@ jobs:
         fetch-depth: 0
 
     - name: Install latest stable rust
-      uses: actions-rs/toolchain@v1
+      uses: dtolnay/rust-toolchain@master
       with:
          toolchain: stable
          override: true
          components: rustfmt, clippy
 
     - name: Run cargo fmt
-      uses: actions-rs/cargo@v1
-      with:
-        command: fmt
-        args: --all -- --check
+      run: cargo fmt --all -- --check --verbose
 
     - name: cache rust
       uses: Swatinem/rust-cache@v2
@@ -52,7 +49,7 @@ jobs:
 
     - name: install dependencies
       shell: bash -l {0}
-      run: mamba install git compilers maturin pytest
+      run: mamba install git compilers maturin pytest crossenv libclang clangdev
 
     - name: build
       shell: bash -l {0}
