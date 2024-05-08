@@ -707,6 +707,7 @@ pub async fn download_and_sketch(
                     let _ = send_errors.send(e.into()).await;
                 }
             }
+            drop(send_errors);
         });
     }
     // drop senders as we're done sending data
