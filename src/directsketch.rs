@@ -165,7 +165,13 @@ async fn download_and_parse_md5(client: &Client, url: &str) -> Result<HashMap<St
             let filename = parts[1].trim_start_matches(" ./"); // remove any ' ', '.', '/' from front
             checksums.insert(filename.to_string(), parts[0].to_string());
         } else {
+            eprintln!("url: {}", url);
             eprintln!("Invalid checksum line format: {}", line);
+            return Err(anyhow!(
+                "Invalid checksum line format in URL {}: {}",
+                url,
+                line
+            ));
         }
     }
 
@@ -314,9 +320,15 @@ async fn dl_sketch_accession(
         }
     };
 
-    // to do: download and parse md5sum file
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
-    let checksums = download_and_parse_md5(&client, &md5sum_url).await?;
+
+    let checksums = match download_and_parse_md5(client, &md5sum_url).await {
+        Ok(cs) => cs,
+        Err(e) => {
+            eprintln!("Failed to download or parse MD5 checksums: {}", e);
+            return Err(e);
+        }
+    };
 
     let mut file_types = vec![
         GenBankFileType::Genomic,
@@ -646,6 +658,7 @@ pub async fn download_and_sketch(
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
+        let send_errors = error_sender.clone();
 
         let dna_sigs = dna_sig_templates.clone();
         let prot_sigs = prot_sig_templates.clone();
@@ -680,14 +693,19 @@ pub async fn download_and_sketch(
                 Ok((sigs, failed_downloads)) => {
                     if let Err(e) = send_sigs.send(sigs).await {
                         eprintln!("Failed to send signatures: {}", e);
+                        let _ = send_errors.send(e.into()).await; // Send the error through the channel
                     }
                     for fail in failed_downloads {
                         if let Err(e) = send_failed.send(fail).await {
                             eprintln!("Failed to send failed download info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
                 }
-                Err(e) => eprintln!("Error during download and sketch: {}", e),
+                Err(e) => {
+                    eprintln!("Error during download and sketch: {}", e);
+                    let _ = send_errors.send(e.into()).await;
+                }
             }
         });
     }
