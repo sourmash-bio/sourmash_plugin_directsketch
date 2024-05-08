@@ -1,10 +1,8 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
-use async_zip::base::write::{self, ZipFileWriter};
-use async_zip::Compression;
-use async_zip::{ZipDateTime, ZipEntryBuilder};
+use async_zip::base::write::ZipFileWriter;
+use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf as PathBuf;
 use chrono::Utc;
-use md5;
 use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
@@ -12,23 +10,21 @@ use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::Arc;
 use tokio::fs::File;
-use tokio::task;
+use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::sync::Semaphore;
+use tokio::time::Duration;
 use tokio_util::compat::Compat;
 
 use pyo3::prelude::*;
-
-use std::sync::Arc;
-use tokio::io::{AsyncWriteExt, BufWriter};
-
-use tokio::sync::Semaphore;
-use tokio::time::{interval, Duration};
 
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{build_siginfo, load_accession_info, parse_params_str};
 
+#[allow(dead_code)]
 enum GenBankFileType {
     Genomic,
     Protein,
@@ -449,7 +445,7 @@ async fn write_sig(
 pub fn sigwriter_handle(
     mut recv_sigs: tokio::sync::mpsc::Receiver<Vec<Signature>>,
     output_sigs: String,
-    mut error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
+    error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut md5sum_occurrences = HashMap::new();
@@ -481,7 +477,7 @@ pub fn sigwriter_handle(
                     Ok(_) => wrote_sigs = true,
                     Err(e) => {
                         let error = e.context("Error processing signature");
-                        if let Err(send_error) = error_sender.send(error).await {
+                        if (error_sender.send(error).await).is_err() {
                             return; // Exit on failure to send error
                         }
                     }
@@ -530,7 +526,7 @@ pub fn sigwriter_handle(
 pub fn failures_handle(
     failed_csv: String,
     mut recv_failed: tokio::sync::mpsc::Receiver<FailedDownload>,
-    mut error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
+    error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         match File::create(&failed_csv).await {
@@ -698,7 +694,7 @@ pub async fn download_and_sketch(
                     }
                 }
                 Err(e) => {
-                    let _ = send_errors.send(e.into()).await;
+                    let _ = send_errors.send(e).await;
                 }
             }
             drop(send_errors);
