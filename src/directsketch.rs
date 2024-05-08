@@ -636,7 +636,7 @@ pub async fn download_and_sketch(
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
     // report every percent (or ever 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    let reporting_threshold = std::cmp::max(n_accs / 20, 1);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
