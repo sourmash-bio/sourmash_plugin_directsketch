@@ -30,7 +30,6 @@ test = [
 
 [tool.maturin]
 python-source = "src/python"
-features = ["pyo3/extension-module"]
 
 [tool.maturin.target.x86_64-apple-darwin]
 macos-deployment-target = "10.14"

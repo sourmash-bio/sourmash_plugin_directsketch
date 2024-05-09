@@ -32,9 +32,6 @@ md5 = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
 futures = "0.3.30"
 
-[build-dependencies]
-pyo3-build-config = { version = "0.21.2", features = ["resolve-config"] }
-
 [profile.release]
 #target-cpu=native
 lto = "thin"

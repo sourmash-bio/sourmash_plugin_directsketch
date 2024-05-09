@@ -1829,7 +1829,6 @@ dependencies = [
  "niffler",
  "openssl",
  "pyo3",
- "pyo3-build-config",
  "rayon",
  "regex",
  "reqwest",
