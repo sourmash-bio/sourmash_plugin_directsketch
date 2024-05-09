@@ -3,7 +3,11 @@
 [![PyPI](https://img.shields.io/pypi/v/sourmash_plugin_directsketch)](https://pypi.org/project/sourmash_plugin_directsketch/)
 
 
-tl;dr download and sketch NCBI Assembly Datasets by accession
+tl;dr - download and sketch NCBI Assembly Datasets by accession
+
+## About
+
+This plugin is an attempt to improve database generation by downloading assemblies, checking md5sum, and optionally sketching to a sourmash zipfile. It's quite fast, but still very much at alpha level. Here be dragons.
 
 ## Installation
 
