@@ -292,4 +292,4 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
-    assert "Error: No signatures written." in captured.err
+    assert "Error: No signatures written, exiting." in captured.err
