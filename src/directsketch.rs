@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{AsyncWriteExt, BufWriter};
@@ -581,20 +582,18 @@ pub fn failures_handle(
     })
 }
 
-// to do -- log whether no sigs written shows up so we can bail from main function
 pub fn error_handler(
     mut recv_errors: tokio::sync::mpsc::Receiver<anyhow::Error>,
+    error_flag: Arc<AtomicBool>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(error) = recv_errors.recv().await {
             eprintln!("Error: {}", error);
-            // Check for a specific error message
             if error.to_string().contains("No signatures written") {
-                eprintln!("{}", error);
-                break; // Exit the loop to stop the task
+                error_flag.store(true, Ordering::SeqCst);
+                break;
             }
         }
-        // Note: We can't return `Err` from here, so we just stop the task.
     })
 }
 
@@ -637,7 +636,8 @@ pub async fn download_and_sketch(
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
-    let error_handle = error_handler(error_receiver);
+    let critical_error_flag = Arc::new(AtomicBool::new(false));
+    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
     handles.push(error_handle);
@@ -732,8 +732,13 @@ pub async fn download_and_sketch(
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {
-            eprintln!("Handle join error: {}", e);
+            eprintln!("Handle join error: {}.", e);
         }
+    }
+    // since the only critical error is not having written any sigs
+    // check this here at end. Bail if we wrote expected sigs but wrote none.
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only {
+        bail!("No signatures written, exiting.");
     }
 
     Ok(())
