@@ -34,7 +34,8 @@ sourmash scripts gbsketch tests/test-data/acc.csv -o test.zip -f out_fastas -k -
 Full Usage:
 
 ```
-usage:  gbsketch [-h] [-q] [-d] -o OUTPUT [-f FASTAS] [-k] [--failed FAILED] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES]
+usage:  gbsketch [-h] [-q] [-d] -o OUTPUT [-f FASTAS] [-k] [--download-only] [--failed FAILED] [-p PARAM_STRING] [-c CORES]
+                 [-r RETRY_TIMES] [-g | -m]
                  input_csv
 
 download and sketch GenBank assembly datasets
@@ -51,6 +52,7 @@ options:
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   -k, --keep-fastas     write FASTA files in addition to sketching. Default: do not write FASTA files
+  --download-only       just download genomes; do not sketch
   --failed FAILED       csv of failed accessions and download links (should be mostly protein).
   -p PARAM_STRING, --param-string PARAM_STRING
                         parameter string for sketching (default: k=31,scaled=1000)
@@ -58,6 +60,8 @@ options:
                         number of cores to use (default is all available)
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         number of times to retry failed downloads
+  -g, --genomes-only    just download and sketch genome (DNA) files
+  -m, --proteomes-only  just download and sketch proteome (protein) files
 ```
 
 ## Code of Conduct
