@@ -179,6 +179,7 @@ async fn download_with_retry(
     retry_count: u32,
 ) -> Result<Vec<u8>> {
     let mut attempts = retry_count;
+    let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
         let response = client.get(url).send().await;
@@ -195,17 +196,25 @@ async fn download_with_retry(
                     if computed_hash == md5 {
                         return Ok(data.to_vec());
                     } else {
-                        eprintln!(
-                            "MD5 hash does not match. Expected: {}, Found: {}. Retrying...",
-                            md5, computed_hash
-                        );
+                        last_error = Some(anyhow!(
+                            "MD5 hash does not match. Expected: {}, Found: {}",
+                            md5,
+                            computed_hash
+                        ));
                     }
                 } else {
                     return Ok(data.to_vec()); // If no expected MD5 is provided, just return the data
                 }
             }
-            _ => {
-                eprintln!("Failed to download file: {}. Retrying...", url);
+            Ok(resp) => {
+                last_error = Some(anyhow!(
+                    "Server error status code {}: {}. Retrying...",
+                    resp.status(),
+                    url
+                ));
+            }
+            Err(e) => {
+                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
             }
         }
 
@@ -214,12 +223,13 @@ async fn download_with_retry(
             break;
         }
     }
-
-    Err(anyhow!(
-        "Failed to download file after {} retries: {}",
-        retry_count,
-        url
-    ))
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download file after {} retries: {}",
+            url,
+            retry_count
+        )
+    }))
 }
 
 async fn sketch_data(
