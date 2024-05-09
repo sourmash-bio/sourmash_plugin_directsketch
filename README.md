@@ -70,7 +70,7 @@ This project is under the [sourmash Code of Conduct](https://github.com/sourmash
 
 ## Support
 
-We suggest filing issues in [the directsketch issue tracker](https://github.com/bluegenes/sourmash_plugin_directsketch/issues) or [the main sourmash issue tracker](https://github.com/dib-lab/sourmash/issues).
+We suggest filing issues in [the directsketch issue tracker](https://github.com/sourmash-bio/sourmash_plugin_directsketch/issues) or [the main sourmash issue tracker](https://github.com/dib-lab/sourmash/issues).
 
 ## Authors
 
