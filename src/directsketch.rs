@@ -625,8 +625,7 @@ pub async fn download_and_sketch(
         create_dir_all(&download_path)?;
     }
 
-    // // create channels. buffer size can be changed - here it is 4 b/c we can do 3 downloads simultaneously
-    // // to do: see whether changing buffer size speeds things up
+    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // // Error channel for handling task errors
