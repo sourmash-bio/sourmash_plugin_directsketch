@@ -1815,7 +1815,7 @@ dependencies = [
 
 [[package]]
 name = "sourmash_plugin_directsketch"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async_zip",
