@@ -107,12 +107,12 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
     let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?; // do not capture trailing slash
 
     for cap in link_regex.captures_iter(&text) {
-        let name = &cap[1]; // Directory name without trailing slash
+        let name = &cap[1];
 
-        // Use the numerical identifier and version as the expected pattern
+        // Use acc numerical identifier and version as expected pattern
         let expected_pattern = format!("{}.{}", acc_number, version);
 
-        // Check if the directory name contains contains the right acc number and version
+        // Check if directory name contains contains the right acc number and version
         if name.contains(&expected_pattern) {
             return Ok((format!("{}/{}", base_url, name), name.to_string()));
         }
