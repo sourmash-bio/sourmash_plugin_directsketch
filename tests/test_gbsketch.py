@@ -58,7 +58,7 @@ def test_gbsketch_simple(runtmp):
 
 
 def test_gbsketch_simple_url(runtmp):
-    acc_csv = get_test_data('acc-with-url.csv')
+    acc_csv = get_test_data('acc-with-ftppath.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
@@ -302,7 +302,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "url"]' in captured.err
+    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "ftp_path"]' in captured.err
 
 
 def test_gbsketch_bad_acc_fail(runtmp, capfd):
@@ -342,7 +342,7 @@ def test_gbsketch_version_bug(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1',
-                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+                    '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty

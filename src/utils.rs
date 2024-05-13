@@ -100,7 +100,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
 
     // Check column names
     let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name", "url"];
+    let expected_header = vec!["accession", "name", "ftp_path"];
     if header != expected_header {
         return Err(anyhow!(
             "Invalid column names in CSV file. Columns should be: {:?}",
