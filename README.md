@@ -16,15 +16,29 @@ pip install sourmash_plugin_directsketch
 ```
 
 ## Usage
+
+### Create an input file
+
 First, create a file, e.g. `acc.csv` with GenBank identifiers and sketch names.
 ```
-ident,name
-GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
-GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
+accession,name,ftp_path
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45,
+GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2,
 ```
-> Extra columns are ok, as long as the first two columns contain the identifier and sketch name
+> The three column names, `accession`, `name`, and `ftp_path` must be present, but there does not need to be any information in the `ftp_path` column.
+No additional columns may be present.
 
-Run:
+#### What is ftp_path?
+
+If you do not provide an `ftp_path`, `gbsketch` will use the accession to find the `ftp_path` for you.
+
+If you choose to provide it, `ftp_path` must be the `ftp_path` column from NCBI's assembly summary files.
+
+For reference:
+- example `ftp_path`: `https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1`
+- bacteria assembly summary file: `https:ftp://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt`
+
+### Run:
 
 To run the test accession file at `tests/test-data/acc.csv`, run:
 ```
