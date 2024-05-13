@@ -127,13 +127,13 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             .get(1)
             .ok_or_else(|| anyhow!("Missing 'name' field"))?
             .to_string();
-
         // optionally get url
-        let url = record.get(3).and_then(|s| {
+        let url = record.get(2).and_then(|s| {
             if s.is_empty() {
                 None
             } else {
-                reqwest::Url::parse(s).map_err(|_| ()).ok()
+                let trimmed_s = s.trim_end_matches("/");
+                reqwest::Url::parse(trimmed_s).map_err(|_| ()).ok()
             }
         });
 
