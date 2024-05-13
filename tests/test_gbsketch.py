@@ -354,3 +354,18 @@ def test_gbsketch_version_bug(runtmp):
     for sig in sigs:
         assert sig.name == ss1.name == "GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19"
         assert sig.md5sum() == ss1.md5sum() == "7ead366dcfed8e8ab938f771459c4e94"
+
+
+def test_gbsketch_cols_trailing_commas(runtmp, capfd):
+    acc_csv = get_test_data('acc-cols.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                '--failed', failed, '-r', '1',
+                '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+        
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert 'Error: CSV error: record 1 (line: 1, byte: 24): found record with 2 fields, but the previous record has 3 fields' in captured.err
