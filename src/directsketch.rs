@@ -104,7 +104,7 @@ async fn fetch_genbank_filename(
         find_genome_directory(client, db, &number_path, accession, acc_number, version).await?
     };
 
-    return Ok((url, name));
+    Ok((url, name))
 }
 
 async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {

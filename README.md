@@ -34,6 +34,7 @@ If you do not provide an `ftp_path`, `gbsketch` will use the accession to find t
 If you choose to provide it, `ftp_path` must be the `ftp_path` column from NCBI's assembly summary files.
 
 For reference:
+
 - example `ftp_path`: `https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1`
 - bacteria assembly summary file: `https:ftp://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt`
 

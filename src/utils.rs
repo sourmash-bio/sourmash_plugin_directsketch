@@ -72,7 +72,7 @@ impl GenBankFileType {
         }
     }
 }
-
+#[allow(dead_code)]
 #[derive(Clone)]
 pub struct AccessionData {
     pub accession: String,
@@ -132,7 +132,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             if s.is_empty() {
                 None
             } else {
-                let trimmed_s = s.trim_end_matches("/");
+                let trimmed_s = s.trim_end_matches('/');
                 reqwest::Url::parse(trimmed_s).map_err(|_| ()).ok()
             }
         });
@@ -144,7 +144,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
         results.push(GBAssemblyData {
             accession: acc.to_string(),
             name: name.to_string(),
-            url: url,
+            url,
         });
     }
 
@@ -160,6 +160,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     Ok((results, row_count))
 }
 
+#[allow(dead_code)]
 pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
@@ -228,7 +229,7 @@ pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usi
             accession: acc.to_string(),
             name: name.to_string(),
             input_moltype,
-            url: url,
+            url,
             md5sum,
         });
     }
