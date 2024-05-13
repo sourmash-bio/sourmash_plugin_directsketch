@@ -26,7 +26,7 @@ def test_gbsketch_simple(runtmp):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -46,7 +46,7 @@ def test_gbsketch_simple(runtmp):
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -56,12 +56,49 @@ def test_gbsketch_simple(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
+def test_gbsketch_simple_url(runtmp):
+    acc_csv = get_test_data('acc-with-ftppath.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 3
+    for sig in sigs:
+        if 'GCA_000175535.1' in sig.name:
+            assert sig.name == ss1.name
+            assert sig.md5sum() == ss1.md5sum()
+        elif 'GCA_000961135.2' in sig.name:
+            assert sig.name == ss2.name
+            if sig.minhash.moltype == 'DNA':
+                assert sig.md5sum() == ss2.md5sum()
+            else:
+                assert sig.md5sum() == ss3.md5sum()
+
+
 def test_gbsketch_genomes_only(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
@@ -78,7 +115,7 @@ def test_gbsketch_genomes_only(runtmp):
 
     assert len(sigs) == 2
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -118,7 +155,7 @@ def test_gbsketch_save_fastas(runtmp):
     out_dir = runtmp.output('out_fastas')
 
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -133,14 +170,14 @@ def test_gbsketch_save_fastas(runtmp):
     assert os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty
     fa_files = os.listdir(out_dir)
-    assert set(fa_files) == set(['GCA_000175555.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -157,7 +194,7 @@ def test_gbsketch_download_only(runtmp):
     out_dir = runtmp.output('out_fastas')
 
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -172,7 +209,7 @@ def test_gbsketch_download_only(runtmp):
     assert os.path.exists(output) # would be better if this didn't exist
     assert not runtmp.last_result.out # stdout should be empty
     fa_files = os.listdir(out_dir)
-    assert set(fa_files) == set(['GCA_000175555.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
    
 
 def test_gbsketch_bad_acc(runtmp):
@@ -184,15 +221,15 @@ def test_gbsketch_bad_acc(runtmp):
             # if this acc exist in line, copy it and write an extra line with an invalid accession
             outF.write(line)
             print(line)
-            if "GCA_000175555.1" in line:
-                mod_line = line.replace('GCA_000175555.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
                 outF.write(mod_line)
 
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -226,7 +263,7 @@ def test_gbsketch_bad_acc(runtmp):
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -265,7 +302,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert "Error: No accessions to download and sketch." in captured.err
+    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "ftp_path"]' in captured.err
 
 
 def test_gbsketch_bad_acc_fail(runtmp, capfd):
@@ -276,8 +313,8 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
         outF.write(lines[0])  # write the header line
         for line in lines:
             # if this acc exist in line, copy it and write
-            if "GCA_000175555.1" in line:
-                mod_line = line.replace('GCA_000175555.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
                 outF.write(mod_line)
     
@@ -293,3 +330,42 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     print(captured.out)
     print(captured.err)
     assert "Error: No signatures written, exiting." in captured.err
+
+
+def test_gbsketch_version_bug(runtmp):
+    acc_csv = get_test_data('acc-version.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000193795.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert sig.name == ss1.name == "GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19"
+        assert sig.md5sum() == ss1.md5sum() == "7ead366dcfed8e8ab938f771459c4e94"
+
+
+def test_gbsketch_cols_trailing_commas(runtmp, capfd):
+    acc_csv = get_test_data('acc-cols.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                '--failed', failed, '-r', '1',
+                '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+        
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert 'Error: CSV error: record 1 (line: 1, byte: 24): found record with 2 fields, but the previous record has 3 fields' in captured.err

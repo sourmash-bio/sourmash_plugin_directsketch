@@ -22,61 +22,67 @@ use pyo3::prelude::*;
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
-use crate::utils::{build_siginfo, load_accession_info, parse_params_str};
+use crate::utils::{
+    build_siginfo, load_gbassembly_info, parse_params_str, GBAssemblyData, GenBankFileType,
+};
+use reqwest::Url;
 
-#[allow(dead_code)]
-enum GenBankFileType {
-    Genomic,
-    Protein,
-    AssemblyReport,
-    Checksum,
+async fn find_genome_directory(
+    client: &Client,
+    db: &str,
+    number_path: &str,
+    accession: &str,
+    acc_number: &str,
+    version: &str,
+) -> Result<(Url, String)> {
+    let base_url = format!(
+        "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
+        db, number_path
+    );
+    let directory_response = client.get(&base_url).send().await?;
+
+    if !directory_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to open genome directory: HTTP {}, {}",
+            directory_response.status(),
+            directory_response
+                .status()
+                .canonical_reason()
+                .unwrap_or("Unknown reason")
+        ));
+    }
+    let text = directory_response.text().await?;
+    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?;
+
+    for cap in link_regex.captures_iter(&text) {
+        let name = &cap[1];
+
+        // Use acc numerical identifier and version as expected pattern
+        let expected_pattern = format!("{}.{}", acc_number, version);
+
+        // Check if directory name contains contains the right acc number and version
+        if name.contains(&expected_pattern) {
+            let url = format!("{}/{}", base_url, name).parse()?;
+            return Ok((url, name.to_string()));
+        }
+    }
+    Err(anyhow!(
+        "No matching directory found for accession {}",
+        accession
+    ))
 }
 
-impl GenBankFileType {
-    fn suffix(&self) -> &'static str {
-        match self {
-            GenBankFileType::Genomic => "_genomic.fna.gz",
-            GenBankFileType::Protein => "_protein.faa.gz",
-            GenBankFileType::AssemblyReport => "_assembly_report.txt",
-            GenBankFileType::Checksum => "md5checksums.txt",
-        }
-    }
-
-    //use for checksums
-    fn server_filename(&self, full_name: &str) -> String {
-        format!("{}{}", full_name, self.suffix())
-    }
-
-    fn filename_to_write(&self, accession: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    fn url(&self, base_url: &str, full_name: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}/{}", base_url, self.suffix()),
-            _ => format!("{}/{}{}", base_url, full_name, self.suffix()),
-        }
-    }
-
-    fn moltype(&self) -> String {
-        match self {
-            GenBankFileType::Genomic => "DNA".to_string(),
-            GenBankFileType::Protein => "protein".to_string(),
-            _ => "".to_string(),
-        }
-    }
-}
-
-async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(String, String)> {
+async fn fetch_genbank_filename(
+    client: &Client,
+    accession: &str,
+    url: Option<Url>,
+) -> Result<(Url, String)> {
     let (db, acc) = accession
         .trim()
         .split_once('_')
         .ok_or_else(|| anyhow!("Invalid accession format"))?;
-    let (number, _) = acc.split_once('.').unwrap_or((acc, "1"));
-    let number_path = number
+    let (acc_number, version) = acc.split_once('.').unwrap_or((acc, "1"));
+    let number_path = acc_number
         .chars()
         .collect::<Vec<_>>()
         .chunks(3)
@@ -84,64 +90,26 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
         .collect::<Vec<_>>()
         .join("/");
 
-    let base_url = format!(
-        "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
-        db, number_path
-    );
-    let directory_response = client.get(&base_url).send().await;
+    let (url, name) = if let Some(url) = url {
+        let url_parts: Vec<&str> = url
+            .path_segments()
+            .ok_or_else(|| anyhow!("Failed to extract path segments from URL"))?
+            .collect();
+        let name = url_parts
+            .last()
+            .ok_or_else(|| anyhow!("Failed to extract name from URL"))?
+            .to_string();
+        (url, name)
+    } else {
+        find_genome_directory(client, db, &number_path, accession, acc_number, version).await?
+    };
 
-    match directory_response {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to open genome directory: HTTP {}, {}",
-                    response.status(),
-                    response
-                        .status()
-                        .canonical_reason()
-                        .unwrap_or("Unknown reason")
-                ));
-            }
-
-            let text = response.text().await?;
-            let link_regex = Regex::new(r#"<a href="([^"]*)""#)?;
-
-            for cap in link_regex.captures_iter(&text) {
-                let name = &cap[1];
-                let clean_name = if name.ends_with('/') {
-                    name.strip_suffix('/').unwrap()
-                } else {
-                    name
-                };
-
-                if clean_name.starts_with(db)
-                    && clean_name
-                        .split('_')
-                        .nth(1)
-                        .map_or(false, |x| x.starts_with(number))
-                {
-                    return Ok((format!("{}/{}", base_url, clean_name), clean_name.into()));
-                }
-            }
-            Err(anyhow!(
-                "No matching directory found for accession {}",
-                accession
-            ))
-        }
-        Err(e) => {
-            // eprintln!("HTTP request failed for accession {}: {}", accession, e);
-            Err(anyhow!(
-                "HTTP request failed for accession {}: {}",
-                accession,
-                e
-            ))
-        }
-    }
+    Ok((url, name))
 }
 
-async fn download_and_parse_md5(client: &Client, url: &str) -> Result<HashMap<String, String>> {
+async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {
     let response = client
-        .get(url)
+        .get(url.clone())
         .send()
         .await
         .context("Failed to send request")?;
@@ -175,7 +143,7 @@ async fn download_and_parse_md5(client: &Client, url: &str) -> Result<HashMap<St
 // download and return data directly instead of saving to file
 async fn download_with_retry(
     client: &Client,
-    url: &str,
+    url: &Url,
     expected_md5: Option<&str>,
     retry_count: u32,
 ) -> Result<Vec<u8>> {
@@ -183,7 +151,7 @@ async fn download_with_retry(
     let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
-        let response = client.get(url).send().await;
+        let response = client.get(url.clone()).send().await;
 
         match response {
             Ok(resp) if resp.status().is_success() => {
@@ -270,19 +238,17 @@ async fn sketch_data(
     })
     .await?
 }
-
 pub struct FailedDownload {
     accession: String,
     name: String,
-    url: String,
+    url: Option<Url>,
     moltype: String,
 }
 
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_accession(
     client: &Client,
-    accession: String,
-    name: String,
+    accinfo: GBAssemblyData,
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
@@ -296,34 +262,37 @@ async fn dl_sketch_accession(
     let mut sigs = Vec::<Signature>::new();
     let mut failed = Vec::<FailedDownload>::new();
 
+    let name = accinfo.name;
+    let accession = accinfo.accession;
+
     // keep track of any accessions for which we fail to find URLs
-    let (base_url, full_name) = match fetch_genbank_filename(client, accession.as_str()).await {
-        Ok(result) => result,
-        Err(_err) => {
-            // Add accession to failed downloads with each moltype
-            if !proteomes_only {
-                let failed_download_dna = FailedDownload {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    url: "".to_string(),
-                    moltype: "dna".to_string(),
-                };
-                failed.push(failed_download_dna);
-            }
-            if !genomes_only {
-                let failed_download_protein = FailedDownload {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    url: "".to_string(),
-                    moltype: "protein".to_string(),
-                };
-                failed.push(failed_download_protein);
-            }
+    let (base_url, full_name) =
+        match fetch_genbank_filename(client, accession.as_str(), accinfo.url).await {
+            Ok(result) => result,
+            Err(_err) => {
+                // Add accession to failed downloads with each moltype
+                if !proteomes_only {
+                    let failed_download_dna = FailedDownload {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        url: None,
+                        moltype: "dna".to_string(),
+                    };
+                    failed.push(failed_download_dna);
+                }
+                if !genomes_only {
+                    let failed_download_protein = FailedDownload {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        url: None,
+                        moltype: "protein".to_string(),
+                    };
+                    failed.push(failed_download_protein);
+                }
 
-            return Ok((sigs, failed));
-        }
-    };
-
+                return Ok((sigs, failed));
+            }
+        };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
 
     let checksums = match download_and_parse_md5(client, &md5sum_url).await {
@@ -347,7 +316,6 @@ async fn dl_sketch_accession(
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
         let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
-        // let checksum = checksums
         let data =
             match download_with_retry(client, &url, expected_md5.map(|x| x.as_str()), retry_count)
                 .await
@@ -358,7 +326,7 @@ async fn dl_sketch_accession(
                     let failed_download = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        url: url.clone(),
+                        url: Some(url),
                         moltype: file_type.moltype(),
                     };
                     failed.push(failed_download);
@@ -557,8 +525,7 @@ pub fn failures_handle(
                     url,
                 }) = recv_failed.recv().await
                 {
-                    let record = format!("{},{},{},{}\n", accession, name, moltype, url);
-
+                    let record = format!("{},{},{},{:?}\n", accession, name, moltype, url);
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
                         let error = Error::new(e).context("Failed to write record");
@@ -628,10 +595,10 @@ pub async fn download_and_sketch(
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
-    // // Error channel for handling task errors
+    // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    // //  // Set up collector/writing tasks
+    // Set up collector/writing tasks
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
@@ -641,17 +608,17 @@ pub async fn download_and_sketch(
     handles.push(failures_handle);
     handles.push(error_handle);
 
-    // // Worker tasks
+    // Worker tasks
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_accession_info(input_csv)?;
+    let (accession_info, n_accs) = load_gbassembly_info(input_csv)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
 
-    // // parse param string into params_vec, print error if fail
+    // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
     let params_vec = match param_result {
         Ok(params) => params,
@@ -679,7 +646,7 @@ pub async fn download_and_sketch(
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
-            // Report when the permit is available and processing begins
+            // progress report when the permit is available and processing begins
             if (i + 1) % reporting_threshold == 0 {
                 let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
                 println!(
@@ -692,8 +659,7 @@ pub async fn download_and_sketch(
             // Perform download and sketch
             let result = dl_sketch_accession(
                 &client_clone,
-                accinfo.accession.clone(),
-                accinfo.name.clone(),
+                accinfo.clone(),
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
