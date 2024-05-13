@@ -422,82 +422,84 @@ async fn write_sig(
 
 pub fn sigwriter_handle(
     mut recv_sigs: tokio::sync::mpsc::Receiver<Vec<Signature>>,
-    output_sigs: String,
+    output_sigs: Option<String>,
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut md5sum_occurrences = HashMap::new();
         let mut manifest_rows = Vec::new();
         let mut wrote_sigs = false;
-        let outpath: PathBuf = output_sigs.into();
+        if let Some(outpath) = output_sigs {
+            let outpath: PathBuf = outpath.into();
 
-        let file = match File::create(&outpath).await {
-            Ok(file) => file,
-            Err(e) => {
-                let error =
-                    anyhow::Error::new(e).context("Failed to create file at specified path");
-                let _ = error_sender.send(error).await; // Send the error through the channel
-                return; // Simply exit the task as error handling is managed elsewhere
-            }
-        };
-        let mut zip_writer = ZipFileWriter::with_tokio(file);
+            let file = match File::create(&outpath).await {
+                Ok(file) => file,
+                Err(e) => {
+                    let error =
+                        anyhow::Error::new(e).context("Failed to create file at specified path");
+                    let _ = error_sender.send(error).await; // Send the error through the channel
+                    return; // Simply exit the task as error handling is managed elsewhere
+                }
+            };
+            let mut zip_writer = ZipFileWriter::with_tokio(file);
 
-        while let Some(sigs) = recv_sigs.recv().await {
-            for sig in sigs {
-                match write_sig(
-                    &sig,
-                    &mut md5sum_occurrences,
-                    &mut manifest_rows,
-                    &mut zip_writer,
-                )
-                .await
-                {
-                    Ok(_) => wrote_sigs = true,
-                    Err(e) => {
-                        let error = e.context("Error processing signature");
-                        if (error_sender.send(error).await).is_err() {
-                            return; // Exit on failure to send error
+            while let Some(sigs) = recv_sigs.recv().await {
+                for sig in sigs {
+                    match write_sig(
+                        &sig,
+                        &mut md5sum_occurrences,
+                        &mut manifest_rows,
+                        &mut zip_writer,
+                    )
+                    .await
+                    {
+                        Ok(_) => wrote_sigs = true,
+                        Err(e) => {
+                            let error = e.context("Error processing signature");
+                            if (error_sender.send(error).await).is_err() {
+                                return; // Exit on failure to send error
+                            }
                         }
                     }
                 }
             }
-        }
 
-        if wrote_sigs {
-            println!("Writing manifest");
-            let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
-            let manifest: Manifest = manifest_rows.clone().into();
-            let mut manifest_buffer = Vec::new();
-            manifest
-                .to_writer(&mut manifest_buffer)
-                .expect("Failed to serialize manifest"); // Handle this more gracefully in production
+            if wrote_sigs {
+                println!("Writing manifest");
+                let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+                let manifest: Manifest = manifest_rows.clone().into();
+                let mut manifest_buffer = Vec::new();
+                manifest
+                    .to_writer(&mut manifest_buffer)
+                    .expect("Failed to serialize manifest"); // Handle this more gracefully in production
 
-            let now = Utc::now();
-            let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
-                .last_modification_date(ZipDateTime::from_chrono(&now));
+                let now = Utc::now();
+                let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
+                    .last_modification_date(ZipDateTime::from_chrono(&now));
 
-            if let Err(e) = zip_writer
-                .write_entry_whole(builder, &manifest_buffer)
-                .await
-            {
-                let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
-                let _ = error_sender.send(error).await;
-                return;
+                if let Err(e) = zip_writer
+                    .write_entry_whole(builder, &manifest_buffer)
+                    .await
+                {
+                    let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
+                    let _ = error_sender.send(error).await;
+                    return;
+                }
+
+                if let Err(e) = zip_writer.close().await {
+                    let error = anyhow::Error::new(e).context("Failed to close ZIP file");
+                    let _ = error_sender.send(error).await;
+                    return;
+                }
+            } else {
+                let error = anyhow::Error::new(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "No signatures written",
+                ));
+                let _ = error_sender.send(error).await; // Send error about no signatures written
             }
-
-            if let Err(e) = zip_writer.close().await {
-                let error = anyhow::Error::new(e).context("Failed to close ZIP file");
-                let _ = error_sender.send(error).await;
-                return;
-            }
-        } else {
-            let error = anyhow::Error::new(std::io::Error::new(
-                std::io::ErrorKind::Other,
-                "No signatures written",
-            ));
-            let _ = error_sender.send(error).await; // Send error about no signatures written
         }
-        drop(error_sender);
+        drop(error_sender); // should be dropped automatically as it goes out of scope, but just in case
     })
 }
 
@@ -569,7 +571,6 @@ pub fn error_handler(
 pub async fn download_and_sketch(
     py: Python,
     input_csv: String,
-    output_sigs: String,
     param_str: String,
     failed_csv: String,
     retry_times: u32,
@@ -578,13 +579,16 @@ pub async fn download_and_sketch(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
+    output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    // if sig output doesn't end in zip, bail
-    if Path::new(&output_sigs)
-        .extension()
-        .map_or(true, |ext| ext != "zip")
-    {
-        bail!("Output must be a zip file.");
+    // if sig output provided but doesn't end in zip, bail
+    if let Some(ref output_sigs) = output_sigs {
+        if Path::new(&output_sigs)
+            .extension()
+            .map_or(true, |ext| ext != "zip")
+        {
+            bail!("Output must be a zip file.");
+        }
     }
     // set up fasta download path
     let download_path = PathBuf::from(fasta_location);
@@ -699,9 +703,11 @@ pub async fn download_and_sketch(
             .await;
             match result {
                 Ok((sigs, failed_downloads)) => {
-                    if let Err(e) = send_sigs.send(sigs).await {
-                        eprintln!("Failed to send signatures: {}", e);
-                        let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                    if !sigs.is_empty() {
+                        if let Err(e) = send_sigs.send(sigs).await {
+                            eprintln!("Failed to send signatures: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
                     }
                     for fail in failed_downloads {
                         if let Err(e) = send_failed.send(fail).await {

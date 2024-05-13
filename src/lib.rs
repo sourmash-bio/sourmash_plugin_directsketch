@@ -54,18 +54,17 @@ fn do_gbsketch(
     input_csv: String,
     param_str: String,
     failed_csv: String,
-    output_sigs: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
+    output_sigs: Option<String>,
 ) -> anyhow::Result<u8> {
     match directsketch::download_and_sketch(
         py,
         input_csv,
-        output_sigs,
         param_str,
         failed_csv,
         retry_times,
@@ -74,6 +73,7 @@ fn do_gbsketch(
         genomes_only,
         proteomes_only,
         download_only,
+        output_sigs,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {
