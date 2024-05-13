@@ -23,7 +23,7 @@ use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{build_siginfo, load_gbassembly_info, parse_params_str, GBAssemblyData};
-use reqwest::Url;
+use reqwest::{Response, Url};
 
 #[allow(dead_code)]
 enum GenBankFileType {
@@ -80,62 +80,44 @@ async fn find_genome_directory(
     db: &str,
     number_path: &str,
     accession: &str,
-    number: &str,
+    acc_number: &str,
+    version: &str,
 ) -> Result<(Url, String)> {
     let base_url = format!(
         "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
         db, number_path
     );
-    let directory_response = client.get(&base_url).send().await;
+    let directory_response = client.get(&base_url).send().await?;
 
-    match directory_response {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to open genome directory: HTTP {}, {}",
-                    response.status(),
-                    response
-                        .status()
-                        .canonical_reason()
-                        .unwrap_or("Unknown reason")
-                ));
-            }
+    if !directory_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to open genome directory: HTTP {}, {}",
+            directory_response.status(),
+            directory_response
+                .status()
+                .canonical_reason()
+                .unwrap_or("Unknown reason")
+        ));
+    }
+    let text = directory_response.text().await?;
+    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?; // do not capture trailing slash
 
-            let text = response.text().await?;
-            let link_regex = Regex::new(r#"<a href="([^"]*)""#)?;
+    for cap in link_regex.captures_iter(&text) {
+        let name = &cap[1];
 
-            for cap in link_regex.captures_iter(&text) {
-                let name = &cap[1];
-                let clean_name = if name.ends_with('/') {
-                    name.strip_suffix('/').unwrap()
-                } else {
-                    name
-                };
+        // Use acc numerical identifier and version as expected pattern
+        let expected_pattern = format!("{}.{}", acc_number, version);
 
-                if clean_name.starts_with(db)
-                    && clean_name
-                        .split('_')
-                        .nth(1)
-                        .map_or(false, |x| x.starts_with(number))
-                {
-                    let url = Url::parse(&format!("{}/{}", base_url, clean_name))?;
-                    return Ok((url, clean_name.into()));
-                }
-            }
-            Err(anyhow!(
-                "No matching directory found for accession {}",
-                accession
-            ))
-        }
-        Err(e) => {
-            // eprintln!("HTTP request failed for accession {}: {}", accession, e);
-            Err(anyhow!(
-                "HTTP request failed for accession {}: {}",
-                accession,
-                e
-            ))
+        // Check if directory name contains contains the right acc number and version
+        if name.contains(&expected_pattern) {
+            let url = format!("{}/{}", base_url, name).parse()?;
+            return Ok((url, name.to_string()));
         }
     }
+    Err(anyhow!(
+        "No matching directory found for accession {}",
+        accession
+    ))
 }
 
 async fn fetch_genbank_filename(
@@ -147,8 +129,8 @@ async fn fetch_genbank_filename(
         .trim()
         .split_once('_')
         .ok_or_else(|| anyhow!("Invalid accession format"))?;
-    let (number, _) = acc.split_once('.').unwrap_or((acc, "1"));
-    let number_path = number
+    let (acc_number, version) = acc.split_once('.').unwrap_or((acc, "1"));
+    let number_path = acc_number
         .chars()
         .collect::<Vec<_>>()
         .chunks(3)
@@ -168,7 +150,7 @@ async fn fetch_genbank_filename(
         // let base_url = Url::parse(&url_parts.iter().take(url_parts.len() - 1).copied().collect::<Vec<_>>().join("/"))?;
         (url, name)
     } else {
-        find_genome_directory(client, db, &number_path, accession, number).await?
+        find_genome_directory(client, db, &number_path, accession, acc_number, version).await?
     };
 
     return Ok((url, name));
