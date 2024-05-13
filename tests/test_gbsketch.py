@@ -249,7 +249,7 @@ def test_gbsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
-def test_gbsketch_download_only(runtmp):
+def test_gbsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -264,14 +264,15 @@ def test_gbsketch_download_only(runtmp):
     # why does this need ksize =30 and not ksize = 10!???
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
-    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output, '--download-only',
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
                     '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
-    assert os.path.exists(output) # would be better if this didn't exist
     assert not runtmp.last_result.out # stdout should be empty
     fa_files = os.listdir(out_dir)
     assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+    captured = capfd.readouterr()
+    assert "Failed to send signatures: channel closed" not in captured.err
    
 
 def test_gbsketch_bad_acc(runtmp):

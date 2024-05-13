@@ -39,7 +39,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
     def __init__(self, p):
         super().__init__(p)
         p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
-        p.add_argument('-o', '--output', required=True,
+        p.add_argument('-o', '--output', default=None,
                        help='output zip file for the signatures')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
@@ -82,14 +82,19 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,
                                                            args.param_string,
                                                            args.failed,
-                                                           args.output,
                                                            args.retry_times,
                                                            args.fastas,
                                                            args.keep_fastas,
                                                            args.genomes_only,
                                                            args.proteomes_only,
-                                                           args.download_only)
+                                                           args.download_only,
+                                                           args.output)
         
         if status == 0:
-            notify(f"...gbsketch is done! Sigs in '{args.output}'. Fastas in '{args.fastas}'.")
+            notify("...gbsketch is done!")
+            if args.output is not None:
+                notify(f"Sigs in '{args.output}'.")
+            if args.keep_fastas:
+                notify(f"FASTAs in '{args.fastas}'.")
+
         return status
