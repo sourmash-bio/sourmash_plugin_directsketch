@@ -1,6 +1,7 @@
 # sourmash_plugin_directsketch
 
 [![PyPI](https://img.shields.io/pypi/v/sourmash_plugin_directsketch)](https://pypi.org/project/sourmash_plugin_directsketch/)
+[![DOI](https://zenodo.org/badge/792101561.svg)](https://zenodo.org/doi/10.5281/zenodo.11165725)
 
 
 tl;dr - download and sketch NCBI Assembly Datasets by accession
