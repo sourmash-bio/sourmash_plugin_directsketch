@@ -330,3 +330,27 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     print(captured.out)
     print(captured.err)
     assert "Error: No signatures written, exiting." in captured.err
+
+
+def test_gbsketch_version_bug(runtmp):
+    acc_csv = get_test_data('acc-version.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000193795.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert sig.name == ss1.name == "GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19"
+        assert sig.md5sum() == ss1.md5sum() == "7ead366dcfed8e8ab938f771459c4e94"
