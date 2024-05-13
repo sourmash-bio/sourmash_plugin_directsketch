@@ -67,7 +67,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if args.download_only and not args.keep_fastas:
             notify("Error: '--download-only' requires '--keep-fastas'.")
             sys.exit(-1)
-            
+        if args.output is None and not args.download_only:
+            notify("Error: output signature zipfile is required if not using '--download-only'.")
+            sys.exit(-1)
 
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)

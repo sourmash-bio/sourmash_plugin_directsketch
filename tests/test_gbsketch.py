@@ -351,6 +351,7 @@ def test_gbsketch_missing_accfile(runtmp, capfd):
     print(captured.err)
     assert "Error: No such file or directory" in captured.err
 
+
 def test_gbsketch_empty_accfile(runtmp, capfd):
     acc_csv = get_test_data('acc1.csv')
     with open(acc_csv, 'w') as file:
@@ -432,3 +433,17 @@ def test_gbsketch_cols_trailing_commas(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
     assert 'Error: CSV error: record 1 (line: 1, byte: 24): found record with 2 fields, but the previous record has 3 fields' in captured.err
+
+
+def test_gbsketch_missing_output(runtmp):
+    # no output sig zipfile provided but also not --download-only
+    acc_csv = runtmp.output('acc1.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
