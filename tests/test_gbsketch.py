@@ -265,7 +265,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert "Error: No accessions to download and sketch." in captured.err
+    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "url"]' in captured.err
 
 
 def test_gbsketch_bad_acc_fail(runtmp, capfd):

@@ -4,24 +4,59 @@ use sourmash::signature::Signature;
 use std::hash::Hash;
 use std::hash::Hasher;
 
+#[derive(Clone)]
+pub enum InputMolType {
+    Dna,
+    Protein,
+    Unknown,
+}
+
+impl std::str::FromStr for InputMolType {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "dna" => Ok(InputMolType::Dna),
+            "protein" => Ok(InputMolType::Protein),
+            _ => Err(()),
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
-    // pub moltype: String,
-    // pub url: Some(Vec<PathBuf>),
+    pub input_moltype: InputMolType,
+    pub url: reqwest::Url,
+    pub md5sum: Option<String>,
 }
 
-pub fn load_accession_info(
-    input_csv: String,
-    // include_genomic: bool,
-    // include_protein: bool,
-) -> Result<(Vec<AccessionData>, usize)> {
+#[derive(Clone)]
+pub struct GBAssemblyData {
+    pub accession: String,
+    pub name: String,
+    pub url: Option<reqwest::Url>,
+}
+
+pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
     let mut duplicate_count = 0;
-    // to do - maybe use HashSet for accessions too to avoid dupes
+    let mut url_count = 0; // Counter for entries with URL
+                           // to do - maybe use HashSet for accessions too to avoid incomplete dupes
     let mut rdr = csv::Reader::from_path(input_csv)?;
+
+    // Check column names
+    let header = rdr.headers()?;
+    let expected_header = vec!["accession", "name", "url"];
+    if header != expected_header {
+        return Err(anyhow!(
+            "Invalid column names in CSV file. Columns should be: {:?}",
+            expected_header
+        ));
+    }
 
     for result in rdr.records() {
         let record = result?;
@@ -32,6 +67,8 @@ pub fn load_accession_info(
         }
         processed_rows.insert(row_string.clone());
         row_count += 1;
+
+        // require acc, name
         let acc = record
             .get(0)
             .ok_or_else(|| anyhow!("Missing 'accession' field"))?
@@ -41,10 +78,23 @@ pub fn load_accession_info(
             .ok_or_else(|| anyhow!("Missing 'name' field"))?
             .to_string();
 
+        // optionally get url
+        let url = record.get(3).and_then(|s| {
+            if s.is_empty() {
+                None
+            } else {
+                reqwest::Url::parse(s).map_err(|_| ()).ok()
+            }
+        });
+
+        if url.is_some() {
+            url_count += 1;
+        }
         // store accession data
-        results.push(AccessionData {
+        results.push(GBAssemblyData {
             accession: acc.to_string(),
             name: name.to_string(),
+            url: url,
         });
     }
 
@@ -52,7 +102,95 @@ pub fn load_accession_info(
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
     }
-    println!("Loaded {} rows in total", row_count);
+    println!(
+        "Loaded {} rows (including {} rows with valid URL).",
+        row_count, url_count
+    );
+
+    Ok((results, row_count))
+}
+
+pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usize)> {
+    let mut results = Vec::new();
+    let mut row_count = 0;
+    let mut processed_rows = std::collections::HashSet::new();
+    let mut duplicate_count = 0;
+    let mut md5sum_count = 0; // Counter for entries with MD5sum
+                              // to do - maybe use HashSet for accessions too to avoid incomplete dupes
+    let mut rdr = csv::Reader::from_path(input_csv)?;
+
+    // Check column names
+    let header = rdr.headers()?;
+    let expected_header = vec!["accession", "name", "input_moltype", "url", "md5sum"];
+    if header != expected_header {
+        return Err(anyhow!(
+            "Invalid column names in CSV file. Columns should be: {:?}",
+            expected_header
+        ));
+    }
+
+    for result in rdr.records() {
+        let record = result?;
+        let row_string = record.iter().collect::<Vec<_>>().join(",");
+        if processed_rows.contains(&row_string) {
+            duplicate_count += 1;
+            continue;
+        }
+        processed_rows.insert(row_string.clone());
+        row_count += 1;
+
+        // require acc, name
+        let acc = record
+            .get(0)
+            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
+            .to_string();
+        let name = record
+            .get(1)
+            .ok_or_else(|| anyhow!("Missing 'name' field"))?
+            .to_string();
+        let input_moltype = record
+            .get(2)
+            .ok_or_else(|| anyhow!("Missing 'input_moltype' field"))?
+            .parse::<InputMolType>()
+            .map_err(|_| anyhow!("Invalid 'input_moltype' value"))?;
+        let url = record
+            .get(3)
+            .ok_or_else(|| anyhow!("Missing 'url' field"))?
+            .split(',')
+            .filter_map(|s| {
+                if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://")
+                {
+                    reqwest::Url::parse(s).ok()
+                } else {
+                    None
+                }
+            })
+            .next()
+            .ok_or_else(|| anyhow!("Invalid 'url' value"))?;
+        let md5sum = record.get(4).map(|s| s.to_string());
+
+        // count entries with url and md5sum
+        if md5sum.is_some() {
+            md5sum_count += 1;
+        }
+        // store accession data
+        results.push(AccessionData {
+            accession: acc.to_string(),
+            name: name.to_string(),
+            input_moltype,
+            url: url,
+            md5sum,
+        });
+    }
+
+    // Print warning if there were duplicated rows.
+    if duplicate_count > 0 {
+        println!("Warning: {} duplicated rows were skipped.", duplicate_count);
+    }
+    println!(
+        "Loaded {} rows (including {} rows with MD5sum).",
+        row_count, md5sum_count
+    );
 
     Ok((results, row_count))
 }
