@@ -629,6 +629,33 @@ pub async fn download_and_sketch(
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
+    let mut genomes_only = genomes_only;
+    let mut proteomes_only = proteomes_only;
+
+    // Check if dna_sig_templates is empty and not keep_fastas
+    if dna_sig_templates.is_empty() && !keep_fastas {
+        eprintln!("No DNA signature templates provided, and --keep-fastas is not set.");
+        proteomes_only = true;
+    }
+    // Check if protein_sig_templates is empty and not keep_fastas
+    if prot_sig_templates.is_empty() && !keep_fastas {
+        eprintln!("No protein signature templates provided, and --keep-fastas is not set.");
+        genomes_only = true;
+    }
+    if genomes_only {
+        if !download_only {
+            eprintln!("Downloading and sketching genomes only.");
+        } else {
+            eprintln!("Downloading genomes only.");
+        }
+    } else if proteomes_only {
+        if !download_only {
+            eprintln!("Downloading and sketching proteomes only.");
+        } else {
+            eprintln!("Downloading proteomes only.");
+        }
+    }
+
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 

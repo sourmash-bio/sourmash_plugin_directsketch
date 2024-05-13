@@ -148,6 +148,68 @@ def test_gbsketch_proteomes_only(runtmp):
         assert sig.md5sum() == ss3.md5sum()
 
 
+def test_gbsketch_genomes_only_via_params(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    captured = capfd.readouterr()
+
+    assert len(sigs) == 2
+    for sig in sigs:
+        if 'GCA_000175535.1' in sig.name:
+            assert sig.name == ss1.name
+            assert sig.md5sum() == ss1.md5sum()
+        elif 'GCA_000961135.2' in sig.name:
+            assert sig.name == ss2.name
+            assert sig.md5sum() == ss2.md5sum()
+    assert 'No protein signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'Downloading and sketching genomes only.' in captured.err
+
+
+def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    # why does this need ksize =30 and not ksize = 10!???
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    print(runtmp.last_result.err)
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    captured = capfd.readouterr()
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert 'GCA_000961135.2' in sig.name
+        assert sig.md5sum() == ss3.md5sum()
+    assert 'No DNA signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'Downloading and sketching proteomes only.' in captured.err
+
+
 def test_gbsketch_save_fastas(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
