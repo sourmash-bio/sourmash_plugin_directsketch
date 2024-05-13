@@ -75,8 +75,9 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
         .trim()
         .split_once('_')
         .ok_or_else(|| anyhow!("Invalid accession format"))?;
-    let (number, _) = acc.split_once('.').unwrap_or((acc, "1"));
-    let number_path = number
+    let (acc_number, version) = acc.split_once('.').unwrap_or((acc, "1"));
+
+    let number_path = acc_number
         .chars()
         .collect::<Vec<_>>()
         .chunks(3)
@@ -88,55 +89,39 @@ async fn fetch_genbank_filename(client: &Client, accession: &str) -> Result<(Str
         "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
         db, number_path
     );
-    let directory_response = client.get(&base_url).send().await;
 
-    match directory_response {
-        Ok(response) => {
-            if !response.status().is_success() {
-                return Err(anyhow!(
-                    "Failed to open genome directory: HTTP {}, {}",
-                    response.status(),
-                    response
-                        .status()
-                        .canonical_reason()
-                        .unwrap_or("Unknown reason")
-                ));
-            }
+    let directory_response = client.get(&base_url).send().await?;
 
-            let text = response.text().await?;
-            let link_regex = Regex::new(r#"<a href="([^"]*)""#)?;
+    if !directory_response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to open genome directory: HTTP {}, {}",
+            directory_response.status(),
+            directory_response
+                .status()
+                .canonical_reason()
+                .unwrap_or("Unknown reason")
+        ));
+    }
 
-            for cap in link_regex.captures_iter(&text) {
-                let name = &cap[1];
-                let clean_name = if name.ends_with('/') {
-                    name.strip_suffix('/').unwrap()
-                } else {
-                    name
-                };
+    let text = directory_response.text().await?;
+    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?; // do not capture trailing slash
 
-                if clean_name.starts_with(db)
-                    && clean_name
-                        .split('_')
-                        .nth(1)
-                        .map_or(false, |x| x.starts_with(number))
-                {
-                    return Ok((format!("{}/{}", base_url, clean_name), clean_name.into()));
-                }
-            }
-            Err(anyhow!(
-                "No matching directory found for accession {}",
-                accession
-            ))
-        }
-        Err(e) => {
-            // eprintln!("HTTP request failed for accession {}: {}", accession, e);
-            Err(anyhow!(
-                "HTTP request failed for accession {}: {}",
-                accession,
-                e
-            ))
+    for cap in link_regex.captures_iter(&text) {
+        let name = &cap[1]; // Directory name without trailing slash
+
+        // Use the numerical identifier and version as the expected pattern
+        let expected_pattern = format!("{}.{}", acc_number, version);
+
+        // Check if the directory name contains contains the right acc number and version
+        if name.contains(&expected_pattern) {
+            return Ok((format!("{}/{}", base_url, name), name.to_string()));
         }
     }
+
+    Err(anyhow!(
+        "No matching directory found for accession {}",
+        accession
+    ))
 }
 
 async fn download_and_parse_md5(client: &Client, url: &str) -> Result<HashMap<String, String>> {
