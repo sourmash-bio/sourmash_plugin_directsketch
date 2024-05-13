@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use reqwest::Url;
 use sourmash::cmd::ComputeParameters;
 use sourmash::signature::Signature;
 use std::hash::Hash;
@@ -8,7 +9,6 @@ use std::hash::Hasher;
 pub enum InputMolType {
     Dna,
     Protein,
-    Unknown,
 }
 
 impl std::str::FromStr for InputMolType {
@@ -19,6 +19,56 @@ impl std::str::FromStr for InputMolType {
             "dna" => Ok(InputMolType::Dna),
             "protein" => Ok(InputMolType::Protein),
             _ => Err(()),
+        }
+    }
+}
+
+#[allow(dead_code)]
+pub enum GenBankFileType {
+    Genomic,
+    Protein,
+    AssemblyReport,
+    Checksum,
+}
+
+impl GenBankFileType {
+    pub fn suffix(&self) -> &'static str {
+        match self {
+            GenBankFileType::Genomic => "_genomic.fna.gz",
+            GenBankFileType::Protein => "_protein.faa.gz",
+            GenBankFileType::AssemblyReport => "_assembly_report.txt",
+            GenBankFileType::Checksum => "md5checksums.txt",
+        }
+    }
+
+    //use for checksums
+    pub fn server_filename(&self, full_name: &str) -> String {
+        format!("{}{}", full_name, self.suffix())
+    }
+
+    pub fn filename_to_write(&self, accession: &str) -> String {
+        match self {
+            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
+            _ => format!("{}{}", accession, self.suffix()),
+        }
+    }
+
+    pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
+        match self {
+            GenBankFileType::Checksum => base_url
+                .join(&format!("{}/{}", full_name, self.suffix()))
+                .unwrap(),
+            _ => base_url
+                .join(&format!("{}/{}{}", full_name, full_name, self.suffix()))
+                .unwrap(),
+        }
+    }
+
+    pub fn moltype(&self) -> String {
+        match self {
+            GenBankFileType::Genomic => "DNA".to_string(),
+            GenBankFileType::Protein => "protein".to_string(),
+            _ => "".to_string(),
         }
     }
 }

@@ -22,58 +22,10 @@ use pyo3::prelude::*;
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
-use crate::utils::{build_siginfo, load_gbassembly_info, parse_params_str, GBAssemblyData};
-use reqwest::{Response, Url};
-
-#[allow(dead_code)]
-enum GenBankFileType {
-    Genomic,
-    Protein,
-    AssemblyReport,
-    Checksum,
-}
-
-impl GenBankFileType {
-    fn suffix(&self) -> &'static str {
-        match self {
-            GenBankFileType::Genomic => "_genomic.fna.gz",
-            GenBankFileType::Protein => "_protein.faa.gz",
-            GenBankFileType::AssemblyReport => "_assembly_report.txt",
-            GenBankFileType::Checksum => "md5checksums.txt",
-        }
-    }
-
-    //use for checksums
-    fn server_filename(&self, full_name: &str) -> String {
-        format!("{}{}", full_name, self.suffix())
-    }
-
-    fn filename_to_write(&self, accession: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    fn url(&self, base_url: &Url, full_name: &str) -> Url {
-        match self {
-            GenBankFileType::Checksum => base_url
-                .join(&format!("{}/{}", full_name, self.suffix()))
-                .unwrap(),
-            _ => base_url
-                .join(&format!("{}/{}{}", full_name, full_name, self.suffix()))
-                .unwrap(),
-        }
-    }
-
-    fn moltype(&self) -> String {
-        match self {
-            GenBankFileType::Genomic => "DNA".to_string(),
-            GenBankFileType::Protein => "protein".to_string(),
-            _ => "".to_string(),
-        }
-    }
-}
+use crate::utils::{
+    build_siginfo, load_gbassembly_info, parse_params_str, GBAssemblyData, GenBankFileType,
+};
+use reqwest::Url;
 
 async fn find_genome_directory(
     client: &Client,
@@ -100,7 +52,7 @@ async fn find_genome_directory(
         ));
     }
     let text = directory_response.text().await?;
-    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?; // do not capture trailing slash
+    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?;
 
     for cap in link_regex.captures_iter(&text) {
         let name = &cap[1];
@@ -147,7 +99,6 @@ async fn fetch_genbank_filename(
             .last()
             .ok_or_else(|| anyhow!("Failed to extract name from URL"))?
             .to_string();
-        // let base_url = Url::parse(&url_parts.iter().take(url_parts.len() - 1).copied().collect::<Vec<_>>().join("/"))?;
         (url, name)
     } else {
         find_genome_directory(client, db, &number_path, accession, acc_number, version).await?
@@ -365,7 +316,6 @@ async fn dl_sketch_accession(
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
         let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
-        // let checksum = checksums
         let data =
             match download_with_retry(client, &url, expected_md5.map(|x| x.as_str()), retry_count)
                 .await
@@ -645,10 +595,10 @@ pub async fn download_and_sketch(
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
-    // // Error channel for handling task errors
+    // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    // //  // Set up collector/writing tasks
+    // Set up collector/writing tasks
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
@@ -658,7 +608,7 @@ pub async fn download_and_sketch(
     handles.push(failures_handle);
     handles.push(error_handle);
 
-    // // Worker tasks
+    // Worker tasks
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
@@ -668,7 +618,7 @@ pub async fn download_and_sketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // // parse param string into params_vec, print error if fail
+    // parse param string into params_vec, print error if fail
     let param_result = parse_params_str(param_str);
     let params_vec = match param_result {
         Ok(params) => params,
@@ -696,7 +646,7 @@ pub async fn download_and_sketch(
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
-            // Report when the permit is available and processing begins
+            // progress report when the permit is available and processing begins
             if (i + 1) % reporting_threshold == 0 {
                 let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
                 println!(

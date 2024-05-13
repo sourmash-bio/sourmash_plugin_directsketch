@@ -26,7 +26,7 @@ def test_gbsketch_simple(runtmp):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -46,7 +46,7 @@ def test_gbsketch_simple(runtmp):
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -61,7 +61,7 @@ def test_gbsketch_genomes_only(runtmp):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
@@ -78,7 +78,7 @@ def test_gbsketch_genomes_only(runtmp):
 
     assert len(sigs) == 2
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -118,7 +118,7 @@ def test_gbsketch_save_fastas(runtmp):
     out_dir = runtmp.output('out_fastas')
 
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -133,14 +133,14 @@ def test_gbsketch_save_fastas(runtmp):
     assert os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty
     fa_files = os.listdir(out_dir)
-    assert set(fa_files) == set(['GCA_000175555.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -157,7 +157,7 @@ def test_gbsketch_download_only(runtmp):
     out_dir = runtmp.output('out_fastas')
 
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -172,7 +172,7 @@ def test_gbsketch_download_only(runtmp):
     assert os.path.exists(output) # would be better if this didn't exist
     assert not runtmp.last_result.out # stdout should be empty
     fa_files = os.listdir(out_dir)
-    assert set(fa_files) == set(['GCA_000175555.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
    
 
 def test_gbsketch_bad_acc(runtmp):
@@ -184,15 +184,15 @@ def test_gbsketch_bad_acc(runtmp):
             # if this acc exist in line, copy it and write an extra line with an invalid accession
             outF.write(line)
             print(line)
-            if "GCA_000175555.1" in line:
-                mod_line = line.replace('GCA_000175555.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
                 outF.write(mod_line)
 
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    sig1 = get_test_data('GCA_000175555.1.sig.gz')
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
@@ -226,7 +226,7 @@ def test_gbsketch_bad_acc(runtmp):
 
     assert len(sigs) == 3
     for sig in sigs:
-        if 'GCA_000175555.1' in sig.name:
+        if 'GCA_000175535.1' in sig.name:
             assert sig.name == ss1.name
             assert sig.md5sum() == ss1.md5sum()
         elif 'GCA_000961135.2' in sig.name:
@@ -276,8 +276,8 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
         outF.write(lines[0])  # write the header line
         for line in lines:
             # if this acc exist in line, copy it and write
-            if "GCA_000175555.1" in line:
-                mod_line = line.replace('GCA_000175555.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
                 outF.write(mod_line)
     
