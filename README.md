@@ -25,7 +25,7 @@ accession,name,ftp_path
 GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45,
 GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2,
 ```
-> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty, and no additional columns may be present.
+> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty, but no additional columns may be present.
 
 #### What is ftp_path?
 
