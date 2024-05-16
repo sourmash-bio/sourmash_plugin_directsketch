@@ -12,6 +12,13 @@ This plugin is an attempt to improve database generation by downloading assembli
 
 ## Installation
 
+Prior to install, verify that `rust` is installed:
+```
+rustc --version
+```
+> If not, follow [instruction for install here.](https://forge.rust-lang.org/infra/other-installation-methods.html)
+
+Install plugin:
 ```
 pip install sourmash_plugin_directsketch
 ```
