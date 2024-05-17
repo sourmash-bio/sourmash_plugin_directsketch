@@ -43,7 +43,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='output zip file for the signatures')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
-        p.add_argument('-k', '--keep-fastas', action='store_true',
+        p.add_argument('-k', '--keep-fasta', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
         p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
@@ -86,7 +86,74 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.failed,
                                                            args.retry_times,
                                                            args.fastas,
-                                                           args.keep_fastas,
+                                                           args.keep_fasta,
+                                                           args.genomes_only,
+                                                           args.proteomes_only,
+                                                           args.download_only,
+                                                           args.output)
+        
+        if status == 0:
+            notify("...gbsketch is done!")
+            if args.output is not None:
+                notify(f"Sigs in '{args.output}'.")
+            if args.keep_fastas:
+                notify(f"FASTAs in '{args.fastas}'.")
+
+        return status
+
+
+class Download_and_Sketch_Url(CommandLinePlugin):
+    command = 'urlsketch'
+    description = 'download and sketch GenBank assembly datasets'
+
+    def __init__(self, p):
+        super().__init__(p)
+        p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
+        p.add_argument('-o', '--output', default=None,
+                       help='output zip file for the signatures')
+        p.add_argument('-f', '--fastas',
+                       help='Write fastas here', default = '.')
+        p.add_argument('-k', '--keep-fasta', '--keep-fastq', action='store_true',
+                       help="write FASTA/Q files in addition to sketching. Default: do not write FASTA files")
+        p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
+        p.add_argument('--failed',help='csv of failed accessions and download links (should be mostly protein).')
+        p.add_argument('-p', '--param-string', action='append', type=str, default=[],
+                          help='parameter string for sketching (default: k=31,scaled=1000)')
+        p.add_argument('-c', '--cores', default=0, type=int,
+                       help='number of cores to use (default is all available)')
+        p.add_argument('-r', '--retry-times', default=1, type=int,
+                       help='number of times to retry failed downloads')
+
+
+    def main(self, args):
+        print_version()
+        if not args.param_string:
+            args.param_string = ["k=31,scaled=1000"]
+        notify(f"params: {args.param_string}")
+
+        if args.download_only and not args.keep_fastas:
+            notify("Error: '--download-only' requires '--keep-fasta'.")
+            sys.exit(-1)
+        if args.output is None and not args.download_only:
+            notify("Error: output signature zipfile is required if not using '--download-only'.")
+            sys.exit(-1)
+
+        # convert to a single string for easier rust handling
+        args.param_string = "_".join(args.param_string)
+        # lowercase the param string
+        args.param_string = args.param_string.lower()
+
+        num_threads = set_thread_pool(args.cores)
+
+        notify(f"downloading and sketching all accessions in '{args.input_csv} using {num_threads} threads")
+
+        super().main(args)
+        status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,
+                                                           args.param_string,
+                                                           args.failed,
+                                                           args.retry_times,
+                                                           args.fastas,
+                                                           args.keep_fasta,
                                                            args.genomes_only,
                                                            args.proteomes_only,
                                                            args.download_only,

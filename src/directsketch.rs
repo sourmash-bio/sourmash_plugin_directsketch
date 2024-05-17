@@ -23,7 +23,8 @@ use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{
-    build_siginfo, load_gbassembly_info, parse_params_str, GBAssemblyData, GenBankFileType,
+    build_siginfo, load_gbassembly_info, parse_params_str, AccessionData, GBAssemblyData,
+    GenBankFileType,
 };
 use reqwest::Url;
 
@@ -246,7 +247,7 @@ pub struct FailedDownload {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn dl_sketch_accession(
+async fn dl_sketch_assembly_accession(
     client: &Client,
     accinfo: GBAssemblyData,
     location: &PathBuf,
@@ -333,6 +334,105 @@ async fn dl_sketch_accession(
                     continue;
                 }
             };
+        let file_name = file_type.filename_to_write(&accession);
+
+        if keep_fastas {
+            let path = location.join(&file_name);
+            fs::write(&path, &data).context("Failed to write data to file")?;
+        }
+        if !download_only {
+            // sketch data
+            match file_type {
+                GenBankFileType::Genomic => sigs.extend(
+                    sketch_data(
+                        name.clone(),
+                        file_name.clone(),
+                        data,
+                        dna_sigs.clone(),
+                        "dna".to_string(),
+                    )
+                    .await?,
+                ),
+                GenBankFileType::Protein => {
+                    sigs.extend(
+                        sketch_data(
+                            name.clone(),
+                            file_name.clone(),
+                            data,
+                            prot_sigs.clone(),
+                            "protein".to_string(),
+                        )
+                        .await?,
+                    );
+                }
+                _ => {} // Do nothing for other file types
+            };
+        }
+    }
+
+    Ok((sigs, failed))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dl_sketch_url(
+    client: &Client,
+    accinfo: AccessionData,
+    location: &PathBuf,
+    retry: Option<u32>,
+    keep_fastas: bool,
+    dna_sigs: Vec<Signature>,
+    prot_sigs: Vec<Signature>,
+    genomes_only: bool,
+    proteomes_only: bool,
+    download_only: bool,
+) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
+    let retry_count = retry.unwrap_or(3); // Default retry count
+    let mut sigs = Vec::<Signature>::new();
+    let mut failed = Vec::<FailedDownload>::new();
+
+    let name = accinfo.name;
+    let accession = accinfo.accession;
+    let url = accinfo.url;
+    let expected_md5 = accinfo.expected_md5sum;
+    let download_filename = accinfo.download_filename;
+    let input_moltype = accinfo.input_moltype;
+
+    // let mut file_types = vec![
+    //     GenBankFileType::Genomic,
+    //     GenBankFileType::Protein,
+    //     // GenBankFileType::AssemblyReport,
+    // ];
+    // if genomes_only {
+    //     file_types = vec![GenBankFileType::Genomic];
+    // } else if proteomes_only {
+    //     file_types = vec![GenBankFileType::Protein];
+    // }
+
+    let data = match download_with_retry(
+        client,
+        &url,
+        expected_md5.map(|x| x.as_str()),
+        retry_count,
+    )
+    .await
+    {
+        Ok(data) => data,
+        Err(_err) => {
+            // here --> keep track of accession errors + filetype
+            let failed_download = FailedDownload {
+                accession: accession.clone(),
+                name: accinfo.name.clone(),
+                url: Some(accinfo.url),
+                moltype: input_moltype,
+            };
+            failed.push(failed_download);
+        }
+    };
+
+    for file_type in &file_types {
+        let url = file_type.url(&base_url, &full_name);
+        let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
+
         let file_name = file_type.filename_to_write(&accession);
 
         if keep_fastas {
@@ -568,7 +668,7 @@ pub fn error_handler(
 
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
-pub async fn download_and_sketch(
+pub async fn gbsketch(
     py: Python,
     input_csv: String,
     param_str: String,
@@ -688,7 +788,181 @@ pub async fn download_and_sketch(
                 );
             }
             // Perform download and sketch
-            let result = dl_sketch_accession(
+            let result = dl_sketch_assembly_accession(
+                &client_clone,
+                accinfo.clone(),
+                &download_path_clone,
+                Some(retry_times),
+                keep_fastas,
+                dna_sigs,
+                prot_sigs,
+                genomes_only,
+                proteomes_only,
+                download_only,
+            )
+            .await;
+            match result {
+                Ok((sigs, failed_downloads)) => {
+                    if !sigs.is_empty() {
+                        if let Err(e) = send_sigs.send(sigs).await {
+                            eprintln!("Failed to send signatures: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
+                    }
+                    for fail in failed_downloads {
+                        if let Err(e) = send_failed.send(fail).await {
+                            eprintln!("Failed to send failed download info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
+                    }
+                }
+                Err(e) => {
+                    let _ = send_errors.send(e).await;
+                }
+            }
+            drop(send_errors);
+        });
+    }
+    // drop senders as we're done sending data
+    drop(send_sigs);
+    drop(send_failed);
+    drop(error_sender);
+    // Wait for all tasks to complete
+    for handle in handles {
+        if let Err(e) = handle.await {
+            eprintln!("Handle join error: {}.", e);
+        }
+    }
+    // since the only critical error is not having written any sigs
+    // check this here at end. Bail if we wrote expected sigs but wrote none.
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only {
+        bail!("No signatures written, exiting.");
+    }
+
+    Ok(())
+}
+
+#[tokio::main]
+#[allow(clippy::too_many_arguments)]
+pub async fn urlsketch(
+    py: Python,
+    input_csv: String,
+    param_str: String,
+    failed_csv: String,
+    retry_times: u32,
+    fasta_location: String,
+    keep_fastas: bool,
+    download_only: bool,
+    output_sigs: Option<String>,
+) -> Result<(), anyhow::Error> {
+    // if sig output provided but doesn't end in zip, bail
+    if let Some(ref output_sigs) = output_sigs {
+        if Path::new(&output_sigs)
+            .extension()
+            .map_or(true, |ext| ext != "zip")
+        {
+            bail!("Output must be a zip file.");
+        }
+    }
+    // set up fasta download path
+    let download_path = PathBuf::from(fasta_location);
+    if !download_path.exists() {
+        create_dir_all(&download_path)?;
+    }
+
+    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    // Error channel for handling task errors
+    let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
+
+    // Set up collector/writing tasks
+    let mut handles = Vec::new();
+    let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+    let critical_error_flag = Arc::new(AtomicBool::new(false));
+    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
+    handles.push(sig_handle);
+    handles.push(failures_handle);
+    handles.push(error_handle);
+
+    // Worker tasks
+    let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
+    let client = Arc::new(Client::new());
+
+    // Open the file containing the accessions synchronously
+    let (accession_info, n_accs) = load_gbassembly_info(input_csv)?;
+    if n_accs == 0 {
+        bail!("No accessions to download and sketch.")
+    }
+
+    // parse param string into params_vec, print error if fail
+    let param_result = parse_params_str(param_str);
+    let params_vec = match param_result {
+        Ok(params) => params,
+        Err(e) => {
+            bail!("Failed to parse params string: {}", e);
+        }
+    };
+    let dna_sig_templates = build_siginfo(&params_vec, "DNA");
+    let prot_sig_templates = build_siginfo(&params_vec, "protein");
+
+    let mut genomes_only = false;
+    let mut proteomes_only = false;
+
+    // Check if dna_sig_templates is empty and not keep_fastas
+    if dna_sig_templates.is_empty() && !keep_fastas {
+        eprintln!("No DNA signature templates provided, and --keep-fastas is not set.");
+        proteomes_only = true;
+    }
+    // Check if protein_sig_templates is empty and not keep_fastas
+    if prot_sig_templates.is_empty() && !keep_fastas {
+        eprintln!("No protein signature templates provided, and --keep-fastas is not set.");
+        genomes_only = true;
+    }
+    if genomes_only {
+        if !download_only {
+            eprintln!("Downloading and sketching genomes only.");
+        } else {
+            eprintln!("Downloading genomes only.");
+        }
+    } else if proteomes_only {
+        if !download_only {
+            eprintln!("Downloading and sketching proteomes only.");
+        } else {
+            eprintln!("Downloading proteomes only.");
+        }
+    }
+
+    // report every 1 percent (or every 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+
+    for (i, accinfo) in accession_info.into_iter().enumerate() {
+        py.check_signals()?; // If interrupted, return an Err automatically
+        let semaphore_clone = Arc::clone(&semaphore);
+        let client_clone = Arc::clone(&client);
+        let send_sigs = send_sigs.clone();
+        let send_failed = send_failed.clone();
+        let download_path_clone = download_path.clone(); // Clone the path for each task
+        let send_errors = error_sender.clone();
+
+        let dna_sigs = dna_sig_templates.clone();
+        let prot_sigs = prot_sig_templates.clone();
+
+        tokio::spawn(async move {
+            let _permit = semaphore_clone.acquire().await;
+            // progress report when the permit is available and processing begins
+            if (i + 1) % reporting_threshold == 0 {
+                let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+                println!(
+                    "Starting accession {}/{} ({}%)",
+                    (i + 1),
+                    n_accs,
+                    percent_processed
+                );
+            }
+            // Perform download and sketch
+            let result = dl_sketch_url(
                 &client_clone,
                 accinfo.clone(),
                 &download_path_clone,
