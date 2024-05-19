@@ -148,14 +148,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         notify(f"downloading and sketching all accessions in '{args.input_csv} using {num_threads} threads")
 
         super().main(args)
-        status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,
+        status = sourmash_plugin_directsketch.do_urlsketch(args.input_csv,
                                                            args.param_string,
                                                            args.failed,
                                                            args.retry_times,
                                                            args.fastas,
                                                            args.keep_fasta,
-                                                           args.genomes_only,
-                                                           args.proteomes_only,
                                                            args.download_only,
                                                            args.output)
         
@@ -163,7 +161,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             notify("...gbsketch is done!")
             if args.output is not None:
                 notify(f"Sigs in '{args.output}'.")
-            if args.keep_fastas:
+            if args.keep_fasta:
                 notify(f"FASTAs in '{args.fastas}'.")
 
         return status
