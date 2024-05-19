@@ -11,6 +11,15 @@ pub enum InputMolType {
     Protein,
 }
 
+impl InputMolType {
+    pub fn to_string(&self) -> String {
+        match self {
+            InputMolType::Dna => "dna".to_string(),
+            InputMolType::Protein => "protein".to_string(),
+        }
+    }
+}
+
 impl std::str::FromStr for InputMolType {
     type Err = ();
 

@@ -23,8 +23,8 @@ use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{
-    build_siginfo, load_gbassembly_info, parse_params_str, AccessionData, GBAssemblyData,
-    GenBankFileType,
+    build_siginfo, load_accession_info, load_gbassembly_info, parse_params_str, AccessionData,
+    GBAssemblyData, GenBankFileType, InputMolType,
 };
 use reqwest::Url;
 
@@ -397,75 +397,59 @@ async fn dl_sketch_url(
     let download_filename = accinfo.download_filename;
     let input_moltype = accinfo.input_moltype;
 
-    // let mut file_types = vec![
-    //     GenBankFileType::Genomic,
-    //     GenBankFileType::Protein,
-    //     // GenBankFileType::AssemblyReport,
-    // ];
-    // if genomes_only {
-    //     file_types = vec![GenBankFileType::Genomic];
-    // } else if proteomes_only {
-    //     file_types = vec![GenBankFileType::Protein];
-    // }
-
-    let data = match download_with_retry(
+    match download_with_retry(
         client,
         &url,
-        expected_md5.map(|x| x.as_str()),
+        expected_md5.as_ref().map(|x| x.as_str()),
         retry_count,
     )
     .await
+    .ok()
     {
-        Ok(data) => data,
-        Err(_err) => {
-            // here --> keep track of accession errors + filetype
-            let failed_download = FailedDownload {
-                accession: accession.clone(),
-                name: accinfo.name.clone(),
-                url: Some(accinfo.url),
-                moltype: input_moltype,
-            };
-            failed.push(failed_download);
-        }
-    };
-
-    for file_type in &file_types {
-        let url = file_type.url(&base_url, &full_name);
-        let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
-
-        let file_name = file_type.filename_to_write(&accession);
-
-        if keep_fastas {
-            let path = location.join(&file_name);
-            fs::write(&path, &data).context("Failed to write data to file")?;
-        }
-        if !download_only {
-            // sketch data
-            match file_type {
-                GenBankFileType::Genomic => sigs.extend(
-                    sketch_data(
-                        name.clone(),
-                        file_name.clone(),
-                        data,
-                        dna_sigs.clone(),
-                        "dna".to_string(),
-                    )
-                    .await?,
-                ),
-                GenBankFileType::Protein => {
-                    sigs.extend(
+        Some(data) => {
+            // check keep_fastas instead??
+            if let Some(download_filename) = download_filename {
+                let path = location.join(&download_filename);
+                fs::write(&path, &data).context("Failed to write data to file")?;
+            }
+            if !download_only {
+                // let filename = download_filename.clone().unwrap();
+                let filename = "".to_string();
+                // sketch data
+                match input_moltype {
+                    InputMolType::Dna => sigs.extend(
                         sketch_data(
                             name.clone(),
-                            file_name.clone(),
+                            filename.clone(),
                             data,
-                            prot_sigs.clone(),
-                            "protein".to_string(),
+                            dna_sigs.clone(),
+                            "dna".to_string(),
                         )
                         .await?,
-                    );
-                }
-                _ => {} // Do nothing for other file types
+                    ),
+                    InputMolType::Protein => {
+                        sigs.extend(
+                            sketch_data(
+                                name.clone(),
+                                filename.clone(),
+                                data,
+                                prot_sigs.clone(),
+                                "protein".to_string(),
+                            )
+                            .await?,
+                        );
+                    }
+                };
+            }
+        }
+        None => {
+            let failed_download = FailedDownload {
+                accession: accession.clone(),
+                name: name.clone(),
+                url: Some(url),
+                moltype: input_moltype.to_string(),
             };
+            failed.push(failed_download);
         }
     }
 
@@ -891,7 +875,7 @@ pub async fn urlsketch(
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_gbassembly_info(input_csv)?;
+    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
