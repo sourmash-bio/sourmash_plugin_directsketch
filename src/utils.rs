@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Url;
 use sourmash::cmd::ComputeParameters;
 use sourmash::signature::Signature;
+use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 
@@ -11,11 +12,13 @@ pub enum InputMolType {
     Protein,
 }
 
-impl InputMolType {
-    pub fn to_string(&self) -> String {
+impl InputMolType {}
+
+impl fmt::Display for InputMolType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            InputMolType::Dna => "dna".to_string(),
-            InputMolType::Protein => "protein".to_string(),
+            InputMolType::Dna => write!(f, "dna"),
+            InputMolType::Protein => write!(f, "protein"),
         }
     }
 }
@@ -255,7 +258,7 @@ pub fn load_accession_info(
         // store accession data
         results.push(AccessionData {
             accession: acc,
-            name: name,
+            name,
             input_moltype,
             url,
             expected_md5sum,

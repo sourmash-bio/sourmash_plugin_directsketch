@@ -64,8 +64,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.param_string = ["k=31,scaled=1000"]
         notify(f"params: {args.param_string}")
 
-        if args.download_only and not args.keep_fastas:
-            notify("Error: '--download-only' requires '--keep-fastas'.")
+        if args.download_only and not args.keep_fasta:
+            notify("Error: '--download-only' requires '--keep-fasta'.")
             sys.exit(-1)
         if args.output is None and not args.download_only:
             notify("Error: output signature zipfile is required if not using '--download-only'.")
@@ -96,7 +96,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             notify("...gbsketch is done!")
             if args.output is not None:
                 notify(f"Sigs in '{args.output}'.")
-            if args.keep_fastas:
+            if args.keep_fasta:
                 notify(f"FASTAs in '{args.fastas}'.")
 
         return status

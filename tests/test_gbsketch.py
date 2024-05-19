@@ -177,7 +177,7 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
         elif 'GCA_000961135.2' in sig.name:
             assert sig.name == ss2.name
             assert sig.md5sum() == ss2.md5sum()
-    assert 'No protein signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'No protein signature templates provided, and --keep-fasta is not set.' in captured.err
     assert 'Downloading and sketching genomes only.' in captured.err
 
 
@@ -206,7 +206,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
     for sig in sigs:
         assert 'GCA_000961135.2' in sig.name
         assert sig.md5sum() == ss3.md5sum()
-    assert 'No DNA signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'No DNA signature templates provided, and --keep-fasta is not set.' in captured.err
     assert 'Downloading and sketching proteomes only.' in captured.err
 
 
@@ -226,7 +226,7 @@ def test_gbsketch_save_fastas(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -265,7 +265,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert not runtmp.last_result.out # stdout should be empty

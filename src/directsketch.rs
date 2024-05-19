@@ -379,11 +379,11 @@ async fn dl_sketch_url(
     accinfo: AccessionData,
     location: &PathBuf,
     retry: Option<u32>,
-    keep_fastas: bool,
+    _keep_fastas: bool,
     dna_sigs: Vec<Signature>,
     prot_sigs: Vec<Signature>,
-    genomes_only: bool,
-    proteomes_only: bool,
+    _genomes_only: bool,
+    _proteomes_only: bool,
     download_only: bool,
 ) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
@@ -397,20 +397,15 @@ async fn dl_sketch_url(
     let download_filename = accinfo.download_filename;
     let input_moltype = accinfo.input_moltype;
 
-    match download_with_retry(
-        client,
-        &url,
-        expected_md5.as_ref().map(|x| x.as_str()),
-        retry_count,
-    )
-    .await
-    .ok()
+    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count)
+        .await
+        .ok()
     {
         Some(data) => {
             // check keep_fastas instead??
             if let Some(download_filename) = download_filename {
-                let path = location.join(&download_filename);
-                fs::write(&path, &data).context("Failed to write data to file")?;
+                let path = location.join(download_filename);
+                fs::write(path, &data).context("Failed to write data to file")?;
             }
             if !download_only {
                 // let filename = download_filename.clone().unwrap();
@@ -722,12 +717,12 @@ pub async fn gbsketch(
 
     // Check if dna_sig_templates is empty and not keep_fastas
     if dna_sig_templates.is_empty() && !keep_fastas {
-        eprintln!("No DNA signature templates provided, and --keep-fastas is not set.");
+        eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
         proteomes_only = true;
     }
     // Check if protein_sig_templates is empty and not keep_fastas
     if prot_sig_templates.is_empty() && !keep_fastas {
-        eprintln!("No protein signature templates provided, and --keep-fastas is not set.");
+        eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
     }
     if genomes_only {
