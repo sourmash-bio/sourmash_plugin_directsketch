@@ -185,7 +185,14 @@ pub fn load_accession_info(
 
     // Check column names
     let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name", "input_moltype", "url", "md5sum"];
+    let expected_header = vec![
+        "accession",
+        "name",
+        "input_moltype",
+        "md5sum",
+        "download_filename",
+        "url",
+    ];
     if header != expected_header {
         return Err(anyhow!(
             "Invalid column names in CSV file. Columns should be: {:?}",
@@ -217,8 +224,18 @@ pub fn load_accession_info(
             .ok_or_else(|| anyhow!("Missing 'input_moltype' field"))?
             .parse::<InputMolType>()
             .map_err(|_| anyhow!("Invalid 'input_moltype' value"))?;
+        let expected_md5sum = record.get(3).map(|s| s.to_string());
+        let mut download_filename = None;
+        if keep_fasta {
+            download_filename = Some(
+                record
+                    .get(4)
+                    .ok_or_else(|| anyhow!("Missing 'download_filename' field"))?
+                    .to_string(),
+            );
+        }
         let url = record
-            .get(3)
+            .get(5)
             .ok_or_else(|| anyhow!("Missing 'url' field"))?
             .split(',')
             .filter_map(|s| {
@@ -231,17 +248,6 @@ pub fn load_accession_info(
             })
             .next()
             .ok_or_else(|| anyhow!("Invalid 'url' value"))?;
-        let expected_md5sum = record.get(4).map(|s| s.to_string());
-        let mut download_filename = None;
-        if keep_fasta {
-            download_filename = Some(
-                record
-                    .get(5)
-                    .ok_or_else(|| anyhow!("Missing 'download_filename' field"))?
-                    .to_string(),
-            );
-        }
-
         // count entries with url and md5sum
         if expected_md5sum.is_some() {
             md5sum_count += 1;
