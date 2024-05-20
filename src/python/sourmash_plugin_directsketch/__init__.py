@@ -131,7 +131,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.param_string = ["k=31,scaled=1000"]
         notify(f"params: {args.param_string}")
 
-        if args.download_only and not args.keep_fastas:
+        if args.download_only and not args.keep_fasta:
             notify("Error: '--download-only' requires '--keep-fasta'.")
             sys.exit(-1)
         if args.output is None and not args.download_only:
