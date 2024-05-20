@@ -89,7 +89,7 @@ impl GenBankFileType {
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
-    pub input_moltype: InputMolType,
+    pub moltype: InputMolType,
     pub url: reqwest::Url,
     pub expected_md5sum: Option<String>,
     pub download_filename: Option<String>, // need to require this if --keep-fastas are used
@@ -191,7 +191,7 @@ pub fn load_accession_info(
     let expected_header = vec![
         "accession",
         "name",
-        "input_moltype",
+        "moltype",
         "md5sum",
         "download_filename",
         "url",
@@ -222,11 +222,11 @@ pub fn load_accession_info(
             .get(1)
             .ok_or_else(|| anyhow!("Missing 'name' field"))?
             .to_string();
-        let input_moltype = record
+        let moltype = record
             .get(2)
-            .ok_or_else(|| anyhow!("Missing 'input_moltype' field"))?
+            .ok_or_else(|| anyhow!("Missing 'moltype' field"))?
             .parse::<InputMolType>()
-            .map_err(|_| anyhow!("Invalid 'input_moltype' value"))?;
+            .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
         let expected_md5sum = record.get(3).map(|s| s.to_string());
         let mut download_filename = None;
         if keep_fasta {
@@ -259,7 +259,7 @@ pub fn load_accession_info(
         results.push(AccessionData {
             accession: acc,
             name,
-            input_moltype,
+            moltype,
             url,
             expected_md5sum,
             download_filename,

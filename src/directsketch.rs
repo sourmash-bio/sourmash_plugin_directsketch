@@ -403,7 +403,7 @@ async fn dl_sketch_url(
     let url = accinfo.url;
     let expected_md5 = accinfo.expected_md5sum;
     let download_filename = accinfo.download_filename;
-    let input_moltype = accinfo.input_moltype;
+    let moltype = accinfo.moltype;
 
     match download_with_retry(client, &url, expected_md5.as_deref(), retry_count)
         .await
@@ -419,7 +419,7 @@ async fn dl_sketch_url(
                 // let filename = download_filename.clone().unwrap();
                 let filename = "".to_string();
                 // sketch data
-                match input_moltype {
+                match moltype {
                     InputMolType::Dna => sigs.extend(
                         sketch_data(
                             name.clone(),
@@ -449,7 +449,7 @@ async fn dl_sketch_url(
             let failed_download = FailedDownload {
                 accession: accession.clone(),
                 name: name.clone(),
-                moltype: input_moltype.to_string(),
+                moltype: moltype.to_string(),
                 md5sum: expected_md5.map(|x| x.to_string()),
                 download_filename: download_filename,
                 url: Some(url),

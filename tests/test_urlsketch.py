@@ -55,3 +55,15 @@ def test_urlsketch_simple(runtmp):
                 assert sig.md5sum() == ss2.md5sum()
             else:
                 assert sig.md5sum() == ss3.md5sum()
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url = line.strip().split(',')
+            assert acc == "GCA_000175535.1"
+            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+            assert moltype == "protein"
+            assert download_filename == "GCA_000175535.1_protein.faa.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
