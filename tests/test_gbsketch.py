@@ -403,9 +403,10 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     print(captured.out)
     print(captured.err)
     assert "Error: No signatures written, exiting." in captured.err
-    
+
 
 def test_gbsketch_version_bug(runtmp):
+    # test for bug where we didn't check version correctly
     acc_csv = get_test_data('acc-version.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')

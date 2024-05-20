@@ -532,7 +532,7 @@ pub fn failures_handle(
                         accession,
                         name,
                         moltype,
-                        url.expect("Can't convert url").as_str()
+                        url.map(|u| u.to_string()).unwrap_or("".to_string())
                     );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
