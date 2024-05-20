@@ -78,7 +78,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
 
         num_threads = set_thread_pool(args.cores)
 
-        notify(f"downloading and sketching all accessions in '{args.input_csv} using {num_threads} threads")
+        notify(f"downloading and sketching all accessions in '{args.input_csv} using {args.retry_times} retries and {num_threads} threads")
 
         super().main(args)
         status = sourmash_plugin_directsketch.do_gbsketch(args.input_csv,
