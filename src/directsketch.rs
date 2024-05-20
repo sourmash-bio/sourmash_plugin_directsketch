@@ -527,7 +527,13 @@ pub fn failures_handle(
                     url,
                 }) = recv_failed.recv().await
                 {
-                    let record = format!("{},{},{},{:?}\n", accession, name, moltype, url);
+                    let record = format!(
+                        "{},{},{},{:?}\n",
+                        accession,
+                        name,
+                        moltype,
+                        url.expect("Can't convert url").as_str()
+                    );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
                         let error = Error::new(e).context("Failed to write record");
