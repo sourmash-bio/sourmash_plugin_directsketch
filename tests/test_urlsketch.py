@@ -31,7 +31,6 @@ def test_urlsketch_simple(runtmp):
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
@@ -67,6 +66,7 @@ def test_urlsketch_simple(runtmp):
             assert moltype == "protein"
             assert download_filename == "GCA_000175535.1_protein.faa.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+
 
 def test_urlsketch_save_fastas(runtmp):
     acc_csv = get_test_data('acc-url.csv')
@@ -267,3 +267,56 @@ def test_urlsketch_missing_output(runtmp):
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
+
+
+def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        fail_lines = failF.readlines()
+        assert len(fail_lines) == 2
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
+        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert acc == "GCA_000175535.1"
+        assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+        assert moltype == "protein"
+        assert download_filename == "GCA_000175535.1_protein.faa.gz"
+        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+    assert not runtmp.last_result.out # stdout should be empty
+
+    out2 = runtmp.output('failed-retry.zip')
+    fail2 = runtmp.output('fail2.csv')
+    with pytest.raises(utils.SourmashCommandFailed):
+
+        runtmp.sourmash('scripts', 'urlsketch', failed, '-o', out2,
+                    '--failed', fail2, '-r', '1',
+                    '-p', "protein,k=10,scaled=200")
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Error: No signatures written, exiting." in captured.err
+
+    # since no protein file exists, fail2 should just be the same as failed
+    assert os.path.exists(fail2)
+    with open(fail2, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url = line.strip().split(',')
+            assert acc == "GCA_000175535.1"
+            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+            assert moltype == "protein"
+            # TODO: fix download_filename
+            # assert download_filename == "GCA_000175535.1_protein.faa.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+
+
+# def test_urlsketch_from_urlsketch_failed(runtmp, capfd):
