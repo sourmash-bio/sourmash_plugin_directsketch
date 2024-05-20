@@ -242,8 +242,10 @@ async fn sketch_data(
 pub struct FailedDownload {
     accession: String,
     name: String,
-    url: Option<Url>,
     moltype: String,
+    md5sum: Option<String>,
+    download_filename: Option<String>,
+    url: Option<Url>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -276,8 +278,10 @@ async fn dl_sketch_assembly_accession(
                     let failed_download_dna = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        url: None,
                         moltype: "dna".to_string(),
+                        md5sum: None,
+                        download_filename: None,
+                        url: None,
                     };
                     failed.push(failed_download_dna);
                 }
@@ -285,8 +289,10 @@ async fn dl_sketch_assembly_accession(
                     let failed_download_protein = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        url: None,
                         moltype: "protein".to_string(),
+                        md5sum: None,
+                        download_filename: None,
+                        url: None,
                     };
                     failed.push(failed_download_protein);
                 }
@@ -317,6 +323,7 @@ async fn dl_sketch_assembly_accession(
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
         let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
+        let file_name = file_type.filename_to_write(&accession);
         let data =
             match download_with_retry(client, &url, expected_md5.map(|x| x.as_str()), retry_count)
                 .await
@@ -327,14 +334,15 @@ async fn dl_sketch_assembly_accession(
                     let failed_download = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        url: Some(url),
                         moltype: file_type.moltype(),
+                        md5sum: expected_md5.map(|x| x.to_string()),
+                        download_filename: Some(file_name),
+                        url: Some(url),
                     };
                     failed.push(failed_download);
                     continue;
                 }
             };
-        let file_name = file_type.filename_to_write(&accession);
 
         if keep_fastas {
             let path = location.join(&file_name);
@@ -441,8 +449,10 @@ async fn dl_sketch_url(
             let failed_download = FailedDownload {
                 accession: accession.clone(),
                 name: name.clone(),
-                url: Some(url),
                 moltype: input_moltype.to_string(),
+                md5sum: expected_md5.map(|x| x.to_string()),
+                download_filename: download_filename,
+                url: Some(url),
             };
             failed.push(failed_download);
         }
@@ -593,7 +603,10 @@ pub fn failures_handle(
                 let mut writer = BufWriter::new(file);
 
                 // Attempt to write CSV headers
-                if let Err(e) = writer.write_all(b"accession,name,moltype,url\n").await {
+                if let Err(e) = writer
+                    .write_all(b"accession,name,moltype,md5sum,download_filename,url\n")
+                    .await
+                {
                     let error = Error::new(e).context("Failed to write headers");
                     let _ = error_sender.send(error).await;
                     return; // Exit the task early after reporting the error
@@ -602,15 +615,19 @@ pub fn failures_handle(
                 while let Some(FailedDownload {
                     accession,
                     name,
-                    moltype,
+                    md5sum,
+                    download_filename,
                     url,
+                    moltype,
                 }) = recv_failed.recv().await
                 {
                     let record = format!(
-                        "{},{},{},{:?}\n",
+                        "{},{},{},{},{},{}\n",
                         accession,
                         name,
                         moltype,
+                        md5sum.unwrap_or("".to_string()),
+                        download_filename.unwrap_or("".to_string()),
                         url.map(|u| u.to_string()).unwrap_or("".to_string())
                     );
                     // Attempt to write each record
