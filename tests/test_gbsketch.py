@@ -55,6 +55,15 @@ def test_gbsketch_simple(runtmp):
                 assert sig.md5sum() == ss2.md5sum()
             else:
                 assert sig.md5sum() == ss3.md5sum()
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        next(failF)  # skip header line
+        for line in failF:
+            acc, name, moltype, url = line.strip().split(',')
+            assert acc == "GCA_000175535.1"
+            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+            assert moltype == "protein"
+            assert url == '"https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"'
 
 
 def test_gbsketch_simple_url(runtmp):
@@ -273,7 +282,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
     captured = capfd.readouterr()
     assert "Failed to send signatures: channel closed" not in captured.err
-   
+
 
 def test_gbsketch_bad_acc(runtmp):
     acc_csv = get_test_data('acc.csv')
@@ -335,7 +344,7 @@ def test_gbsketch_bad_acc(runtmp):
                 assert sig.md5sum() == ss2.md5sum()
             else:
                 assert sig.md5sum() == ss3.md5sum()
-    
+
 
 def test_gbsketch_missing_accfile(runtmp, capfd):
     acc_csv = runtmp.output('acc1.csv')
@@ -397,6 +406,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
 
 
 def test_gbsketch_version_bug(runtmp):
+    # test for bug where we didn't check version correctly
     acc_csv = get_test_data('acc-version.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')

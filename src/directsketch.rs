@@ -606,7 +606,13 @@ pub fn failures_handle(
                     url,
                 }) = recv_failed.recv().await
                 {
-                    let record = format!("{},{},{},{:?}\n", accession, name, moltype, url);
+                    let record = format!(
+                        "{},{},{},{:?}\n",
+                        accession,
+                        name,
+                        moltype,
+                        url.map(|u| u.to_string()).unwrap_or("".to_string())
+                    );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
                         let error = Error::new(e).context("Failed to write record");
