@@ -57,13 +57,16 @@ def test_gbsketch_simple(runtmp):
                 assert sig.md5sum() == ss3.md5sum()
     assert os.path.exists(failed)
     with open(failed, 'r') as failF:
-        next(failF)  # skip header line
-        for line in failF:
-            acc, name, moltype, url = line.strip().split(',')
-            assert acc == "GCA_000175535.1"
-            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
-            assert moltype == "protein"
-            assert url == '"https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"'
+        fail_lines = failF.readlines()
+        print(fail_lines)
+        assert len(fail_lines) == 2
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
+        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert acc == "GCA_000175535.1"
+        assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+        assert moltype == "protein"
+        assert download_filename == "GCA_000175535.1_protein.faa.gz"
+        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
 
 
 def test_gbsketch_simple_url(runtmp):
@@ -186,7 +189,7 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
         elif 'GCA_000961135.2' in sig.name:
             assert sig.name == ss2.name
             assert sig.md5sum() == ss2.md5sum()
-    assert 'No protein signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'No protein signature templates provided, and --keep-fasta is not set.' in captured.err
     assert 'Downloading and sketching genomes only.' in captured.err
 
 
@@ -215,7 +218,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
     for sig in sigs:
         assert 'GCA_000961135.2' in sig.name
         assert sig.md5sum() == ss3.md5sum()
-    assert 'No DNA signature templates provided, and --keep-fastas is not set.' in captured.err
+    assert 'No DNA signature templates provided, and --keep-fasta is not set.' in captured.err
     assert 'Downloading and sketching proteomes only.' in captured.err
 
 
@@ -235,7 +238,7 @@ def test_gbsketch_save_fastas(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -274,7 +277,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fastas',
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert not runtmp.last_result.out # stdout should be empty

@@ -62,7 +62,7 @@ fn do_gbsketch(
     download_only: bool,
     output_sigs: Option<String>,
 ) -> anyhow::Result<u8> {
-    match directsketch::download_and_sketch(
+    match directsketch::gbsketch(
         py,
         input_csv,
         param_str,
@@ -83,9 +83,42 @@ fn do_gbsketch(
     }
 }
 
+#[pyfunction]
+#[allow(clippy::too_many_arguments)]
+fn do_urlsketch(
+    py: Python,
+    input_csv: String,
+    param_str: String,
+    failed_csv: String,
+    retry_times: u32,
+    fasta_location: String,
+    keep_fastas: bool,
+    download_only: bool,
+    output_sigs: Option<String>,
+) -> anyhow::Result<u8> {
+    match directsketch::urlsketch(
+        py,
+        input_csv,
+        param_str,
+        failed_csv,
+        retry_times,
+        fasta_location,
+        keep_fastas,
+        download_only,
+        output_sigs,
+    ) {
+        Ok(_) => Ok(0),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            Ok(1)
+        }
+    }
+}
+
 #[pymodule]
 fn sourmash_plugin_directsketch(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(do_gbsketch, m)?)?;
+    m.add_function(wrap_pyfunction!(do_urlsketch, m)?)?;
     m.add_function(wrap_pyfunction!(set_tokio_thread_pool, m)?)?;
     Ok(())
 }

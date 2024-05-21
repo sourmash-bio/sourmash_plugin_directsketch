@@ -2,6 +2,7 @@ use anyhow::{anyhow, Result};
 use reqwest::Url;
 use sourmash::cmd::ComputeParameters;
 use sourmash::signature::Signature;
+use std::fmt;
 use std::hash::Hash;
 use std::hash::Hasher;
 
@@ -9,6 +10,17 @@ use std::hash::Hasher;
 pub enum InputMolType {
     Dna,
     Protein,
+}
+
+impl InputMolType {}
+
+impl fmt::Display for InputMolType {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            InputMolType::Dna => write!(f, "dna"),
+            InputMolType::Protein => write!(f, "protein"),
+        }
+    }
 }
 
 impl std::str::FromStr for InputMolType {
@@ -77,9 +89,10 @@ impl GenBankFileType {
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
-    pub input_moltype: InputMolType,
+    pub moltype: InputMolType,
     pub url: reqwest::Url,
-    pub md5sum: Option<String>,
+    pub expected_md5sum: Option<String>,
+    pub download_filename: Option<String>, // need to require this if --keep-fastas are used
 }
 
 #[derive(Clone)]
@@ -160,8 +173,10 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     Ok((results, row_count))
 }
 
-#[allow(dead_code)]
-pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usize)> {
+pub fn load_accession_info(
+    input_csv: String,
+    keep_fasta: bool,
+) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
@@ -172,7 +187,14 @@ pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usi
 
     // Check column names
     let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name", "input_moltype", "url", "md5sum"];
+    let expected_header = vec![
+        "accession",
+        "name",
+        "moltype",
+        "md5sum",
+        "download_filename",
+        "url",
+    ];
     if header != expected_header {
         return Err(anyhow!(
             "Invalid column names in CSV file. Columns should be: {:?}",
@@ -199,13 +221,18 @@ pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usi
             .get(1)
             .ok_or_else(|| anyhow!("Missing 'name' field"))?
             .to_string();
-        let input_moltype = record
+        let moltype = record
             .get(2)
-            .ok_or_else(|| anyhow!("Missing 'input_moltype' field"))?
+            .ok_or_else(|| anyhow!("Missing 'moltype' field"))?
             .parse::<InputMolType>()
-            .map_err(|_| anyhow!("Invalid 'input_moltype' value"))?;
+            .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
+        let expected_md5sum = record.get(3).map(|s| s.to_string());
+        let download_filename = record.get(4).map(|s| s.to_string());
+        if keep_fasta && download_filename.is_none() {
+            return Err(anyhow!("Missing 'download_filename' field"));
+        }
         let url = record
-            .get(3)
+            .get(5)
             .ok_or_else(|| anyhow!("Missing 'url' field"))?
             .split(',')
             .filter_map(|s| {
@@ -218,19 +245,18 @@ pub fn load_accession_info(input_csv: String) -> Result<(Vec<AccessionData>, usi
             })
             .next()
             .ok_or_else(|| anyhow!("Invalid 'url' value"))?;
-        let md5sum = record.get(4).map(|s| s.to_string());
-
         // count entries with url and md5sum
-        if md5sum.is_some() {
+        if expected_md5sum.is_some() {
             md5sum_count += 1;
         }
         // store accession data
         results.push(AccessionData {
-            accession: acc.to_string(),
-            name: name.to_string(),
-            input_moltype,
+            accession: acc,
+            name,
+            moltype,
             url,
-            md5sum,
+            expected_md5sum,
+            download_filename,
         });
     }
 
