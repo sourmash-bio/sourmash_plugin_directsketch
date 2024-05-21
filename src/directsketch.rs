@@ -411,13 +411,12 @@ async fn dl_sketch_url(
     {
         Some(data) => {
             // check keep_fastas instead??
-            if let Some(download_filename) = download_filename {
+            if let Some(ref download_filename) = download_filename {
                 let path = location.join(download_filename);
                 fs::write(path, &data).context("Failed to write data to file")?;
             }
             if !download_only {
-                // let filename = download_filename.clone().unwrap();
-                let filename = "".to_string();
+                let filename = download_filename.clone().unwrap_or("".to_string());
                 // sketch data
                 match moltype {
                     InputMolType::Dna => sigs.extend(
@@ -451,7 +450,7 @@ async fn dl_sketch_url(
                 name: name.clone(),
                 moltype: moltype.to_string(),
                 md5sum: expected_md5.map(|x| x.to_string()),
-                download_filename: download_filename,
+                download_filename,
                 url: Some(url),
             };
             failed.push(failed_download);

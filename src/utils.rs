@@ -173,7 +173,6 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     Ok((results, row_count))
 }
 
-#[allow(dead_code)]
 pub fn load_accession_info(
     input_csv: String,
     keep_fasta: bool,
@@ -228,14 +227,9 @@ pub fn load_accession_info(
             .parse::<InputMolType>()
             .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
         let expected_md5sum = record.get(3).map(|s| s.to_string());
-        let mut download_filename = None;
-        if keep_fasta {
-            download_filename = Some(
-                record
-                    .get(4)
-                    .ok_or_else(|| anyhow!("Missing 'download_filename' field"))?
-                    .to_string(),
-            );
+        let download_filename = record.get(4).map(|s| s.to_string());
+        if keep_fasta && download_filename.is_none() {
+            return Err(anyhow!("Missing 'download_filename' field"));
         }
         let url = record
             .get(5)
