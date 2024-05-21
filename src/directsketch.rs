@@ -210,9 +210,13 @@ async fn sketch_data(
     moltype: String,
 ) -> Result<Vec<Signature>> {
     tokio::task::spawn_blocking(move || {
+
         let cursor = Cursor::new(compressed_data);
-        let mut fastx_reader =
-            parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+        // use niffler to get decompressed reader
+        let (mut reader, compression) = niffler::get_reader(Box::new(cursor))?;
+        let mut fastx_reader = parse_fastx_reader(&mut reader).context("Failed to parse FASTA/FASTQ data")?;
+        // let mut fastx_reader =
+        //     parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
         let mut set_name = false;
         while let Some(record) = fastx_reader.next() {
