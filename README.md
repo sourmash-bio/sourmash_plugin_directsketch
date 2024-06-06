@@ -1,6 +1,7 @@
 # sourmash_plugin_directsketch
 
 [![PyPI](https://img.shields.io/pypi/v/sourmash_plugin_directsketch)](https://pypi.org/project/sourmash_plugin_directsketch/)
+[![Conda Version](https://img.shields.io/conda/vn/conda-forge/sourmash_plugin_directsketch.svg)](https://anaconda.org/conda-forge/sourmash_plugin_directsketch)
 [![DOI](https://zenodo.org/badge/792101561.svg)](https://zenodo.org/doi/10.5281/zenodo.11165725)
 
 
@@ -17,9 +18,34 @@ This plugin is an attempt to improve sourmash database generation by downloading
 
 ## Installation
 
+### Linux
+
+Option 1 (recommended): Create a conda environment and install into it:
 ```
+conda create -n directsketch sourmash_plugin_directsketch # create and install
+conda activate directsketch # activate
+```
+Option 2: Install without creating an environment
+
+```
+conda install sourmash_plugin_directsketch
+```
+
+### Other Platforms
+
+On other platforms, you can create a conda environment with requirements like so:
+```
+curl -JLO https://raw.githubusercontent.com/sourmash-bio/sourmash_plugin_directsketch/main/environment.yml
+conda env create -f environment.yml
+```
+
+then activate the environment and install `sourmash_plugin_directsketch` via `pip`:
+```
+conda activate directsketch
 pip install sourmash_plugin_directsketch
 ```
+
+## Running the commands
 
 ## `gbsketch`
 download and sketch NCBI Assembly Datasets by accession
@@ -32,7 +58,7 @@ accession,name,ftp_path
 GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45,
 GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2,
 ```
-> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty, but no additional columns may be present.
+> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty (as above), but no additional columns may be present.
 
 #### What is ftp_path?
 
@@ -47,9 +73,30 @@ For reference:
 
 ### Run:
 
-To run the test accession file at `tests/test-data/acc.csv`, run:
+To test `gbsketch`, you can download a csv file and run:
 ```
-sourmash scripts gbsketch tests/test-data/acc.csv -o test-gbsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
+curl -JLO https://raw.githubusercontent.com/sourmash-bio/sourmash_plugin_directsketch/main/tests/test-data/acc.csv
+sourmash scripts gbsketch acc.csv -o test-gbsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
+```
+To check that the `zip` was created properly, you can run:
+```
+sourmash sig summarize test-gbsketch.zip
+```
+and you should see the following as output:
+
+```
+** loading from 'test-gbsketch.zip'
+path filetype: ZipFileLinearIndex
+location: /path/to/your/test-gbsketch.zip
+is database? yes
+has manifest? yes
+num signatures: 5
+** examining manifest...
+total hashes: 10815
+summary of sketches:
+   2 sketches with dna, k=21, scaled=1000, abund      2884 total hashes
+   2 sketches with dna, k=31, scaled=1000, abund      2823 total hashes
+   1 sketches with protein, k=10, scaled=100, abund   5108 total hashes
 ```
 
 Full Usage:
@@ -80,6 +127,7 @@ options:
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         number of times to retry failed downloads
   -g, --genomes-only    just download and sketch genome (DNA) files
+  -m, --proteomes-only  just download and sketch proteome (protein) files
 ```
 
 ## `urlsketch`
@@ -162,14 +210,16 @@ pytest tests
 
 ### Generating a release
 
-Bump version number in `pyproject.toml` and push.
+Bump version number in `Cargo.toml` and push.
 
 Make a new release on github.
 
 Then pull, and:
 
 ```
-python -m build
+make sdist
 ```
 
-followed by `twine upload dist/...`.
+followed by `make upload_sdist`.
+
+> you may need to `pip install twine` if it is not available.
