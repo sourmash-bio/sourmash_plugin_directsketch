@@ -501,7 +501,8 @@ async fn write_sig(
 
     let now = Utc::now();
     let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
-        .last_modification_date(ZipDateTime::from_chrono(&now));
+        .last_modification_date(ZipDateTime::from_chrono(&now))
+        .unix_permissions(0o644);
     zip_writer
         .write_entry_whole(builder, &gzipped_buffer)
         .await
@@ -563,7 +564,8 @@ pub fn sigwriter_handle(
 
                 let now = Utc::now();
                 let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
-                    .last_modification_date(ZipDateTime::from_chrono(&now));
+                    .last_modification_date(ZipDateTime::from_chrono(&now))
+                    .unix_permissions(0o644);
 
                 if let Err(e) = zip_writer
                     .write_entry_whole(builder, &manifest_buffer)
