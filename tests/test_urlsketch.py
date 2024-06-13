@@ -348,6 +348,6 @@ def test_zip_file_permissions(runtmp):
             external_attr = zip_info.external_attr >> 16 
             permissions = stat.filemode(external_attr)
             print(f"File: {zip_info.filename}, Permissions: {permissions}")
-            # check permissions are 644 (rw-r--r-)
+            # check permissions are 644 (rw-r--r--)
             assert external_attr == 0o644
 
