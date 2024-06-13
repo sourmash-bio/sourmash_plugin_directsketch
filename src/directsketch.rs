@@ -732,6 +732,7 @@ pub async fn gbsketch(
         }
     };
     let dna_sig_templates = build_siginfo(&params_vec, "DNA");
+    // prot will build protein, dayhoff, hp
     let prot_sig_templates = build_siginfo(&params_vec, "protein");
 
     let mut genomes_only = genomes_only;

@@ -460,3 +460,50 @@ def test_gbsketch_missing_output(runtmp):
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
+
+
+def test_gbsketch_protein_dayhoff_hp(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.dayhoff.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.hp.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=30, select_moltype='protein')
+    ss2 = sourmash.load_one_signature(sig2, ksize=30, select_moltype='dayhoff')
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='hp')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str',"protein,k=10,scaled=200",
+                    '-p', "dayhoff,k=10,scaled=200",
+                    '-p', "hp,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 3
+    for sig in sigs:
+        assert sig.name == ss1.name
+        if sig.minhash.moltype == 'protein':
+            assert sig.md5sum() == ss1.md5sum()
+        elif sig.minhash.moltype == 'dayhoff':
+            assert sig.md5sum() == ss2.md5sum()
+        elif sig.minhash.moltype == 'hp':
+            assert sig.md5sum() == ss3.md5sum()
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        fail_lines = failF.readlines()
+        print(fail_lines)
+        assert len(fail_lines) == 2
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
+        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert acc == "GCA_000175535.1"
+        assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+        assert moltype == "protein"
+        assert download_filename == "GCA_000175535.1_protein.faa.gz"
+        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"

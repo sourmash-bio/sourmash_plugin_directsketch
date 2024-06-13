@@ -17,7 +17,7 @@ impl InputMolType {}
 impl fmt::Display for InputMolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            InputMolType::Dna => write!(f, "dna"),
+            InputMolType::Dna => write!(f, "DNA"),
             InputMolType::Protein => write!(f, "protein"),
         }
     }
@@ -280,6 +280,8 @@ pub struct Params {
     pub scaled: u64,
     pub seed: u32,
     pub is_protein: bool,
+    pub is_dayhoff: bool,
+    pub is_hp: bool,
     pub is_dna: bool,
 }
 
@@ -291,6 +293,8 @@ impl Hash for Params {
         self.scaled.hash(state);
         self.seed.hash(state);
         self.is_protein.hash(state);
+        self.is_dayhoff.hash(state);
+        self.is_hp.hash(state);
         self.is_dna.hash(state);
     }
 }
@@ -308,7 +312,9 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
         let mut scaled = 1000;
         let mut seed = 42;
         let mut is_protein = false;
-        let mut is_dna = true;
+        let mut is_dayhoff = false;
+        let mut is_hp = false;
+        let mut is_dna = false;
 
         for item in items.iter() {
             match *item {
@@ -337,11 +343,15 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
                 }
                 "protein" => {
                     is_protein = true;
-                    is_dna = false;
                 }
                 "dna" => {
-                    is_protein = false;
                     is_dna = true;
+                }
+                "dayhoff" => {
+                    is_dayhoff = true;
+                }
+                "hp" => {
+                    is_hp = true;
                 }
                 _ => return Err(format!("unknown component '{}' in params string", item)),
             }
@@ -356,6 +366,8 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
                 seed,
                 is_protein,
                 is_dna,
+                is_dayhoff,
+                is_hp,
             };
             unique_params.insert(param);
         }
@@ -364,19 +376,19 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     Ok(unique_params.into_iter().collect())
 }
 
-pub fn build_siginfo(params: &[Params], moltype: &str) -> Vec<Signature> {
+pub fn build_siginfo(params: &[Params], input_moltype: &str) -> Vec<Signature> {
     let mut sigs = Vec::new();
 
     for param in params.iter().cloned() {
-        match moltype {
-            // if dna, only build dna sigs. if protein, only build protein sigs
+        match input_moltype {
+            // if dna, only build dna sigs. if protein, only build protein sigs, etc
             "dna" | "DNA" if !param.is_dna => continue,
-            "protein" if !param.is_protein => continue,
+            "protein" if !param.is_protein && !param.is_dayhoff && !param.is_hp => continue,
             _ => (),
         }
 
         // Adjust ksize value based on the is_protein flag
-        let adjusted_ksize = if param.is_protein {
+        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
             param.ksize * 3
         } else {
             param.ksize
@@ -387,6 +399,8 @@ pub fn build_siginfo(params: &[Params], moltype: &str) -> Vec<Signature> {
             .scaled(param.scaled)
             .protein(param.is_protein)
             .dna(param.is_dna)
+            .dayhoff(param.is_dayhoff)
+            .hp(param.is_hp)
             .num_hashes(param.num)
             .track_abundance(param.track_abundance)
             .build();
