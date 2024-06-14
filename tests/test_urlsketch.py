@@ -318,4 +318,36 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
 
 
-# def test_urlsketch_from_urlsketch_failed(runtmp, capfd):
+def test_zip_file_permissions(runtmp):
+    # Check permissions in the ZIP file
+    import zipfile
+    import stat
+    
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out  # stdout should be empty
+
+    with zipfile.ZipFile(output, 'r') as zip_ref:
+        for zip_info in zip_ref.infolist():
+            # The external_attr field contains the file permissions information.
+            # By shifting right 16 bits (>> 16), we extract the file permissions.
+            external_attr = zip_info.external_attr >> 16 
+            permissions = stat.filemode(external_attr)
+            print(f"File: {zip_info.filename}, Permissions: {permissions}")
+            # check permissions are 644 (rw-r--r--)
+            assert external_attr == 0o644
+
