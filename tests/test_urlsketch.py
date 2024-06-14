@@ -351,6 +351,7 @@ def test_zip_file_permissions(runtmp):
             # check permissions are 644 (rw-r--r--)
             assert external_attr == 0o644
 
+
 def test_gbsketch_protein_dayhoff_hp(runtmp):
     acc_csv = get_test_data('acc-url.csv')
     output = runtmp.output('simple.zip')
@@ -390,3 +391,4 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         print(fail_lines)
         assert len(fail_lines) == 1
         assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
+
