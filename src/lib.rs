@@ -61,6 +61,7 @@ fn do_gbsketch(
     proteomes_only: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    tmpdir: Option<String>,
 ) -> anyhow::Result<u8> {
     match directsketch::gbsketch(
         py,
@@ -74,6 +75,7 @@ fn do_gbsketch(
         proteomes_only,
         download_only,
         output_sigs,
+        tmpdir,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {

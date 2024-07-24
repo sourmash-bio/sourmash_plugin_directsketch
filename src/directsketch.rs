@@ -19,6 +19,7 @@ use tokio_util::compat::Compat;
 
 use pyo3::prelude::*;
 
+use sourmash::collection::Collection;
 use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
@@ -460,7 +461,7 @@ async fn dl_sketch_url(
     Ok((sigs, failed))
 }
 
-async fn write_sig(
+async fn write_sig_to_zip(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
@@ -509,7 +510,79 @@ async fn write_sig(
         .map_err(|e| anyhow!("Error writing zip entry: {}", e))
 }
 
-pub fn sigwriter_handle(
+async fn write_sig_to_tmpdir(
+    sig: &Signature,
+    md5sum_occurrences: &mut HashMap<String, usize>,
+    manifest_rows: &mut Vec<Record>,
+    tmpdir: PathBuf,
+) -> Result<()> {
+    let md5sum_str = sig.md5sum();
+    let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+    *count += 1;
+
+    let sig_filename = if *count > 1 {
+        format!("{}/signatures/{}_{}.sig.gz", tmpdir, md5sum_str, count)
+    } else {
+        format!("{}/signatures/{}.sig.gz", tmpdir, md5sum_str)
+    };
+
+    let records: Vec<Record> = Record::from_sig(sig, &sig_filename);
+    manifest_rows.extend(records);
+
+    let wrapped_sig = vec![sig.clone()];
+    let json_bytes = serde_json::to_vec(&wrapped_sig)
+        .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
+
+    let gzipped_buffer = {
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut gz_writer = niffler::get_writer(
+                Box::new(&mut buffer),
+                niffler::compression::Format::Gzip,
+                niffler::compression::Level::Nine,
+            )?;
+            //     .map_err(|e| anyhow!("Error creating gzip writer: {}", e))?;
+            gz_writer.write_all(&json_bytes)?;
+            //         .map_err(|e| anyhow!("Error writing gzip data: {}", e))?;
+        }
+
+        buffer.into_inner()
+    };
+
+    let now = Utc::now();
+    // write sig
+    let sig_file_path = Path::new(&sig_filename);
+    let mut sig_file = File::create(sig_file_path).await?;
+    sig_file.write_all(&gzipped_buffer).await?;
+}
+
+async fn write_manifest_to_zip(
+    zip_writer: &mut ZipFileWriter<Compat<tokio::fs::File>>,
+    manifest_rows: &Vec<Record>,
+    error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
+) {
+    let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+    let manifest: Manifest = manifest_rows.clone().into();
+    let mut manifest_buffer = Vec::new();
+    manifest
+        .to_writer(&mut manifest_buffer)
+        .expect("Failed to serialize manifest"); // Handle this more gracefully in production
+
+    let now = Utc::now();
+    let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
+        .last_modification_date(ZipDateTime::from_chrono(&now))
+        .unix_permissions(0o644);
+
+    if let Err(e) = zip_writer
+        .write_entry_whole(builder, &manifest_buffer)
+        .await
+    {
+        let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
+        let _ = error_sender.send(error).await;
+    }
+}
+
+pub fn zipwriter_handle(
     mut recv_sigs: tokio::sync::mpsc::Receiver<Vec<Signature>>,
     output_sigs: Option<String>,
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
@@ -534,7 +607,7 @@ pub fn sigwriter_handle(
 
             while let Some(sigs) = recv_sigs.recv().await {
                 for sig in sigs {
-                    match write_sig(
+                    match write_sig_to_zip(
                         &sig,
                         &mut md5sum_occurrences,
                         &mut manifest_rows,
@@ -554,27 +627,7 @@ pub fn sigwriter_handle(
             }
 
             if wrote_sigs {
-                println!("Writing manifest");
-                let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
-                let manifest: Manifest = manifest_rows.clone().into();
-                let mut manifest_buffer = Vec::new();
-                manifest
-                    .to_writer(&mut manifest_buffer)
-                    .expect("Failed to serialize manifest"); // Handle this more gracefully in production
-
-                let now = Utc::now();
-                let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
-                    .last_modification_date(ZipDateTime::from_chrono(&now))
-                    .unix_permissions(0o644);
-
-                if let Err(e) = zip_writer
-                    .write_entry_whole(builder, &manifest_buffer)
-                    .await
-                {
-                    let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
-                    let _ = error_sender.send(error).await;
-                    return;
-                }
+                write_manifest_to_zip(&mut zip_writer, &manifest_rows, &error_sender);
 
                 if let Err(e) = zip_writer.close().await {
                     let error = anyhow::Error::new(e).context("Failed to close ZIP file");
@@ -587,6 +640,134 @@ pub fn sigwriter_handle(
                     "No signatures written",
                 ));
                 let _ = error_sender.send(error).await; // Send error about no signatures written
+            }
+        }
+        drop(error_sender); // should be dropped automatically as it goes out of scope, but just in case
+    })
+}
+
+async fn copy_tmpdir_to_zip(
+    tmpdir: &str,
+    zipfile_path: String,
+    error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
+) -> Result<()> {
+    let outpath: PathBuf = zipfile_path.into();
+
+    let file = match File::create(&outpath).await {
+        Ok(file) => file,
+        Err(e) => {
+            let error = anyhow::Error::new(e).context("Failed to create file at specified path");
+            let _ = error_sender.send(error).await; // Send the error through the channel
+            return Ok(()); // Simply exit the task as error handling is managed elsewhere
+        }
+    };
+
+    let mut zip_writer = ZipFileWriter::with_tokio(file);
+
+    // find all signature paths
+    let sigdir = format!("{}/signatures", tmpdir);
+    let mut dir_entries = fs::read_dir(&sigdir).await?;
+    // load paths as sourmash collection
+    let collection = Collection::from_paths(dir_entries);
+    // keep track of all records for final manifest
+    let mut dir_manifest_rows: Vec<Record> = Vec::new();
+    // keep track of MD5 sum occurrences to prevent overwriting duplicates
+    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
+    // write each sig to zip
+    collection.iter().for_each(|(_idx, record)| {
+        let sig = collection
+            .sig_from_record(record)
+            .expect("failed to get sig from record");
+        // do i need to track dir_manifest_rows? Or can I just use collection.manifest()??? Hmm, md5sum occurrences may change...
+        write_sig_to_zip(
+            sig,
+            &mut md5sum_occurrences,
+            &mut dir_manifest_rows,
+            &mut zip_writer,
+        );
+    });
+
+    write_manifest_to_zip(&mut zip_writer, &dir_manifest_rows, &error_sender).await?;
+
+    zip_writer.finish().await?;
+
+    fs::remove_dir_all(tmpdir).await?;
+
+    Ok(())
+}
+
+pub fn read_from_tmpdir(
+    tmpdir: &str,
+    error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
+) -> Result<(Manifest)> {
+    let sigdir = format!("{}/signatures", tmpdir);
+    let mut dir_entries = match fs::read_dir(&sigdir).await {
+        Ok(entries) => entries,
+        Err(e) => {
+            let error = anyhow::Error::new(e).context("Failed to read directory entries");
+            let _ = error_sender.send(error).await; // Send the error through the channel
+            return Ok(());
+        }
+    };
+    // load paths as sourmash collection
+    let collection = match Collection::from_paths(dir_entries).await {
+        Ok(collection) => collection,
+        Err(e) => {
+            let error =
+                anyhow::Error::new(e).context("Failed to load paths as sourmash collection");
+            let _ = error_sender.send(error).await; // Send the error through the channel
+            return Ok(());
+        }
+    };
+    // return collection manifest
+    Ok(collection.manifest())
+}
+
+pub fn tmpdir_sigwriter_handle(
+    mut recv_sigs: tokio::sync::mpsc::Receiver<Vec<Signature>>,
+    tmpdir: String,
+    output_zip: Option<String>,
+    error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut md5sum_occurrences = HashMap::new();
+        let mut manifest_rows = Vec::new();
+        let mut wrote_sigs = false;
+        if let Some(tmpdir) = tmpdir {
+            let outpath: PathBuf = outpath.into();
+
+            let outpath_dir = tmpdir.parent().unwrap();
+            if let Err(e) = tokio::fs::create_dir_all(outpath_dir).await {
+                let error =
+                    anyhow::Error::new(e).context("Failed to create directory at specified path");
+                let _ = error_sender.send(error).await; // Send the error through the channel
+                return; // Simply exit the task as error handling is managed elsewhere
+            }
+
+            while let Some(sigs) = recv_sigs.recv().await {
+                for sig in sigs {
+                    match write_sig_to_tmpdir(
+                        &sig,
+                        &mut md5sum_occurrences,
+                        &mut manifest_rows,
+                        tmpdir,
+                    )
+                    .await
+                    {
+                        Ok(_) => wrote_sigs = true,
+                        Err(e) => {
+                            let error = e.context("Error processing signature");
+                            if (error_sender.send(error).await).is_err() {
+                                return; // Exit on failure to send error
+                            }
+                        }
+                    }
+                }
+            }
+            // if output zipfile specified, copy to zip and write manifest
+            if let Some(outpath) = output_zip {
+                // copy signatures from tmpdir into zipfile
+                copy_tmpdir_to_zip(tmpdir, outpath, &error_sender);
             }
         }
         drop(error_sender); // should be dropped automatically as it goes out of scope, but just in case
@@ -683,6 +864,7 @@ pub async fn gbsketch(
     proteomes_only: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    tmpdir: Option<String>,
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     if let Some(ref output_sigs) = output_sigs {
@@ -698,16 +880,31 @@ pub async fn gbsketch(
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
-
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
+    // if tmpdir is provided, try to create it
+    if let Some(td) = tmpdir {
+        let outdir: PathBuf = td.into();
+        if let Err(e) = tokio::fs::create_dir_all(outdir).await {
+            let error =
+                anyhow::Error::new(e).context("Failed to create directory at specified path");
+            let _ = error_sender.send(error).await; // Send the error through the channel
+        }
+    }
+
     // Set up collector/writing tasks
     let mut handles = Vec::new();
-    let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
+    if tmpdir.is_some() {
+        let sig_handle =
+            tmpdir_sigwriter_handle(recv_sigs, tmpdir, output_sigs, error_sender.clone());
+    } else {
+        let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+    }
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
@@ -882,7 +1079,7 @@ pub async fn urlsketch(
 
     // Set up collector/writing tasks
     let mut handles = Vec::new();
-    let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());

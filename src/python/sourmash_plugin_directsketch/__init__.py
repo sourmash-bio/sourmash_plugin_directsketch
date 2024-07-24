@@ -43,6 +43,10 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='output zip file for the signatures')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
+        p.add_argument('--tmpdir',
+                       help='Write signatures to tmpdir first before adding to zipfile. \
+                            This allows gbsketch to recover after unexpected failures, rather than needing to \
+                            restart sketching from scratch.', default = None)
         p.add_argument('-k', '--keep-fasta', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
@@ -90,7 +94,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.genomes_only,
                                                            args.proteomes_only,
                                                            args.download_only,
-                                                           args.output)
+                                                           args.output,
+                                                           args.tmpdir)
         
         if status == 0:
             notify("...gbsketch is done!")
