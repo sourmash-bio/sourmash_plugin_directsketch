@@ -9,10 +9,10 @@ name = "sourmash_plugin_directsketch"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.22.1", features = ["extension-module", "anyhow"] }
+pyo3 = { version = "0.22.2", features = ["extension-module", "anyhow"] }
 rayon = "1.10.0"
 serde = { version = "1.0.204", features = ["derive"] }
-sourmash = { version = "0.14.1"}
+sourmash = { version = "0.15.1"}
 serde_json = "1.0.120"
 niffler = "2.4.0"
 needletail = "0.5.1"
@@ -23,7 +23,7 @@ anyhow = "1.0.86"
 camino = "1.1.7"
 csv = "1.3.0"
 reqwest = { version = "0.12.5", features = ["json", "stream"] }
-tokio = { version = "1.38.0", features = ["full"] }
+tokio = { version = "1.38.1", features = ["full"] }
 tokio-util = "0.7.11"
 regex = "1.10.5"
 chrono = "0.4.32"
