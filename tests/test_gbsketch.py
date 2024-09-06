@@ -347,6 +347,14 @@ def test_gbsketch_bad_acc(runtmp):
                 break
         else:
             assert False, "Modified accession not found"
+    
+    assert os.path.exists(failed)
+    with open(ch_fail, 'r') as ch_file:
+        # Read the lines of the file
+        lines = ch_file.readlines()
+        print("CHECKSUM FAILURES")
+        print(lines)
+        assert lines == ['accession,name,moltype,md5sum_url,download_filename,url\n']
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
