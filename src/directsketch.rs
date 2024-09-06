@@ -255,6 +255,8 @@ pub struct FailedChecksum {
     md5sum_url: Url,
     download_filename: Option<String>,
     url: Option<Url>,
+    expected_md5sum: Option<String>,
+    reason: String,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -338,6 +340,8 @@ async fn dl_sketch_assembly_accession(
                     md5sum_url: md5sum_url.clone(),
                     download_filename: Some(file_name),
                     url: Some(url),
+                    expected_md5sum: None,
+                    reason: "md5sum download or parse failure".to_string(),
                 };
                 checksum_failures.push(failed_checksum_download);
             }
@@ -355,17 +359,32 @@ async fn dl_sketch_assembly_accession(
                 .await
             {
                 Ok(data) => data,
-                Err(_err) => {
+                Err(e) => {
+                    // did we have a checksum error or a download error?
                     // here --> keep track of accession errors + filetype
-                    let failed_download = FailedDownload {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: file_type.moltype(),
-                        md5sum: expected_md5.map(|x| x.to_string()),
-                        download_filename: Some(file_name),
-                        url: Some(url),
-                    };
-                    download_failures.push(failed_download);
+                    if e.to_string().contains("MD5 hash does not match") {
+                        let checksum_mismatch: FailedChecksum = FailedChecksum {
+                            accession: accession.clone(),
+                            name: name.clone(),
+                            moltype: file_type.moltype(),
+                            md5sum_url: md5sum_url.clone(),
+                            download_filename: Some(file_name.clone()),
+                            url: Some(url.clone()),
+                            expected_md5sum: expected_md5.cloned(),
+                            reason: "checksum mismatch".to_string(),
+                        };
+                        checksum_failures.push(checksum_mismatch);
+                    } else {
+                        let failed_download = FailedDownload {
+                            accession: accession.clone(),
+                            name: name.clone(),
+                            moltype: file_type.moltype(),
+                            md5sum: expected_md5.map(|x| x.to_string()),
+                            download_filename: Some(file_name),
+                            url: Some(url),
+                        };
+                        download_failures.push(failed_download);
+                    }
                     continue;
                 }
             };
@@ -692,7 +711,7 @@ pub fn checksum_failures_handle(
 
                 // Attempt to write CSV headers
                 if let Err(e) = writer
-                    .write_all(b"accession,name,moltype,md5sum_url,download_filename,url\n")
+                    .write_all(b"accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n")
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
@@ -707,16 +726,20 @@ pub fn checksum_failures_handle(
                     md5sum_url,
                     download_filename,
                     url,
+                    expected_md5sum,
+                    reason,
                 }) = recv_failed.recv().await
                 {
                     let record = format!(
-                        "{},{},{},{},{},{}\n",
+                        "{},{},{},{},{},{},{},{}\n",
                         accession,
                         name,
                         moltype,
                         md5sum_url.to_string(),
                         download_filename.unwrap_or("".to_string()),
-                        url.map(|u| u.to_string()).unwrap_or("".to_string())
+                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
+                        expected_md5sum.unwrap_or("".to_string()),
+                        reason,
                     );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
