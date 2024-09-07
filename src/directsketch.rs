@@ -140,7 +140,7 @@ async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<St
             checksums.insert(filename.to_string(), parts[0].to_string());
         } else {
             return Err(anyhow!(
-                "Invalid checksum line format in URL {}: {}",
+                "Invalid checksum line format in URL '{}': '{}'",
                 url,
                 line
             ));
@@ -176,7 +176,7 @@ async fn download_with_retry(
                         return Ok(data.to_vec());
                     } else {
                         last_error = Some(anyhow!(
-                            "MD5 hash does not match. Expected: {}; Found: {}",
+                            "MD5 hash does not match. Expected: '{}'; Found: '{}'",
                             md5,
                             computed_hash
                         ));
