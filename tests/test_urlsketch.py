@@ -438,7 +438,7 @@ def test_urlsketch_md5sum_mismatch_checksum_file(runtmp, capfd):
             assert expected_md5 == "b1234567"
             assert download_filename == "GCA_000175535.1_genomic.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert reason == "MD5 hash does not match. Expected: b1234567; Found: a1a8f1c6dc56999c73fe298871c963d1"
+            assert reason == "MD5 hash does not match. Expected: 'b1234567'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
 
 
 def test_urlsketch_md5sum_mismatch_no_checksum_file(runtmp, capfd):
