@@ -115,6 +115,15 @@ async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<St
         .await
         .context("Failed to send request")?;
 
+    // Check if the status code is 200 OK
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download MD5 checksum file from URL {}: HTTP status {}",
+            url,
+            response.status()
+        ));
+    }
+
     let content = response
         .text()
         .await
