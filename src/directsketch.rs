@@ -1007,12 +1007,12 @@ pub async fn urlsketch(
     input_csv: String,
     param_str: String,
     failed_csv: String,
-    failed_checksums_csv: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     if let Some(ref output_sigs) = output_sigs {
@@ -1041,17 +1041,23 @@ pub async fn urlsketch(
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
-    let checksum_failures_handle = checksum_failures_handle(
-        failed_checksums_csv,
-        recv_failed_checksum,
-        error_sender.clone(),
-    );
+
+    let mut write_failed_checksums = false;
+    if let Some(ref failed_checksums) = failed_checksums_csv {
+        let checksum_failures_handle = checksum_failures_handle(
+            failed_checksums.clone(),
+            recv_failed_checksum,
+            error_sender.clone(),
+        );
+        write_failed_checksums = true;
+        handles.push(checksum_failures_handle);
+    }
+
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
     handles.push(error_handle);
-    handles.push(checksum_failures_handle);
 
     // Worker tasks
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
@@ -1157,10 +1163,28 @@ pub async fn urlsketch(
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
-                    for fail in failed_checksums {
-                        if let Err(e) = checksum_send_failed.send(fail).await {
-                            eprintln!("Failed to send failed checksum info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                    if write_failed_checksums {
+                        for fail in failed_checksums {
+                            if let Err(e) = checksum_send_failed.send(fail).await {
+                                eprintln!("Failed to send failed checksum info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                    } else {
+                        // if we don't have a failed checksum file, convert to failed downloads + write there
+                        for fail in failed_checksums {
+                            let dl_fail: FailedDownload = FailedDownload {
+                                accession: fail.accession,
+                                name: fail.name,
+                                moltype: fail.moltype,
+                                md5sum: fail.expected_md5sum,
+                                download_filename: fail.download_filename,
+                                url: fail.url,
+                            };
+                            if let Err(e) = send_failed.send(dl_fail).await {
+                                eprintln!("Failed to send failed download info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
                         }
                     }
                 }

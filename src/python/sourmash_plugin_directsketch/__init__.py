@@ -119,7 +119,8 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                        help="write FASTA/Q files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
         p.add_argument('--failed',help='csv of failed accessions and download links.', required=True)
-        p.add_argument('--checksum-fail', help="csv of accessions where the md5sum check failed", required=True)
+        # don't require checksum_fail here b/c users don't need to provide checksums
+        p.add_argument('--checksum-fail', help="csv of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).", default=None)
         p.add_argument('-p', '--param-string', action='append', type=str, default=[],
                           help='parameter string for sketching (default: k=31,scaled=1000)')
         p.add_argument('-c', '--cores', default=0, type=int,
@@ -154,12 +155,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         status = sourmash_plugin_directsketch.do_urlsketch(args.input_csv,
                                                            args.param_string,
                                                            args.failed,
-                                                           args.checksum_fail,
                                                            args.retry_times,
                                                            args.fastas,
                                                            args.keep_fasta,
                                                            args.download_only,
-                                                           args.output)
+                                                           args.output,
+                                                           args.checksum_fail)
         
         if status == 0:
             notify("...gbsketch is done!")
