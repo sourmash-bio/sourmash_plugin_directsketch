@@ -336,7 +336,9 @@ async fn dl_sketch_assembly_accession(
 
     let checksums = match download_and_parse_md5(client, &md5sum_url).await {
         Ok(cs) => cs,
-        Err(_e) => {
+        Err(err) => {
+            // capture the error message as a string
+            let error_message = err.to_string();
             // if we can't download/parse the md5sum file, write to checksum failures file to allow manual troubleshooting
             for file_type in &file_types {
                 // get filename, filetype info to facilitate downstream
@@ -350,7 +352,7 @@ async fn dl_sketch_assembly_accession(
                     download_filename: Some(file_name),
                     url: Some(url),
                     expected_md5sum: None,
-                    reason: "md5sum download or parse failure".to_string(),
+                    reason: error_message.clone(), // write full error message
                 };
                 checksum_failures.push(failed_checksum_download);
             }
@@ -369,9 +371,10 @@ async fn dl_sketch_assembly_accession(
             {
                 Ok(data) => data,
                 Err(e) => {
+                    let error_message = e.to_string();
                     // did we have a checksum error or a download error?
                     // here --> keep track of accession errors + filetype
-                    if e.to_string().contains("MD5 hash does not match") {
+                    if error_message.contains("MD5 hash does not match") {
                         let checksum_mismatch: FailedChecksum = FailedChecksum {
                             accession: accession.clone(),
                             name: name.clone(),
@@ -380,7 +383,7 @@ async fn dl_sketch_assembly_accession(
                             download_filename: Some(file_name.clone()),
                             url: Some(url.clone()),
                             expected_md5sum: expected_md5.cloned(),
-                            reason: "checksum mismatch".to_string(),
+                            reason: error_message.clone(),
                         };
                         checksum_failures.push(checksum_mismatch);
                     } else {
