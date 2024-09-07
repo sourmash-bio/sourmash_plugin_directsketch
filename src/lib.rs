@@ -49,6 +49,7 @@ fn set_tokio_thread_pool(num_threads: usize) -> PyResult<usize> {
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (input_csv, param_str, failed_csv, failed_checksums, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, output_sigs=None))]
 fn do_gbsketch(
     py: Python,
     input_csv: String,
@@ -87,11 +88,13 @@ fn do_gbsketch(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
+#[pyo3(signature = (input_csv, param_str, failed_csv, failed_checksums, retry_times, fasta_location, keep_fastas, download_only, output_sigs=None))]
 fn do_urlsketch(
     py: Python,
     input_csv: String,
     param_str: String,
     failed_csv: String,
+    failed_checksums: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
@@ -103,6 +106,7 @@ fn do_urlsketch(
         input_csv,
         param_str,
         failed_csv,
+        failed_checksums,
         retry_times,
         fasta_location,
         keep_fastas,

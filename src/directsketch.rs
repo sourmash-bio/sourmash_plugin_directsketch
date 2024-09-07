@@ -176,7 +176,7 @@ async fn download_with_retry(
                         return Ok(data.to_vec());
                     } else {
                         last_error = Some(anyhow!(
-                            "MD5 hash does not match. Expected: {}, Found: {}",
+                            "MD5 hash does not match. Expected: {}; Found: {}",
                             md5,
                             computed_hash
                         ));
@@ -261,7 +261,7 @@ pub struct FailedChecksum {
     accession: String,
     name: String,
     moltype: String,
-    md5sum_url: Url,
+    md5sum_url: Option<Url>,
     download_filename: Option<String>,
     url: Option<Url>,
     expected_md5sum: Option<String>,
@@ -348,7 +348,7 @@ async fn dl_sketch_assembly_accession(
                     accession: accession.clone(),
                     name: name.clone(),
                     moltype: file_type.moltype(),
-                    md5sum_url: md5sum_url.clone(),
+                    md5sum_url: Some(md5sum_url.clone()),
                     download_filename: Some(file_name),
                     url: Some(url),
                     expected_md5sum: None,
@@ -379,7 +379,7 @@ async fn dl_sketch_assembly_accession(
                             accession: accession.clone(),
                             name: name.clone(),
                             moltype: file_type.moltype(),
-                            md5sum_url: md5sum_url.clone(),
+                            md5sum_url: Some(md5sum_url.clone()),
                             download_filename: Some(file_name.clone()),
                             url: Some(url.clone()),
                             expected_md5sum: expected_md5.cloned(),
@@ -450,10 +450,11 @@ async fn dl_sketch_url(
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(Vec<Signature>, Vec<FailedDownload>)> {
+) -> Result<(Vec<Signature>, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let mut sigs = Vec::<Signature>::new();
     let mut failed = Vec::<FailedDownload>::new();
+    let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name;
     let accession = accinfo.accession;
@@ -462,11 +463,8 @@ async fn dl_sketch_url(
     let download_filename = accinfo.download_filename;
     let moltype = accinfo.moltype;
 
-    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count)
-        .await
-        .ok()
-    {
-        Some(data) => {
+    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
+        Ok(data) => {
             // check keep_fastas instead??
             if let Some(ref download_filename) = download_filename {
                 let path = location.join(download_filename);
@@ -501,20 +499,37 @@ async fn dl_sketch_url(
                 };
             }
         }
-        None => {
-            let failed_download = FailedDownload {
-                accession: accession.clone(),
-                name: name.clone(),
-                moltype: moltype.to_string(),
-                md5sum: expected_md5.map(|x| x.to_string()),
-                download_filename,
-                url: Some(url),
-            };
-            failed.push(failed_download);
+        Err(err) => {
+            let error_message = err.to_string();
+            // did we have a checksum error or a download error?
+            // here --> keep track of accession errors + filetype
+            if error_message.contains("MD5 hash does not match") {
+                let checksum_mismatch: FailedChecksum = FailedChecksum {
+                    accession: accession.clone(),
+                    name: name.clone(),
+                    moltype: moltype.to_string(),
+                    md5sum_url: None,
+                    download_filename,
+                    url: Some(url.clone()),
+                    expected_md5sum: expected_md5.clone(),
+                    reason: error_message.clone(),
+                };
+                checksum_failures.push(checksum_mismatch);
+            } else {
+                let failed_download = FailedDownload {
+                    accession: accession.clone(),
+                    name: name.clone(),
+                    moltype: moltype.to_string(),
+                    md5sum: expected_md5.map(|x| x.to_string()),
+                    download_filename,
+                    url: Some(url),
+                };
+                failed.push(failed_download);
+            }
         }
     }
 
-    Ok((sigs, failed))
+    Ok((sigs, failed, checksum_failures))
 }
 
 async fn write_sig(
@@ -747,7 +762,7 @@ pub fn checksum_failures_handle(
                         accession,
                         name,
                         moltype,
-                        md5sum_url.to_string(),
+                        md5sum_url.map(|u| u.to_string()).unwrap_or("".to_string()),
                         download_filename.unwrap_or("".to_string()),
                         url.map(|u| u.to_string()).unwrap_or("".to_string()),
                         expected_md5sum.unwrap_or("".to_string()),
@@ -992,6 +1007,7 @@ pub async fn urlsketch(
     input_csv: String,
     param_str: String,
     failed_csv: String,
+    failed_checksums_csv: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
@@ -1016,6 +1032,8 @@ pub async fn urlsketch(
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed_checksums, recv_failed_checksum) =
+        tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
@@ -1023,11 +1041,17 @@ pub async fn urlsketch(
     let mut handles = Vec::new();
     let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+    let checksum_failures_handle = checksum_failures_handle(
+        failed_checksums_csv,
+        recv_failed_checksum,
+        error_sender.clone(),
+    );
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
     handles.push(error_handle);
+    handles.push(checksum_failures_handle);
 
     // Worker tasks
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
@@ -1086,6 +1110,7 @@ pub async fn urlsketch(
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
+        let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
 
@@ -1119,7 +1144,7 @@ pub async fn urlsketch(
             )
             .await;
             match result {
-                Ok((sigs, failed_downloads)) => {
+                Ok((sigs, failed_downloads, failed_checksums)) => {
                     if !sigs.is_empty() {
                         if let Err(e) = send_sigs.send(sigs).await {
                             eprintln!("Failed to send signatures: {}", e);
@@ -1129,6 +1154,12 @@ pub async fn urlsketch(
                     for fail in failed_downloads {
                         if let Err(e) = send_failed.send(fail).await {
                             eprintln!("Failed to send failed download info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
+                    }
+                    for fail in failed_checksums {
+                        if let Err(e) = checksum_send_failed.send(fail).await {
+                            eprintln!("Failed to send failed checksum info: {}", e);
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
@@ -1144,6 +1175,7 @@ pub async fn urlsketch(
     drop(send_sigs);
     drop(send_failed);
     drop(error_sender);
+    drop(send_failed_checksums);
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {
