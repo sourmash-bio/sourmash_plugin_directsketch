@@ -514,16 +514,21 @@ async fn write_sig_to_tmpdir(
     sig: &Signature,
     md5sum_occurrences: &mut HashMap<String, usize>,
     manifest_rows: &mut Vec<Record>,
-    tmpdir: PathBuf,
+    tmpdir: &PathBuf,
 ) -> Result<()> {
     let md5sum_str = sig.md5sum();
     let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
     *count += 1;
 
     let sig_filename = if *count > 1 {
-        format!("{}/signatures/{}_{}.sig.gz", tmpdir, md5sum_str, count)
+        format!(
+            "{}/signatures/{}_{}.sig.gz",
+            tmpdir.as_str(),
+            md5sum_str,
+            count
+        )
     } else {
-        format!("{}/signatures/{}.sig.gz", tmpdir, md5sum_str)
+        format!("{}/signatures/{}.sig.gz", tmpdir.as_str(), md5sum_str)
     };
 
     let records: Vec<Record> = Record::from_sig(sig, &sig_filename);
@@ -541,45 +546,46 @@ async fn write_sig_to_tmpdir(
                 niffler::compression::Format::Gzip,
                 niffler::compression::Level::Nine,
             )?;
-            //     .map_err(|e| anyhow!("Error creating gzip writer: {}", e))?;
             gz_writer.write_all(&json_bytes)?;
-            //         .map_err(|e| anyhow!("Error writing gzip data: {}", e))?;
         }
-
         buffer.into_inner()
     };
 
-    let now = Utc::now();
     // write sig
     let sig_file_path = Path::new(&sig_filename);
     let mut sig_file = File::create(sig_file_path).await?;
     sig_file.write_all(&gzipped_buffer).await?;
+
+    Ok(())
 }
 
 async fn write_manifest_to_zip(
     zip_writer: &mut ZipFileWriter<Compat<tokio::fs::File>>,
     manifest_rows: &Vec<Record>,
-    error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
-) {
+) -> Result<()> {
     let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+
+    // convert manifest_rows to a manifest and serialize it to a buffer
     let manifest: Manifest = manifest_rows.clone().into();
     let mut manifest_buffer = Vec::new();
+
     manifest
         .to_writer(&mut manifest_buffer)
-        .expect("Failed to serialize manifest"); // Handle this more gracefully in production
+        .context("Failed to serialize manifest")?;
 
+    // create the ZipEntryBuilder with the current time and permissions
     let now = Utc::now();
     let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
         .last_modification_date(ZipDateTime::from_chrono(&now))
         .unix_permissions(0o644);
 
-    if let Err(e) = zip_writer
+    // srite the manifest entry to the zip, handle potential errors
+    zip_writer
         .write_entry_whole(builder, &manifest_buffer)
         .await
-    {
-        let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
-        let _ = error_sender.send(error).await;
-    }
+        .context("Failed to write manifest to ZIP")?;
+
+    Ok(())
 }
 
 pub fn zipwriter_handle(
@@ -627,7 +633,11 @@ pub fn zipwriter_handle(
             }
 
             if wrote_sigs {
-                write_manifest_to_zip(&mut zip_writer, &manifest_rows, &error_sender);
+                
+                if let Err(e) = write_manifest_to_zip(&mut zip_writer, &manifest_rows).await {
+                    let _ = error_sender.send(e).await;
+                    // should i return here if err?
+                }
 
                 if let Err(e) = zip_writer.close().await {
                     let error = anyhow::Error::new(e).context("Failed to close ZIP file");
@@ -646,81 +656,131 @@ pub fn zipwriter_handle(
     })
 }
 
+pub async fn signature_from_path(path: &PathBuf) -> Result<Vec<Signature>, Error> {
+    let path = path.clone(); // Clone the path to move into the blocking thread
+
+    // Use `spawn_blocking` to call `Signature::from_path` (synchronous)
+    let sigs = tokio::task::spawn_blocking(move || {
+        Signature::from_path(&path).map_err(|e| anyhow!("Error reading signatures: {}", e))
+    })
+    .await??;
+
+    Ok(sigs)
+}
+
 async fn copy_tmpdir_to_zip(
-    tmpdir: &str,
+    tmpdir: &PathBuf,
     zipfile_path: String,
     error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> Result<()> {
-    let outpath: PathBuf = zipfile_path.into();
+    let zippath: PathBuf = zipfile_path.into();
 
-    let file = match File::create(&outpath).await {
+    let file = match File::create(&zippath).await {
         Ok(file) => file,
         Err(e) => {
             let error = anyhow::Error::new(e).context("Failed to create file at specified path");
             let _ = error_sender.send(error).await; // Send the error through the channel
-            return Ok(()); // Simply exit the task as error handling is managed elsewhere
+            return Ok(()); // exit the task as error handling is managed elsewhere
         }
     };
+    // use block for zip_writer to ensure it gets dropped/finalized before cleaning up tmpdir
+    {
+        let mut zip_writer = ZipFileWriter::with_tokio(file);
 
-    let mut zip_writer = ZipFileWriter::with_tokio(file);
+        // find all signature paths
+        let sigdir = tmpdir.join("signatures");
+        let mut read_dir = match tokio::fs::read_dir(&sigdir).await {
+            Ok(dir) => dir,
+            Err(e) => {
+                let error = anyhow::Error::new(e).context("Failed to read signature directory");
+                let _ = error_sender.send(error).await;
+                return Ok(()); // Exit the function after error handling
+            }
+        };
 
-    // find all signature paths
-    let sigdir = format!("{}/signatures", tmpdir);
-    let mut dir_entries = fs::read_dir(&sigdir).await?;
-    // load paths as sourmash collection
-    let collection = Collection::from_paths(dir_entries);
-    // keep track of all records for final manifest
-    let mut dir_manifest_rows: Vec<Record> = Vec::new();
-    // keep track of MD5 sum occurrences to prevent overwriting duplicates
-    let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
-    // write each sig to zip
-    collection.iter().for_each(|(_idx, record)| {
-        let sig = collection
-            .sig_from_record(record)
-            .expect("failed to get sig from record");
-        // do i need to track dir_manifest_rows? Or can I just use collection.manifest()??? Hmm, md5sum occurrences may change...
-        write_sig_to_zip(
-            sig,
-            &mut md5sum_occurrences,
-            &mut dir_manifest_rows,
-            &mut zip_writer,
-        );
-    });
+        let mut dir_manifest_rows: Vec<Record> = Vec::new();
+        let mut md5sum_occurrences: HashMap<String, usize> = HashMap::new();
 
-    write_manifest_to_zip(&mut zip_writer, &dir_manifest_rows, &error_sender).await?;
+        // Read + write sigs: iterate over directory entries asynchronously
+        while let Some(entry) = read_dir.next_entry().await? {
+            let path = entry.path();
+            let utf8_path = PathBuf::from_path_buf(path.clone())
+                .map_err(|_| anyhow::anyhow!("Invalid UTF-8 path: {:?}", path))?;
 
-    zip_writer.finish().await?;
+            // load sigs from each path. Should just be a single sig, it's just returned in a vector.
+            let sigs = match signature_from_path(&utf8_path).await {
+                Ok(sig) => sig,
+                Err(e) => {
+                    let error = e.context("Failed to load signature from path");
+                    let _ = error_sender.send(error).await;
+                    continue; // continue on err
+                }
+            };
 
-    fs::remove_dir_all(tmpdir).await?;
+            // We could just take out the first (and only) sig here. But iteration is maybe more flexible?
+            // Allows you to include sigs make outside of directsketch...
+            for sig in &sigs {
+                if let Err(e) = write_sig_to_zip(
+                    sig, // Pass each individual signature
+                    &mut md5sum_occurrences,
+                    &mut dir_manifest_rows,
+                    &mut zip_writer,
+                )
+                .await
+                {
+                    let error = e.context("Failed to write signature to zip");
+                    let _ = error_sender.send(error).await;
+                    continue; // Continue on error, don't break the loop
+                }
+            }
+        }
+
+        // Write the final manifest to the zip
+        if let Err(e) = write_manifest_to_zip(&mut zip_writer, &dir_manifest_rows).await {
+            let _ = error_sender.send(e).await; // Send the error as-is, with all its context
+            return Err(anyhow::anyhow!("Failed to handle manifest writing process"));
+        }
+    } // zip_writer is dropped/finalized upon exiting this block
+
+    // Clean up the tmpdir after zipping
+    if let Err(e) = tokio::fs::remove_dir_all(tmpdir).await {
+        let error = anyhow::Error::new(e).context("Failed to remove tmpdir");
+        let _ = error_sender.send(error).await;
+    }
 
     Ok(())
 }
 
-pub fn read_from_tmpdir(
-    tmpdir: &str,
-    error_sender: &tokio::sync::mpsc::Sender<anyhow::Error>,
-) -> Result<(Manifest)> {
+pub async fn read_from_tmpdir(tmpdir: &str) -> Result<Manifest> {
     let sigdir = format!("{}/signatures", tmpdir);
-    let mut dir_entries = match fs::read_dir(&sigdir).await {
-        Ok(entries) => entries,
-        Err(e) => {
-            let error = anyhow::Error::new(e).context("Failed to read directory entries");
-            let _ = error_sender.send(error).await; // Send the error through the channel
-            return Ok(());
-        }
-    };
-    // load paths as sourmash collection
-    let collection = match Collection::from_paths(dir_entries).await {
-        Ok(collection) => collection,
-        Err(e) => {
-            let error =
-                anyhow::Error::new(e).context("Failed to load paths as sourmash collection");
-            let _ = error_sender.send(error).await; // Send the error through the channel
-            return Ok(());
-        }
-    };
-    // return collection manifest
-    Ok(collection.manifest())
+
+    // Read directory entries asynchronously
+    let mut dir_entries = tokio::fs::read_dir(&sigdir)
+        .await
+        .with_context(|| format!("Failed to read directory entries from {}", sigdir))?;
+
+    // Collect all paths from the directory and convert them to Utf8PathBuf
+    let mut paths = Vec::new();
+    while let Some(entry) = dir_entries.next_entry().await? {
+        let path = entry.path();
+
+        // Try to convert PathBuf to Utf8PathBuf
+        let utf8_path = PathBuf::from_path_buf(path)
+            .map_err(|_| anyhow::anyhow!("Invalid UTF-8 path in directory entry"))?;
+        paths.push(utf8_path);
+    }
+
+    // Load collection from paths (synchronous, so use blocking task)
+    let collection = tokio::task::spawn_blocking(move || {
+        Collection::from_paths(&paths).map_err(|e| {
+            anyhow::Error::new(e).context("Failed to load paths as sourmash collection")
+        })
+    })
+    .await?
+    .map_err(|e| anyhow::anyhow!("Failed to execute Collection::from_paths: {}", e))?;
+
+    // Return the collection's manifest; could avoid clone by managing the lifetime differently.
+    Ok(collection.manifest().clone())
 }
 
 pub fn tmpdir_sigwriter_handle(
@@ -733,42 +793,49 @@ pub fn tmpdir_sigwriter_handle(
         let mut md5sum_occurrences = HashMap::new();
         let mut manifest_rows = Vec::new();
         let mut wrote_sigs = false;
-        if let Some(tmpdir) = tmpdir {
-            let outpath: PathBuf = outpath.into();
+        let tmppath: PathBuf = tmpdir.into();
 
-            let outpath_dir = tmpdir.parent().unwrap();
-            if let Err(e) = tokio::fs::create_dir_all(outpath_dir).await {
-                let error =
-                    anyhow::Error::new(e).context("Failed to create directory at specified path");
-                let _ = error_sender.send(error).await; // Send the error through the channel
-                return; // Simply exit the task as error handling is managed elsewhere
-            }
+        let outpath_dir = Path::new(&tmppath).parent().unwrap();
+        // will return Ok if dir already exists
+        if let Err(e) = tokio::fs::create_dir_all(outpath_dir).await {
+            let error =
+                anyhow::Error::new(e).context("Failed to create directory at specified path");
+            let _ = error_sender.send(error).await; // send the error through the channel
+            return;
+        }
 
-            while let Some(sigs) = recv_sigs.recv().await {
-                for sig in sigs {
-                    match write_sig_to_tmpdir(
-                        &sig,
-                        &mut md5sum_occurrences,
-                        &mut manifest_rows,
-                        tmpdir,
-                    )
-                    .await
-                    {
-                        Ok(_) => wrote_sigs = true,
-                        Err(e) => {
-                            let error = e.context("Error processing signature");
-                            if (error_sender.send(error).await).is_err() {
-                                return; // Exit on failure to send error
-                            }
+        while let Some(sigs) = recv_sigs.recv().await {
+            for sig in sigs {
+                match write_sig_to_tmpdir(
+                    &sig,
+                    &mut md5sum_occurrences,
+                    &mut manifest_rows,
+                    &tmppath,
+                )
+                .await
+                {
+                    Ok(_) => wrote_sigs = true,
+                    Err(e) => {
+                        let error = e.context("Error processing signature");
+                        if (error_sender.send(error).await).is_err() {
+                            return; // Exit on failure to send error
                         }
                     }
                 }
             }
+        }
+        if wrote_sigs {
             // if output zipfile specified, copy to zip and write manifest
-            if let Some(outpath) = output_zip {
-                // copy signatures from tmpdir into zipfile
-                copy_tmpdir_to_zip(tmpdir, outpath, &error_sender);
+            if let Some(zippath) = output_zip {
+                // copy sigs from tmpdir into zipfile
+                copy_tmpdir_to_zip(&tmppath, zippath, &error_sender);
             }
+        } else {
+            let error = anyhow::Error::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                "No signatures written",
+            ));
+            let _ = error_sender.send(error).await; // Send error about no signatures written
         }
         drop(error_sender); // should be dropped automatically as it goes out of scope, but just in case
     })
@@ -887,7 +954,7 @@ pub async fn gbsketch(
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
     // if tmpdir is provided, try to create it
-    if let Some(td) = tmpdir {
+    if let Some(ref td) = tmpdir {
         let outdir: PathBuf = td.into();
         if let Err(e) = tokio::fs::create_dir_all(outdir).await {
             let error =
@@ -899,12 +966,14 @@ pub async fn gbsketch(
     // Set up collector/writing tasks
     let mut handles = Vec::new();
 
-    if tmpdir.is_some() {
-        let sig_handle =
-            tmpdir_sigwriter_handle(recv_sigs, tmpdir, output_sigs, error_sender.clone());
-    } else {
-        let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
-    }
+    // write to tmpdir OR directly to zip
+    let sig_handle = match tmpdir {
+        Some(ref td) => {
+            tmpdir_sigwriter_handle(recv_sigs, td.clone(), output_sigs, error_sender.clone())
+        }
+        None => zipwriter_handle(recv_sigs, output_sigs, error_sender.clone()),
+    };
+
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
