@@ -116,6 +116,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
         p.add_argument('-o', '--output', default=None,
                        help='output zip file for the signatures')
+        p.add_argument('--tmpdir',
+                       help='Write signatures to tmpdir first before adding to zipfile. \
+                            This allows urlsketch to recover after unexpected failures, rather than needing to \
+                            restart sketching from scratch.', default = None)
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
         p.add_argument('-k', '--keep-fasta', '--keep-fastq', action='store_true',
@@ -160,7 +164,8 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                                                            args.fastas,
                                                            args.keep_fasta,
                                                            args.download_only,
-                                                           args.output)
+                                                           args.output,
+                                                           args.tmpdir)
         
         if status == 0:
             notify("...gbsketch is done!")

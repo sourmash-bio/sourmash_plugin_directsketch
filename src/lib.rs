@@ -88,7 +88,7 @@ fn do_gbsketch(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, download_only, output_sigs=None))]
+#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, download_only, output_sigs=None, tmpdir=None))]
 fn do_urlsketch(
     py: Python,
     input_csv: String,
@@ -99,6 +99,7 @@ fn do_urlsketch(
     keep_fastas: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    tmpdir: Option<String>,
 ) -> anyhow::Result<u8> {
     match directsketch::urlsketch(
         py,
@@ -110,6 +111,7 @@ fn do_urlsketch(
         keep_fastas,
         download_only,
         output_sigs,
+        tmpdir,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {

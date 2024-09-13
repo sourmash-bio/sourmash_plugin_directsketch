@@ -703,7 +703,7 @@ async fn copy_tmpdir_to_zip(tmpdir: &PathBuf, zipfile_path: String) -> Result<()
                 .with_context(|| format!("Failed to load signature from path: {:?}", utf8_path))?;
 
             // We could just take out the first (and only) sig here. But iteration is maybe more flexible?
-            // Allows you to include sigs make outside of directsketch...
+            // Allows you to include sigs made outside of directsketch (that may have mult sigs per file)...
             for sig in &sigs {
                 write_sig_to_zip(
                     sig,
@@ -1110,6 +1110,7 @@ pub async fn urlsketch(
     keep_fastas: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    tmpdir: Option<String>,
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     if let Some(ref output_sigs) = output_sigs {
@@ -1132,9 +1133,27 @@ pub async fn urlsketch(
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
+    // if tmpdir is provided, try to create it
+    if let Some(ref td) = tmpdir {
+        let outdir: PathBuf = td.into();
+        if let Err(e) = tokio::fs::create_dir_all(outdir).await {
+            let error =
+                anyhow::Error::new(e).context("Failed to create directory at specified path");
+            let _ = error_sender.send(error).await; // Send the error through the channel
+        }
+    }
+
     // Set up collector/writing tasks
     let mut handles = Vec::new();
-    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
+    // write to tmpdir OR directly to zip
+    let sig_handle = match tmpdir {
+        Some(ref td) => {
+            tmpdir_sigwriter_handle(recv_sigs, td.clone(), output_sigs, error_sender.clone())
+        }
+        None => zipwriter_handle(recv_sigs, output_sigs, error_sender.clone()),
+    };
+
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
