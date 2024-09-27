@@ -1,10 +1,17 @@
 use anyhow::{anyhow, Result};
+use camino::Utf8PathBuf;
+use getset::{CopyGetters, Getters, Setters};
 use reqwest::Url;
+use serde::{Deserialize, Serialize};
 use sourmash::cmd::ComputeParameters;
+use sourmash::encodings::HashFunctions;
+use sourmash::manifest::Record;
 use sourmash::signature::Signature;
+use std::collections::HashSet;
 use std::fmt;
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
+use std::io::Write;
+// use sourmash::cmd::ComputeParameters;
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -299,6 +306,189 @@ impl Hash for Params {
     }
 }
 
+impl Params {
+    pub fn from_record(record: &Record) -> Self {
+        let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
+
+        Params {
+            ksize: record.ksize(),
+            track_abundance: record.with_abundance(),
+            num: record.num().clone(),
+            scaled: record.scaled().clone(),
+            seed: 42,
+            is_protein: moltype.protein(),
+            is_dayhoff: moltype.dayhoff(),
+            is_hp: moltype.hp(),
+            is_dna: moltype.dna(),
+        }
+    }
+}
+
+// build a hashset from Records that can be compared with the TemplateRecords
+fn build_params_hashset_from_records(records: &[Record]) -> HashSet<Params> {
+    records.iter().map(Params::from_record).collect()
+}
+
+#[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
+pub struct TemplateRecord {
+    // fields are ordered the same as Record to allow serialization to manifest
+    // required fields are currently immutable once set
+    #[getset(get = "pub", set = "pub")]
+    internal_location: Option<Utf8PathBuf>,
+
+    #[getset(get = "pub", set = "pub")]
+    md5: Option<String>,
+
+    #[getset(get = "pub", set = "pub")]
+    md5short: Option<String>,
+
+    #[getset(get_copy = "pub", set = "pub")]
+    ksize: u32,
+
+    moltype: String,
+
+    #[getset(get = "pub")]
+    num: u32,
+
+    #[getset(get = "pub")]
+    scaled: u64,
+
+    #[getset(get = "pub")]
+    n_hashes: Option<usize>,
+
+    #[getset(get_copy = "pub", set = "pub")]
+    #[serde(serialize_with = "intbool")]
+    with_abundance: bool,
+
+    #[getset(get = "pub", set = "pub")]
+    name: Option<String>,
+
+    #[getset(get = "pub", set = "pub")]
+    filename: Option<String>,
+}
+
+// from sourmash (intbool is currently private there)
+fn intbool<S>(x: &bool, s: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if *x {
+        s.serialize_i32(1)
+    } else {
+        s.serialize_i32(0)
+    }
+}
+
+impl TemplateRecord {
+    pub fn from_param(param: &Params, input_moltype: &str) -> Self {
+        // Adjust ksize based on the is_protein flag
+        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
+            param.ksize * 3
+        } else {
+            param.ksize
+        };
+
+        TemplateRecord {
+            ksize: adjusted_ksize,
+            moltype: input_moltype.to_string(),
+            num: param.num,
+            scaled: param.scaled,
+            with_abundance: param.track_abundance,
+            ..Default::default() // automatically set optional fields to None
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TemplateManifest {
+    records: Vec<TemplateRecord>,
+}
+
+impl TemplateManifest {
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub fn to_writer<W: Write>(&self, mut wtr: W) -> Result<()> {
+        // Write the manifest version as a comment
+        wtr.write_all(b"# SOURMASH-TEMPLATEMANIFEST-VERSION: 1.0\n")?;
+
+        // Use CSV writer to serialize records
+        let mut csv_writer = csv::Writer::from_writer(wtr);
+
+        for record in &self.records {
+            csv_writer.serialize(record)?; // Serialize each TemplateRecord
+        }
+
+        csv_writer.flush()?; // Ensure all data is written
+
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct TemplateCollection {
+    pub manifest: TemplateManifest,
+    pub sigs: Vec<Signature>,
+}
+
+impl TemplateCollection {
+    pub fn new() -> Self {
+        TemplateCollection {
+            manifest: TemplateManifest {
+                records: Vec::new(),
+            },
+            sigs: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.manifest.is_empty() && self.sigs.is_empty()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut TemplateRecord, &mut Signature)> {
+        // zip together mutable iterators over records and sigs
+        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+
+    pub fn add_template_sig(&mut self, param: Params, input_moltype: &str) {
+        // Check the input_moltype against Params to decide if this should be added
+        match input_moltype {
+            "dna" | "DNA" if !param.is_dna => return, // Skip if it's not the correct moltype
+            "protein" if !param.is_protein && !param.is_dayhoff && !param.is_hp => return,
+            _ => (),
+        }
+
+        // Construct ComputeParameters
+        let cp = ComputeParameters::builder()
+            .ksizes(vec![param.ksize])
+            .scaled(param.scaled)
+            .protein(param.is_protein)
+            .dna(param.is_dna)
+            .dayhoff(param.is_dayhoff)
+            .hp(param.is_hp)
+            .num_hashes(param.num)
+            .track_abundance(param.track_abundance)
+            .build();
+
+        // Create a Signature from the ComputeParameters
+        let sig = Signature::from_params(&cp);
+
+        // Create the TemplateRecord using from_param
+        let template_record = TemplateRecord::from_param(&param, input_moltype);
+
+        // Add the record and signature to the collection
+        self.manifest.records.push(template_record);
+        self.sigs.push(sig);
+    }
+
+    pub fn extend(&mut self, other: TemplateCollection) {
+        // Extend the manifest and signatures from another TemplateCollection
+        self.manifest.records.extend(other.manifest.records);
+        self.sigs.extend(other.sigs);
+    }
+}
+
 pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     let mut unique_params: std::collections::HashSet<Params> = std::collections::HashSet::new();
 
@@ -410,4 +600,19 @@ pub fn build_siginfo(params: &[Params], input_moltype: &str) -> Vec<Signature> {
     }
 
     sigs
+}
+
+pub fn build_template_collection(params: &[Params], input_moltype: &str) -> TemplateCollection {
+    let mut collection = TemplateCollection {
+        manifest: TemplateManifest {
+            records: Vec::new(),
+        },
+        sigs: Vec::new(),
+    };
+
+    for param in params.iter().cloned() {
+        collection.add_template_sig(param, input_moltype);
+    }
+
+    collection
 }
