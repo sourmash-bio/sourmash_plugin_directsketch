@@ -4,9 +4,9 @@ use getset::{Getters, Setters};
 use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
-use sourmash::encodings::HashFunctions;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -365,6 +365,9 @@ pub struct TemplateRecord {
 
     #[getset(get = "pub", set = "pub")]
     filename: Option<String>,
+
+    #[serde(skip)]
+    pub hashed_params: u64,
 }
 
 // from sourmash (intbool is currently private there)
@@ -388,12 +391,18 @@ impl TemplateRecord {
             param.ksize
         };
 
+        // Calculate the hash of Params
+        let mut hasher = DefaultHasher::new();
+        param.hash(&mut hasher);
+        let hashed_params = hasher.finish();
+
         TemplateRecord {
             ksize: adjusted_ksize,
             moltype: input_moltype.to_string(),
             num: param.num,
             scaled: param.scaled,
             with_abundance: param.track_abundance,
+            hashed_params,
             ..Default::default() // automatically set optional fields to None
         }
     }
@@ -446,9 +455,14 @@ impl TemplateCollection {
         self.manifest.is_empty() && self.sigs.is_empty()
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut TemplateRecord, &mut Signature)> {
-        // zip together mutable iterators over records and sigs
-        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
+        let mut collection = TemplateCollection::new();
+
+        for param in params.iter().cloned() {
+            collection.add_template_sig(param, input_moltype);
+        }
+
+        collection
     }
 
     pub fn add_template_sig(&mut self, param: Params, input_moltype: &str) {
@@ -486,6 +500,26 @@ impl TemplateCollection {
         // Extend the manifest and signatures from another TemplateCollection
         self.manifest.records.extend(other.manifest.records);
         self.sigs.extend(other.sigs);
+    }
+
+    pub fn filter(&mut self, params_set: &HashSet<u64>) {
+        let mut index = 0;
+        while index < self.manifest.records.len() {
+            let record = &self.manifest.records[index];
+
+            // filter records with matching Params
+            if params_set.contains(&record.hashed_params) {
+                self.manifest.records.remove(index);
+                self.sigs.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut TemplateRecord, &mut Signature)> {
+        // zip together mutable iterators over records and sigs
+        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 }
 
@@ -610,19 +644,4 @@ pub fn build_siginfo(params: &[Params], input_moltype: &str) -> Vec<Signature> {
     }
 
     sigs
-}
-
-pub fn build_template_collection(params: &[Params], input_moltype: &str) -> TemplateCollection {
-    let mut collection = TemplateCollection {
-        manifest: TemplateManifest {
-            records: Vec::new(),
-        },
-        sigs: Vec::new(),
-    };
-
-    for param in params.iter().cloned() {
-        collection.add_template_sig(param, input_moltype);
-    }
-
-    collection
 }

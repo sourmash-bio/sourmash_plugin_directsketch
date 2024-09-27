@@ -23,8 +23,8 @@ use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{
-    build_template_collection, load_accession_info, load_gbassembly_info, parse_params_str,
-    AccessionData, GBAssemblyData, GenBankFileType, InputMolType, TemplateCollection,
+    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, GBAssemblyData,
+    GenBankFileType, InputMolType, TemplateCollection,
 };
 use reqwest::Url;
 
@@ -583,7 +583,7 @@ pub fn zipwriter_handle(
                 None => return,
             };
 
-            while let Some(sigcoll) = recv_sigs.recv().await {
+            while let Some(mut sigcoll) = recv_sigs.recv().await {
                 for (_r, sig) in &mut sigcoll {
                     match write_sig_to_zip(
                         &sig,
@@ -779,7 +779,7 @@ pub async fn gbsketch(
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
     // Initialize an optional Manifest to hold existing signatures
-    let mut existing_sigs: Option<Manifest> = None;
+    // let mut existing_sigs: Option<Manifest> = None;
 
     // to do --> read from existing sig zips, build filename: params_set hashmap
 
@@ -814,9 +814,9 @@ pub async fn gbsketch(
         }
     };
     // let dna_sig_templates = build_siginfo(&params_vec, "DNA");
-    let dna_template_collection = build_template_collection(&params_vec, "DNA");
+    let dna_template_collection = TemplateCollection::from_params(&params_vec, "DNA");
     // prot will build protein, dayhoff, hp
-    let prot_template_collection = build_template_collection(&params_vec, "protein");
+    let prot_template_collection = TemplateCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
@@ -859,7 +859,7 @@ pub async fn gbsketch(
         let dna_sigs = dna_template_collection.clone();
         let prot_sigs = prot_template_collection.clone();
         // clone existing sig manifest
-        let e_siginfo = existing_sigs.clone();
+        // let e_siginfo = existing_sigs.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1005,8 +1005,8 @@ pub async fn urlsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = build_template_collection(&params_vec, "DNA");
-    let prot_template_collection = build_template_collection(&params_vec, "protein");
+    let dna_template_collection = TemplateCollection::from_params(&params_vec, "DNA");
+    let prot_template_collection = TemplateCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;
