@@ -23,8 +23,8 @@ use sourmash::manifest::{Manifest, Record};
 use sourmash::signature::Signature;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, GBAssemblyData,
-    GenBankFileType, InputMolType, TemplateCollection,
+    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
+    GBAssemblyData, GenBankFileType, InputMolType,
 };
 use reqwest::Url;
 
@@ -206,9 +206,9 @@ async fn sketch_data(
     name: String,
     filename: String,
     compressed_data: Vec<u8>,
-    mut coll: TemplateCollection,
+    mut coll: BuildCollection,
     moltype: String,
-) -> Result<TemplateCollection> {
+) -> Result<BuildCollection> {
     tokio::task::spawn_blocking(move || {
         let cursor = Cursor::new(compressed_data);
         let mut fastx_reader =
@@ -255,15 +255,15 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    dna_sigs: TemplateCollection,
-    prot_sigs: TemplateCollection,
+    dna_sigs: BuildCollection,
+    prot_sigs: BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-) -> Result<(TemplateCollection, Vec<FailedDownload>)> {
+) -> Result<(BuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
                                           // let mut sigs = Vec::<Signature>::new();
-    let mut sig_collection = TemplateCollection::new();
+    let mut sig_collection = BuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
     let name = accinfo.name;
@@ -389,14 +389,14 @@ async fn dl_sketch_url(
     location: &PathBuf,
     retry: Option<u32>,
     _keep_fastas: bool,
-    dna_sigs: TemplateCollection,
-    prot_sigs: TemplateCollection,
+    dna_sigs: BuildCollection,
+    prot_sigs: BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(TemplateCollection, Vec<FailedDownload>)> {
+) -> Result<(BuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sigs = TemplateCollection::new();
+    let mut sigs = BuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
     let name = accinfo.name;
@@ -540,7 +540,7 @@ async fn write_manifest_to_zip(
 }
 
 pub fn zipwriter_handle(
-    mut recv_sigs: tokio::sync::mpsc::Receiver<TemplateCollection>,
+    mut recv_sigs: tokio::sync::mpsc::Receiver<BuildCollection>,
     output_sigs: Option<String>,
     batch_size: usize, // Tunable batch size
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
@@ -773,7 +773,7 @@ pub async fn gbsketch(
         create_dir_all(&download_path)?;
     }
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<TemplateCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
@@ -814,9 +814,9 @@ pub async fn gbsketch(
         }
     };
     // let dna_sig_templates = build_siginfo(&params_vec, "DNA");
-    let dna_template_collection = TemplateCollection::from_params(&params_vec, "DNA");
+    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
     // prot will build protein, dayhoff, hp
-    let prot_template_collection = TemplateCollection::from_params(&params_vec, "protein");
+    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
@@ -958,7 +958,7 @@ pub async fn urlsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<TemplateCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
@@ -1005,8 +1005,8 @@ pub async fn urlsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = TemplateCollection::from_params(&params_vec, "DNA");
-    let prot_template_collection = TemplateCollection::from_params(&params_vec, "protein");
+    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
+    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;

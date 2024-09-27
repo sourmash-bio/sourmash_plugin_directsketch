@@ -324,13 +324,13 @@ impl Params {
     }
 }
 
-// build a hashset from Records that can be compared with the TemplateRecords
+// build a hashset from Records that can be compared with the BuildRecords
 fn build_params_hashset_from_records(records: &[Record]) -> HashSet<Params> {
     records.iter().map(Params::from_record).collect()
 }
 
 #[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
-pub struct TemplateRecord {
+pub struct BuildRecord {
     // fields are ordered the same as Record to allow serialization to manifest
     // required fields are currently immutable once set
     #[getset(get = "pub", set = "pub")]
@@ -382,7 +382,7 @@ where
     }
 }
 
-impl TemplateRecord {
+impl BuildRecord {
     pub fn from_param(param: &Params, input_moltype: &str) -> Self {
         // Adjust ksize based on the is_protein flag
         let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
@@ -396,7 +396,7 @@ impl TemplateRecord {
         param.hash(&mut hasher);
         let hashed_params = hasher.finish();
 
-        TemplateRecord {
+        BuildRecord {
             ksize: adjusted_ksize,
             moltype: input_moltype.to_string(),
             num: param.num,
@@ -409,24 +409,24 @@ impl TemplateRecord {
 }
 
 #[derive(Debug, Default, Clone)]
-pub struct TemplateManifest {
-    records: Vec<TemplateRecord>,
+pub struct BuildManifest {
+    records: Vec<BuildRecord>,
 }
 
-impl TemplateManifest {
+impl BuildManifest {
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
 
     pub fn to_writer<W: Write>(&self, mut wtr: W) -> Result<()> {
         // Write the manifest version as a comment
-        wtr.write_all(b"# SOURMASH-TEMPLATEMANIFEST-VERSION: 1.0\n")?;
+        wtr.write_all(b"# SOURMASH-BuildManifest-VERSION: 1.0\n")?;
 
         // Use CSV writer to serialize records
         let mut csv_writer = csv::Writer::from_writer(wtr);
 
         for record in &self.records {
-            csv_writer.serialize(record)?; // Serialize each TemplateRecord
+            csv_writer.serialize(record)?; // Serialize each BuildRecord
         }
 
         csv_writer.flush()?; // Ensure all data is written
@@ -436,15 +436,15 @@ impl TemplateManifest {
 }
 
 #[derive(Clone)]
-pub struct TemplateCollection {
-    pub manifest: TemplateManifest,
+pub struct BuildCollection {
+    pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
 }
 
-impl TemplateCollection {
+impl BuildCollection {
     pub fn new() -> Self {
-        TemplateCollection {
-            manifest: TemplateManifest {
+        BuildCollection {
+            manifest: BuildManifest {
                 records: Vec::new(),
             },
             sigs: Vec::new(),
@@ -456,7 +456,7 @@ impl TemplateCollection {
     }
 
     pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
-        let mut collection = TemplateCollection::new();
+        let mut collection = BuildCollection::new();
 
         for param in params.iter().cloned() {
             collection.add_template_sig(param, input_moltype);
@@ -488,16 +488,16 @@ impl TemplateCollection {
         // Create a Signature from the ComputeParameters
         let sig = Signature::from_params(&cp);
 
-        // Create the TemplateRecord using from_param
-        let template_record = TemplateRecord::from_param(&param, input_moltype);
+        // Create the BuildRecord using from_param
+        let template_record = BuildRecord::from_param(&param, input_moltype);
 
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
         self.sigs.push(sig);
     }
 
-    pub fn extend(&mut self, other: TemplateCollection) {
-        // Extend the manifest and signatures from another TemplateCollection
+    pub fn extend(&mut self, other: BuildCollection) {
+        // Extend the manifest and signatures from another BuildCollection
         self.manifest.records.extend(other.manifest.records);
         self.sigs.extend(other.sigs);
     }
@@ -517,16 +517,16 @@ impl TemplateCollection {
         }
     }
 
-    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut TemplateRecord, &mut Signature)> {
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut BuildRecord, &mut Signature)> {
         // zip together mutable iterators over records and sigs
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 }
 
-impl<'a> IntoIterator for &'a mut TemplateCollection {
-    type Item = (&'a mut TemplateRecord, &'a mut Signature);
+impl<'a> IntoIterator for &'a mut BuildCollection {
+    type Item = (&'a mut BuildRecord, &'a mut Signature);
     type IntoIter =
-        std::iter::Zip<std::slice::IterMut<'a, TemplateRecord>, std::slice::IterMut<'a, Signature>>;
+        std::iter::Zip<std::slice::IterMut<'a, BuildRecord>, std::slice::IterMut<'a, Signature>>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
