@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use getset::{Getters, Setters};
+use needletail::parser::SequenceRecord;
 use needletail::{parse_fastx_file, parse_fastx_reader};
 use reqwest::Url;
 use serde::Serialize;
@@ -531,7 +532,6 @@ impl BuildCollection {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 
-    // to do: add singleton versions of these or optional singleton arg.
     pub fn build_sigs_from_data(
         &mut self,
         data: Vec<u8>,
@@ -588,6 +588,31 @@ impl BuildCollection {
 
         // After processing sequences, update sig, record information
         self.update_info(name, filename);
+
+        Ok(())
+    }
+
+    pub fn build_singleton_sigs(
+        &mut self,
+        record: SequenceRecord,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        filename: String,
+    ) -> Result<()> {
+        self.sigs_iter_mut().for_each(|sig| {
+            if input_moltype == "protein" {
+                sig.add_protein(&record.seq())
+                    .expect("Failed to add protein");
+            } else {
+                sig.add_sequence(&record.seq(), true)
+                    .expect("Failed to add sequence");
+                // if not force, panics with 'N' in dna sequence
+            }
+        });
+        let record_name = std::str::from_utf8(record.id())
+            .expect("could not get record id")
+            .to_string();
+        // After processing sequences, update sig, record information
+        self.update_info(record_name, filename);
 
         Ok(())
     }
