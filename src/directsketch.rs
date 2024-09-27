@@ -3,12 +3,10 @@ use async_zip::base::write::ZipFileWriter;
 use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf as PathBuf;
 use chrono::Utc;
-use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::io::Cursor;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -202,20 +200,6 @@ async fn download_with_retry(
     }))
 }
 
-async fn sketch_data(
-    name: String,
-    filename: String,
-    data: Vec<u8>,
-    mut coll: BuildCollection,
-    input_moltype: String,
-) -> Result<BuildCollection> {
-    tokio::task::spawn_blocking(move || {
-        coll.build_sigs_from_data(data, &input_moltype, name, filename)?;
-
-        Ok(coll)
-    })
-    .await?
-}
 pub struct FailedDownload {
     accession: String,
     name: String,
@@ -232,8 +216,8 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    dna_sigs: BuildCollection,
-    prot_sigs: BuildCollection,
+    dna_sigs: &mut BuildCollection,
+    prot_sigs: &mut BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
@@ -328,27 +312,18 @@ async fn dl_sketch_assembly_accession(
         if !download_only {
             // sketch data
             match file_type {
-                GenBankFileType::Genomic => sig_collection.extend(
-                    sketch_data(
+                GenBankFileType::Genomic => {
+                    dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
+                    sig_collection.extend_by_drain(dna_sigs);
+                }
+                GenBankFileType::Protein => {
+                    prot_sigs.build_sigs_from_data(
+                        data,
+                        "protein",
                         name.clone(),
                         file_name.clone(),
-                        data,
-                        dna_sigs.clone(),
-                        "dna".to_string(),
-                    )
-                    .await?,
-                ),
-                GenBankFileType::Protein => {
-                    sig_collection.extend(
-                        sketch_data(
-                            name.clone(),
-                            file_name.clone(),
-                            data,
-                            prot_sigs.clone(),
-                            "protein".to_string(),
-                        )
-                        .await?,
-                    );
+                    )?;
+                    sig_collection.extend_by_drain(prot_sigs);
                 }
                 _ => {} // Do nothing for other file types
             };
@@ -365,14 +340,14 @@ async fn dl_sketch_url(
     location: &PathBuf,
     retry: Option<u32>,
     _keep_fastas: bool,
-    dna_sigs: BuildCollection,
-    prot_sigs: BuildCollection,
+    dna_sigs: &mut BuildCollection,
+    prot_sigs: &mut BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sigs = BuildCollection::new();
+    let mut sig_collection = BuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
     let name = accinfo.name;
@@ -396,27 +371,23 @@ async fn dl_sketch_url(
                 let filename = download_filename.clone().unwrap_or("".to_string());
                 // sketch data
                 match moltype {
-                    InputMolType::Dna => sigs.extend(
-                        sketch_data(
+                    InputMolType::Dna => {
+                        dna_sigs.build_sigs_from_data(
+                            data,
+                            "dna",
                             name.clone(),
                             filename.clone(),
-                            data,
-                            dna_sigs.clone(),
-                            "dna".to_string(),
-                        )
-                        .await?,
-                    ),
+                        )?;
+                        sig_collection.extend_by_drain(dna_sigs);
+                    }
                     InputMolType::Protein => {
-                        sigs.extend(
-                            sketch_data(
-                                name.clone(),
-                                filename.clone(),
-                                data,
-                                prot_sigs.clone(),
-                                "protein".to_string(),
-                            )
-                            .await?,
-                        );
+                        prot_sigs.build_sigs_from_data(
+                            data,
+                            "protein",
+                            name.clone(),
+                            filename.clone(),
+                        )?;
+                        sig_collection.extend_by_drain(prot_sigs);
                     }
                 };
             }
@@ -434,7 +405,7 @@ async fn dl_sketch_url(
         }
     }
 
-    Ok((sigs, failed))
+    Ok((sig_collection, failed))
 }
 
 async fn write_sig_to_zip(
@@ -832,8 +803,8 @@ pub async fn gbsketch(
         let send_failed = send_failed.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-        let dna_sigs = dna_template_collection.clone();
-        let prot_sigs = prot_template_collection.clone();
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
         // clone existing sig manifest
         // let e_siginfo = existing_sigs.clone();
 
@@ -856,17 +827,17 @@ pub async fn gbsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                dna_sigs,
-                prot_sigs,
+                &mut dna_sigs,
+                &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,
             )
             .await;
             match result {
-                Ok((sigs, failed_downloads)) => {
-                    if !sigs.is_empty() {
-                        if let Err(e) = send_sigs.send(sigs).await {
+                Ok((coll, failed_downloads)) => {
+                    if !coll.is_empty() {
+                        if let Err(e) = send_sigs.send(coll).await {
                             eprintln!("Failed to send signatures: {}", e);
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
@@ -1023,8 +994,8 @@ pub async fn urlsketch(
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
 
-        let dna_sigs = dna_template_collection.clone();
-        let prot_sigs = prot_template_collection.clone();
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1045,8 +1016,8 @@ pub async fn urlsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                dna_sigs,
-                prot_sigs,
+                &mut dna_sigs,
+                &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,

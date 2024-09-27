@@ -508,6 +508,14 @@ impl BuildCollection {
         self.sigs.extend(other.sigs);
     }
 
+    pub fn extend_by_drain(&mut self, other: &mut BuildCollection) {
+        // Extend the manifest and signatures by draining from another BuildCollection
+        self.manifest
+            .records
+            .extend(other.manifest.records.drain(..));
+        self.sigs.extend(other.sigs.drain(..));
+    }
+
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
         let mut index = 0;
         while index < self.manifest.records.len() {
