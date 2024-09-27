@@ -353,7 +353,7 @@ pub struct BuildRecord {
     #[getset(get = "pub")]
     scaled: u64,
 
-    #[getset(get = "pub")]
+    #[getset(get = "pub", set = "pub")]
     n_hashes: Option<usize>,
 
     #[getset(get_copy = "pub", set = "pub")]
@@ -520,6 +520,25 @@ impl BuildCollection {
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut BuildRecord, &mut Signature)> {
         // zip together mutable iterators over records and sigs
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+
+    pub fn update_info(&mut self, name: String, filename: String) {
+        // update the records to reflect information the signature;
+        for (record, sig) in self.iter_mut() {
+            // update signature name, filename
+            sig.set_name(name.as_str());
+            sig.set_filename(&filename.as_str());
+
+            // update record: set name, filename, md5sum, n_hashes
+            record.set_name(Some(name.clone()));
+            record.set_filename(Some(filename.clone()));
+            record.set_md5(Some(sig.md5sum().into()));
+            record.set_md5short(Some(sig.md5sum()[0..8].into()));
+            record.set_n_hashes(Some(sig.size()));
+
+            // what to set this to?
+            // record.set_internal_location("")
+        }
     }
 }
 

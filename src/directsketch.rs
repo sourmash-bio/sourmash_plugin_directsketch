@@ -214,14 +214,9 @@ async fn sketch_data(
         let mut fastx_reader =
             parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
-        let mut set_name = false;
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
-            coll.iter_mut().for_each(|(_tr, sig)| {
-                if !set_name {
-                    sig.set_name(&name);
-                    sig.set_filename(&filename);
-                };
+            coll.iter_mut().for_each(|(_build_record, sig)| {
                 if moltype == "protein" {
                     sig.add_protein(&record.seq())
                         .expect("Failed to add protein");
@@ -231,10 +226,9 @@ async fn sketch_data(
                     // if not force, panics with 'N' in dna sequence
                 }
             });
-            if !set_name {
-                set_name = true;
-            }
         }
+        // update collection information (name/filename, md5sum, nhashes, etc)
+        coll.update_info(name, filename); // updates both sigs + records
         Ok(coll)
     })
     .await?
