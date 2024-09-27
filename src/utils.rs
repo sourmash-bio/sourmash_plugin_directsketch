@@ -415,6 +415,12 @@ pub struct BuildManifest {
 }
 
 impl BuildManifest {
+    pub fn new() -> Self {
+        BuildManifest {
+            records: Vec::new(),
+        }
+    }
+
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
@@ -445,9 +451,7 @@ pub struct BuildCollection {
 impl BuildCollection {
     pub fn new() -> Self {
         BuildCollection {
-            manifest: BuildManifest {
-                records: Vec::new(),
-            },
+            manifest: BuildManifest::new(),
             sigs: Vec::new(),
         }
     }
@@ -527,6 +531,7 @@ impl BuildCollection {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 
+    // to do: add singleton versions of these or optional singleton arg.
     pub fn build_sigs_from_data(
         &mut self,
         data: Vec<u8>,
@@ -537,6 +542,7 @@ impl BuildCollection {
         let cursor = Cursor::new(data);
         let mut fastx_reader =
             parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+
         // Iterate over FASTA records and add sequences/proteins to sigs
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
