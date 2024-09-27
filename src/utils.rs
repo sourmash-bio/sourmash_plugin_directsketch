@@ -1,6 +1,7 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use camino::Utf8PathBuf;
 use getset::{Getters, Setters};
+use needletail::{parse_fastx_file, parse_fastx_reader};
 use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
@@ -10,7 +11,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{Cursor, Write};
 // use sourmash::cmd::ComputeParameters;
 
 #[derive(Clone)]
@@ -517,9 +518,72 @@ impl BuildCollection {
         }
     }
 
+    pub fn sigs_iter_mut(&mut self) -> impl Iterator<Item = &mut Signature> {
+        self.sigs.iter_mut()
+    }
+
     pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut BuildRecord, &mut Signature)> {
         // zip together mutable iterators over records and sigs
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+
+    pub fn build_sigs_from_data(
+        &mut self,
+        data: Vec<u8>,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        name: String,
+        filename: String,
+    ) -> Result<()> {
+        let cursor = Cursor::new(data);
+        let mut fastx_reader =
+            parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+        // Iterate over FASTA records and add sequences/proteins to sigs
+        while let Some(record) = fastx_reader.next() {
+            let record = record.context("Failed to read record")?;
+            self.sigs_iter_mut().for_each(|sig| {
+                if input_moltype == "protein" {
+                    sig.add_protein(&record.seq())
+                        .expect("Failed to add protein");
+                } else {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                }
+            });
+        }
+
+        // After processing sequences, update sig, record information
+        self.update_info(name, filename);
+
+        Ok(())
+    }
+
+    pub fn build_sigs_from_file(
+        &mut self,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        name: String,
+        filename: String,
+    ) -> Result<()> {
+        let mut fastx_reader = parse_fastx_file(&filename)?;
+        // Iterate over FASTA records and add sequences/proteins to sigs
+        while let Some(record) = fastx_reader.next() {
+            let record = record.context("Failed to read record")?;
+            self.sigs_iter_mut().for_each(|sig| {
+                if input_moltype == "protein" {
+                    sig.add_protein(&record.seq())
+                        .expect("Failed to add protein");
+                } else {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                }
+            });
+        }
+
+        // After processing sequences, update sig, record information
+        self.update_info(name, filename);
+
+        Ok(())
     }
 
     pub fn update_info(&mut self, name: String, filename: String) {

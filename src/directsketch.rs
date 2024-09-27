@@ -205,30 +205,13 @@ async fn download_with_retry(
 async fn sketch_data(
     name: String,
     filename: String,
-    compressed_data: Vec<u8>,
+    data: Vec<u8>,
     mut coll: BuildCollection,
-    moltype: String,
+    input_moltype: String,
 ) -> Result<BuildCollection> {
     tokio::task::spawn_blocking(move || {
-        let cursor = Cursor::new(compressed_data);
-        let mut fastx_reader =
-            parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+        coll.build_sigs_from_data(data, &input_moltype, name, filename)?;
 
-        while let Some(record) = fastx_reader.next() {
-            let record = record.context("Failed to read record")?;
-            coll.iter_mut().for_each(|(_build_record, sig)| {
-                if moltype == "protein" {
-                    sig.add_protein(&record.seq())
-                        .expect("Failed to add protein");
-                } else {
-                    sig.add_sequence(&record.seq(), true)
-                        .expect("Failed to add sequence");
-                    // if not force, panics with 'N' in dna sequence
-                }
-            });
-        }
-        // update collection information (name/filename, md5sum, nhashes, etc)
-        coll.update_info(name, filename); // updates both sigs + records
         Ok(coll)
     })
     .await?
@@ -256,7 +239,6 @@ async fn dl_sketch_assembly_accession(
     download_only: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-                                          // let mut sigs = Vec::<Signature>::new();
     let mut sig_collection = BuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
