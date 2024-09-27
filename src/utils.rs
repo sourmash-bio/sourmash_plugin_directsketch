@@ -1,8 +1,8 @@
 use anyhow::{anyhow, Result};
 use camino::Utf8PathBuf;
-use getset::{CopyGetters, Getters, Setters};
+use getset::{Getters, Setters};
 use reqwest::Url;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
 use sourmash::encodings::HashFunctions;
 use sourmash::manifest::Record;
@@ -486,6 +486,16 @@ impl TemplateCollection {
         // Extend the manifest and signatures from another TemplateCollection
         self.manifest.records.extend(other.manifest.records);
         self.sigs.extend(other.sigs);
+    }
+}
+
+impl<'a> IntoIterator for &'a mut TemplateCollection {
+    type Item = (&'a mut TemplateRecord, &'a mut Signature);
+    type IntoIter =
+        std::iter::Zip<std::slice::IterMut<'a, TemplateRecord>, std::slice::IterMut<'a, Signature>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 }
 
