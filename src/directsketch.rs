@@ -682,6 +682,7 @@ pub async fn gbsketch(
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
     let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut filter = false;
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
         let outpath = PathBuf::from(output_sigs);
@@ -710,6 +711,7 @@ pub async fn gbsketch(
             }
 
             batch_index = max_existing_batch_index + 1;
+            filter = true;
         } else {
             // No existing batches, skipping signature filtering
             eprintln!("No existing signature batches found, skipping filter step.");
@@ -806,11 +808,13 @@ pub async fn gbsketch(
         let mut prot_sigs = prot_template_collection.clone();
 
         // filter template sigs based on existing sigs
-        if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
-            eprintln!("filtering!");
-            // If the key exists, filter template sigs
-            dna_sigs.filter(&existing_paramset);
-            prot_sigs.filter(&existing_paramset);
+        if filter {
+            if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
+                eprintln!("filtering!");
+                // If the key exists, filter template sigs
+                dna_sigs.filter(&existing_paramset);
+                prot_sigs.filter(&existing_paramset);
+            }
         }
 
         // clone remaining utilities
