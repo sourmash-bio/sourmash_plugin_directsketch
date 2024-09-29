@@ -3,7 +3,8 @@ use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use regex::Regex;
 use reqwest::Client;
-use std::collections::HashMap;
+use std::cmp::max;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,8 +19,9 @@ use pyo3::prelude::*;
 use sourmash::signature::Signature;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
-    BuildManifest, GBAssemblyData, GenBankFileType, InputMolType,
+    build_params_hashset_from_records, load_accession_info, load_gbassembly_info, parse_params_str,
+    AccessionData, BuildCollection, BuildManifest, GBAssemblyData, GenBankFileType, InputMolType,
+    MultiCollection, Params,
 };
 use reqwest::Url;
 
@@ -405,6 +407,54 @@ async fn dl_sketch_url(
     Ok((sig_collection, failed))
 }
 
+// find existing batch files
+pub async fn find_existing_zip_batches(
+    outpath: &PathBuf,
+) -> Result<(Vec<PathBuf>, usize), anyhow::Error> {
+    // Remove the .zip extension to get the base name
+    let outpath_base = outpath.with_extension("");
+
+    // Regex to match the exact zip filename and its batches (e.g., "outpath.zip", "outpath.1.zip", "outpath.2.zip", etc.)
+    let zip_file_pattern = Regex::new(&format!(
+        r"^{}(?:\.(\d+))?\.zip$",
+        regex::escape(outpath_base.file_name().unwrap())
+    ))
+    .unwrap();
+
+    // Initialize a vector to store paths of existing zip files
+    let mut existing_zip_files = Vec::new();
+    let mut highest_batch = 0; // Track the highest batch number
+
+    // Read the directory containing the outpath
+    let dir = outpath_base
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Could not get parent directory"))?;
+    let mut dir_entries = tokio::fs::read_dir(dir).await?;
+
+    // Scan through all files in the directory
+    while let Some(entry) = dir_entries.next_entry().await? {
+        if let Some(file_name) = entry.file_name().to_str() {
+            // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
+            if let Some(captures) = zip_file_pattern.captures(file_name) {
+                existing_zip_files.push(entry.path().try_into()?);
+
+                // Extract the batch number (if it exists) and update the highest_batch
+                if let Some(batch_str) = captures.get(1) {
+                    if let Ok(batch_num) = batch_str.as_str().parse::<usize>() {
+                        highest_batch = max(highest_batch, batch_num);
+                    }
+                }
+            }
+        }
+    }
+
+    // Sort the files (optional)
+    existing_zip_files.sort();
+
+    // Return both the existing files and the highest batch number
+    Ok((existing_zip_files, highest_batch))
+}
+
 /// create zip file depending on batch size and index.
 async fn create_or_get_zip_file(
     outpath: &PathBuf,
@@ -434,7 +484,8 @@ async fn create_or_get_zip_file(
 pub fn zipwriter_handle(
     mut recv_sigs: tokio::sync::mpsc::Receiver<BuildCollection>,
     output_sigs: Option<String>,
-    batch_size: usize, // Tunable batch size
+    batch_size: usize,      // Tunable batch size
+    mut batch_index: usize, // starting batch index
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -445,7 +496,6 @@ pub fn zipwriter_handle(
 
         if let Some(outpath) = output_sigs {
             let outpath: PathBuf = outpath.into();
-            let mut batch_index = 1; // index to name zip files
 
             // Create the initial zip file
             let mut zip_writer =
@@ -534,19 +584,6 @@ pub fn zipwriter_handle(
             }
         }
     })
-}
-
-/// to do: instead, read from zipfiles (manifests make this easier!)
-pub async fn signature_from_path(path: &PathBuf) -> Result<Vec<Signature>, Error> {
-    let path = path.clone(); // Clone the path to move into the blocking thread
-
-    // Use `spawn_blocking` to call `Signature::from_path` (synchronous)
-    let sigs = tokio::task::spawn_blocking(move || {
-        Signature::from_path(&path).map_err(|e| anyhow!("Error reading signatures: {}", e))
-    })
-    .await??;
-
-    Ok(sigs)
 }
 
 pub fn failures_handle(
@@ -643,34 +680,64 @@ pub async fn gbsketch(
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     let batch_size = batch_size as usize;
+    let mut batch_index = 1;
+    let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
     if let Some(ref output_sigs) = output_sigs {
-        if Path::new(&output_sigs)
-            .extension()
-            .map_or(true, |ext| ext != "zip")
-        {
+        // Create outpath from output_sigs
+        let outpath = PathBuf::from(output_sigs);
+
+        // Check if the extension is "zip"
+        if outpath.extension().map_or(true, |ext| ext != "zip") {
             bail!("Output must be a zip file.");
         }
+        // find and read any existing sigs
+        let (existing_batches, max_existing_batch_index) =
+            find_existing_zip_batches(&outpath).await?;
+        // Check if there are any existing batches to process
+        if !existing_batches.is_empty() {
+            let existing_sigs = MultiCollection::from_zipfiles(&existing_batches)?;
+
+            // Iterate through existing sigs and produce HashMap of fasta filename or name:: params hashsets
+            for (_collection, _idx, record) in existing_sigs.iter() {
+                // Get the record's name or fasta filename
+                let record_name = record.name().clone();
+
+                // Build the params hashset for this record
+                let params_hashset = build_params_hashset_from_records(&[record]);
+
+                // Insert into the HashMap
+                name_params_map.insert(record_name, params_hashset);
+            }
+
+            batch_index = max_existing_batch_index + 1;
+        } else {
+            // No existing batches, skipping signature filtering
+            eprintln!("No existing signature batches found, skipping filter step.");
+        }
     }
+
     // set up fasta download path
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
+
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    // Initialize an optional Manifest to hold existing signatures
-    // let mut existing_sigs: Option<Manifest> = None;
-
-    // to do --> read from existing sig zips, build filename: params_set hashmap
-
     // Set up collector/writing tasks
     let mut handles = Vec::new();
 
-    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, batch_size, error_sender.clone());
+    let sig_handle = zipwriter_handle(
+        recv_sigs,
+        output_sigs,
+        batch_size,
+        batch_index,
+        error_sender.clone(),
+    );
 
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));
@@ -734,16 +801,25 @@ pub async fn gbsketch(
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
+
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
+
+        // filter template sigs based on existing sigs
+        if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
+            eprintln!("filtering!");
+            // If the key exists, filter template sigs
+            dna_sigs.filter(&existing_paramset);
+            prot_sigs.filter(&existing_paramset);
+        }
+
+        // clone remaining utilities
         let semaphore_clone = Arc::clone(&semaphore);
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-        let mut dna_sigs = dna_template_collection.clone();
-        let mut prot_sigs = prot_template_collection.clone();
-        // clone existing sig manifest
-        // let e_siginfo = existing_sigs.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -851,7 +927,14 @@ pub async fn urlsketch(
     // Set up collector/writing tasks
     let mut handles = Vec::new();
 
-    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, batch_size, error_sender.clone());
+    let batch_index = 1;
+    let sig_handle = zipwriter_handle(
+        recv_sigs,
+        output_sigs,
+        batch_size,
+        batch_index,
+        error_sender.clone(),
+    );
 
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let critical_error_flag = Arc::new(AtomicBool::new(false));

@@ -1,14 +1,17 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use async_zip::base::write::ZipFileWriter;
 use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf;
 use chrono::Utc;
+use futures::stream::{self, Stream, StreamExt};
 use getset::{Getters, Setters};
 use needletail::parser::SequenceRecord;
 use needletail::{parse_fastx_file, parse_fastx_reader};
 use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
+use sourmash::collection::Collection;
+use sourmash::encodings::Idx;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
@@ -19,6 +22,7 @@ use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
 use tokio::fs::File;
 use tokio_util::compat::Compat;
+// use rayon::prelude::*;
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -331,9 +335,21 @@ impl Params {
     }
 }
 
-// build a hashset from Records that can be compared with the BuildRecords
-fn build_params_hashset_from_records(records: &[Record]) -> HashSet<Params> {
-    records.iter().map(Params::from_record).collect()
+// pub fn build_params_hashset_from_records(records: &[&Record]) -> HashSet<Params> {
+//     records.iter().map(|record| Params::from_record(record)).collect()
+// }
+
+pub fn build_params_hashset_from_records(records: &[&Record]) -> HashSet<u64> {
+    records
+        .iter()
+        .map(|record| {
+            let params = Params::from_record(record);
+            // Create a hasher to hash the Params into a u64
+            let mut hasher = DefaultHasher::new();
+            params.hash(&mut hasher); // Hash the Params struct
+            hasher.finish() // Get the hashed value (u64)
+        })
+        .collect()
 }
 
 #[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
@@ -493,6 +509,8 @@ impl BuildManifest {
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
+    pub name: Option<String>,
+    pub filename: Option<String>,
 }
 
 impl BuildCollection {
@@ -500,6 +518,8 @@ impl BuildCollection {
         BuildCollection {
             manifest: BuildManifest::new(),
             sigs: Vec::new(),
+            name: None,
+            filename: None,
         }
     }
 
@@ -509,6 +529,10 @@ impl BuildCollection {
 
     pub fn size(&self) -> usize {
         self.manifest.size()
+    }
+
+    pub fn is_compatible(&self, other: &BuildCollection) -> bool {
+        self.name == other.name && self.filename == other.filename
     }
 
     pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
@@ -558,18 +582,42 @@ impl BuildCollection {
         self.sigs.push(sig);
     }
 
-    pub fn extend(&mut self, other: BuildCollection) {
-        // Extend the manifest and signatures from another BuildCollection
-        self.manifest.records.extend(other.manifest.records);
-        self.sigs.extend(other.sigs);
+    // pub fn extend(&mut self, other: BuildCollection) {
+    //     // Extend the manifest and signatures from another BuildCollection
+    //     self.manifest.records.extend(other.manifest.records);
+    //     self.sigs.extend(other.sigs);
+    // }
+    pub fn extend(&mut self, other: BuildCollection) -> Result<(), &'static str> {
+        if self.is_compatible(&other) {
+            // Extend the manifest and signatures from another BuildCollection
+            self.manifest.records.extend(other.manifest.records);
+            self.sigs.extend(other.sigs);
+            Ok(())
+        } else {
+            // Return an error if the collections are not compatible
+            Err("Collections are not compatible and cannot be extended")
+        }
     }
 
-    pub fn extend_by_drain(&mut self, other: &mut BuildCollection) {
-        // Extend the manifest and signatures by draining from another BuildCollection
-        self.manifest
-            .records
-            .extend(other.manifest.records.drain(..));
-        self.sigs.extend(other.sigs.drain(..));
+    // pub fn extend_by_drain(&mut self, other: &mut BuildCollection) {
+    //     // Extend the manifest and signatures by draining from another BuildCollection
+    //     self.manifest
+    //         .records
+    //         .extend(other.manifest.records.drain(..));
+    //     self.sigs.extend(other.sigs.drain(..));
+    // }
+    pub fn extend_by_drain(&mut self, other: &mut BuildCollection) -> Result<(), &'static str> {
+        if self.is_compatible(other) {
+            // Extend the manifest and signatures by draining from another BuildCollection
+            self.manifest
+                .records
+                .extend(other.manifest.records.drain(..));
+            self.sigs.extend(other.sigs.drain(..));
+            Ok(())
+        } else {
+            // Return an error if the collections are not compatible
+            Err("Collections are not compatible and cannot be extended by drain")
+        }
     }
 
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
@@ -595,6 +643,11 @@ impl BuildCollection {
         // zip together mutable iterators over records and sigs
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
+
+    // Parallel version of iter_mut using rayon's par_iter_mut
+    // pub fn par_iter_mut(&mut self) -> impl ParallelIterator<Item = (&mut BuildRecord, &mut Signature)> {
+    //     self.manifest.records.par_iter_mut().zip(self.sigs.par_iter_mut())
+    // }
 
     pub fn build_sigs_from_data(
         &mut self,
@@ -683,6 +736,8 @@ impl BuildCollection {
 
     pub fn update_info(&mut self, name: String, filename: String) {
         // update the records to reflect information the signature;
+        self.name = Some(name.clone());
+        self.filename = Some(filename.clone());
         for (record, sig) in self.iter_mut() {
             // update signature name, filename
             sig.set_name(name.as_str());
@@ -694,9 +749,6 @@ impl BuildCollection {
             record.set_md5(Some(sig.md5sum().into()));
             record.set_md5short(Some(sig.md5sum()[0..8].into()));
             record.set_n_hashes(Some(sig.size()));
-
-            // what to set this to?
-            // record.set_internal_location("")
         }
     }
 
@@ -841,4 +893,55 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     }
 
     Ok(unique_params.into_iter().collect())
+}
+
+// this should be replaced with branchwater's MultiCollection when it's ready
+#[derive(Clone)]
+pub struct MultiCollection {
+    collections: Vec<Collection>,
+}
+
+impl MultiCollection {
+    fn new(collections: Vec<Collection>, contains_revindex: bool) -> Self {
+        Self { collections }
+    }
+
+    pub fn from_zipfile(sigpath: &Utf8PathBuf) -> Result<Self> {
+        match Collection::from_zipfile(sigpath) {
+            Ok(collection) => Ok(MultiCollection::new(vec![collection], false)),
+            Err(_) => bail!("failed to load zipfile: '{}'", sigpath),
+        }
+    }
+
+    // Load from multiple zip files
+    pub fn from_zipfiles(sigpaths: &[Utf8PathBuf]) -> Result<Self> {
+        let mut collections = Vec::new();
+
+        for sigpath in sigpaths {
+            match Collection::from_zipfile(sigpath) {
+                Ok(collection) => collections.push(collection),
+                Err(_) => bail!("failed to load zipfile: '{}'", sigpath),
+            }
+        }
+
+        Ok(MultiCollection::new(collections, false))
+    }
+
+    pub fn stream_iter(&self) -> impl Stream<Item = (&Collection, Idx, &Record)> + '_ {
+        stream::iter(&self.collections).flat_map(|collection| {
+            stream::iter(
+                collection
+                    .iter()
+                    .map(move |(idx, record)| (collection, idx, record)),
+            )
+        })
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&Collection, Idx, &Record)> + '_ {
+        self.collections.iter().flat_map(|collection| {
+            collection
+                .iter()
+                .map(move |(idx, record)| (collection, idx, record))
+        })
+    }
 }
