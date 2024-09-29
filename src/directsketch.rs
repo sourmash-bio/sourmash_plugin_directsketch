@@ -407,15 +407,16 @@ async fn dl_sketch_url(
 
 /// create zip file depending on batch size and index.
 async fn create_or_get_zip_file(
-    outpath_base: &PathBuf,
+    outpath: &PathBuf,
     batch_size: usize,
     batch_index: usize,
 ) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
     let batch_outpath = if batch_size == 0 {
-        // If batch size is zero, use the base file name without a batch index
-        outpath_base.with_extension("zip")
+        // If batch size is zero, use provided outpath (contains .zip extension)
+        outpath.clone()
     } else {
-        // Otherwise, include the batch index in the file name
+        // Otherwise, modify outpath to include the batch index
+        let outpath_base = outpath.with_extension(""); // remove .zip extension
         outpath_base.with_file_name(format!(
             "{}.{}.zip",
             outpath_base.file_stem().unwrap(),
@@ -427,7 +428,6 @@ async fn create_or_get_zip_file(
         .await
         .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
 
-    // Directly pass the `tokio::fs::File` to the `ZipFileWriter`
     Ok(ZipFileWriter::with_tokio(file))
 }
 
@@ -444,12 +444,12 @@ pub fn zipwriter_handle(
         let mut file_count = 0; // Count of files in the current batch
 
         if let Some(outpath) = output_sigs {
-            let outpath_base: PathBuf = outpath.into();
+            let outpath: PathBuf = outpath.into();
             let mut batch_index = 1; // index to name zip files
 
             // Create the initial zip file
             let mut zip_writer =
-                match create_or_get_zip_file(&outpath_base, batch_size, batch_index).await {
+                match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
                     Ok(writer) => writer,
                     Err(e) => {
                         let _ = error_sender.send(e).await;
@@ -457,11 +457,8 @@ pub fn zipwriter_handle(
                     }
                 };
 
-            while let Some(sigcoll) = recv_sigs.recv().await {
-                // add all records from sigcoll manifest
-                zip_manifest.extend_from_manifest(&sigcoll.manifest);
-                file_count += sigcoll.size();
-                // write all sigs from sigcoll
+            while let Some(mut sigcoll) = recv_sigs.recv().await {
+                // write all sigs from sigcoll. Note that this method updates each record's internal location
                 match sigcoll
                     .async_write_sigs_to_zip(&mut zip_writer, &mut md5sum_occurrences)
                     .await
@@ -477,6 +474,9 @@ pub fn zipwriter_handle(
                         }
                     }
                 }
+                // add all records from sigcoll manifest
+                zip_manifest.extend_from_manifest(&sigcoll.manifest);
+                file_count += sigcoll.size();
 
                 // If batch size is non-zero and is reached, close the current ZIP and start a new one
                 if batch_size > 0 && file_count >= batch_size {
@@ -497,19 +497,14 @@ pub fn zipwriter_handle(
                     batch_index += 1;
                     file_count = 0;
                     zip_manifest.clear();
-                    zip_writer = match create_or_get_zip_file(
-                        &outpath_base,
-                        batch_size,
-                        batch_index,
-                    )
-                    .await
-                    {
-                        Ok(writer) => writer,
-                        Err(e) => {
-                            let _ = error_sender.send(e).await;
-                            return;
-                        }
-                    };
+                    zip_writer =
+                        match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
+                            Ok(writer) => writer,
+                            Err(e) => {
+                                let _ = error_sender.send(e).await;
+                                return;
+                            }
+                        };
                 }
             }
 

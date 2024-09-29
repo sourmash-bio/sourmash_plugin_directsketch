@@ -704,26 +704,32 @@ impl BuildCollection {
     }
 
     pub async fn async_write_sigs_to_zip(
-        &self,
+        &mut self, // need mutable to update records
         zip_writer: &mut ZipFileWriter<Compat<File>>,
         md5sum_occurrences: &mut HashMap<String, usize>,
     ) -> Result<()> {
-        // Iterate over signatures and write each one to the zip file
-        for sig in &self.sigs {
+        // iterate over both records and signatures
+        for (record, sig) in self.iter_mut() {
             let md5sum_str = sig.md5sum();
             let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
             *count += 1;
 
+            // Generate the signature filename
             let sig_filename = if *count > 1 {
                 format!("signatures/{}_{}.sig.gz", md5sum_str, count)
             } else {
                 format!("signatures/{}.sig.gz", md5sum_str)
             };
 
+            // update record's internal_location with the signature filename
+            record.internal_location = Some(sig_filename.clone().into());
+
+            // serialize signature to JSON
             let wrapped_sig = vec![sig.clone()];
             let json_bytes = serde_json::to_vec(&wrapped_sig)
                 .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
 
+            // gzip
             let gzipped_buffer = {
                 let mut buffer = std::io::Cursor::new(Vec::new());
                 {
@@ -734,10 +740,10 @@ impl BuildCollection {
                     )?;
                     gz_writer.write_all(&json_bytes)?;
                 }
-
                 buffer.into_inner()
             };
 
+            // write to zip file
             let now = Utc::now();
             let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
                 .last_modification_date(ZipDateTime::from_chrono(&now))
