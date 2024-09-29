@@ -531,9 +531,15 @@ impl BuildCollection {
             _ => (),
         }
 
+        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
+            param.ksize * 3
+        } else {
+            param.ksize
+        };
+
         // Construct ComputeParameters
         let cp = ComputeParameters::builder()
-            .ksizes(vec![param.ksize])
+            .ksizes(vec![adjusted_ksize])
             .scaled(param.scaled)
             .protein(param.is_protein)
             .dna(param.is_dna)
