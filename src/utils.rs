@@ -1,5 +1,8 @@
 use anyhow::{anyhow, Context, Result};
+use async_zip::base::write::ZipFileWriter;
+use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf;
+use chrono::Utc;
 use getset::{Getters, Setters};
 use needletail::parser::SequenceRecord;
 use needletail::{parse_fastx_file, parse_fastx_reader};
@@ -9,10 +12,14 @@ use sourmash::cmd::ComputeParameters;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
+use tokio::fs::File;
+use tokio_util::compat::Compat;
+
 // use sourmash::cmd::ComputeParameters;
 
 #[derive(Clone)]
@@ -426,9 +433,30 @@ impl BuildManifest {
         self.records.is_empty()
     }
 
+    pub fn size(&self) -> usize {
+        self.records.len()
+    }
+
+    // clear all records
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn add_record(&mut self, record: BuildRecord) {
+        self.records.push(record);
+    }
+
+    pub fn extend_records(&mut self, other: impl IntoIterator<Item = BuildRecord>) {
+        self.records.extend(other);
+    }
+
+    pub fn extend_from_manifest(&mut self, other: &BuildManifest) {
+        self.records.extend(other.records.clone()); // Clone the records from the other manifest
+    }
+
     pub fn to_writer<W: Write>(&self, mut wtr: W) -> Result<()> {
         // Write the manifest version as a comment
-        wtr.write_all(b"# SOURMASH-BuildManifest-VERSION: 1.0\n")?;
+        wtr.write_all(b"# SOURMASH-MANIFEST-VERSION: 1.0\n")?;
 
         // Use CSV writer to serialize records
         let mut csv_writer = csv::Writer::from_writer(wtr);
@@ -438,6 +466,33 @@ impl BuildManifest {
         }
 
         csv_writer.flush()?; // Ensure all data is written
+
+        Ok(())
+    }
+
+    /// Asynchronously writes manifest to a zip file
+    pub async fn async_write_manifest_to_zip(
+        &self,
+        zip_writer: &mut ZipFileWriter<Compat<File>>,
+    ) -> Result<()> {
+        let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+        let mut manifest_buffer = Vec::new();
+
+        // Serialize the manifest using `to_writer`
+        self.to_writer(&mut manifest_buffer)
+            .map_err(|e| anyhow!("Error serializing manifest: {}", e))?;
+
+        // create the ZipEntryBuilder with the current time and permissions
+        let now = Utc::now();
+        let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
+            .last_modification_date(ZipDateTime::from_chrono(&now))
+            .unix_permissions(0o644);
+
+        // Write the manifest buffer to the zip file asynchronously
+        zip_writer
+            .write_entry_whole(builder, &manifest_buffer)
+            .await
+            .map_err(|e| anyhow!("Error writing manifest to zip: {}", e))?;
 
         Ok(())
     }
@@ -459,6 +514,10 @@ impl BuildCollection {
 
     pub fn is_empty(&self) -> bool {
         self.manifest.is_empty() && self.sigs.is_empty()
+    }
+
+    pub fn size(&self) -> usize {
+        self.manifest.size()
     }
 
     pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
@@ -642,6 +701,55 @@ impl BuildCollection {
             // what to set this to?
             // record.set_internal_location("")
         }
+    }
+
+    pub async fn async_write_sigs_to_zip(
+        &self,
+        zip_writer: &mut ZipFileWriter<Compat<File>>,
+        md5sum_occurrences: &mut HashMap<String, usize>,
+    ) -> Result<()> {
+        // Iterate over signatures and write each one to the zip file
+        for sig in &self.sigs {
+            let md5sum_str = sig.md5sum();
+            let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+            *count += 1;
+
+            let sig_filename = if *count > 1 {
+                format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+            } else {
+                format!("signatures/{}.sig.gz", md5sum_str)
+            };
+
+            let wrapped_sig = vec![sig.clone()];
+            let json_bytes = serde_json::to_vec(&wrapped_sig)
+                .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
+
+            let gzipped_buffer = {
+                let mut buffer = std::io::Cursor::new(Vec::new());
+                {
+                    let mut gz_writer = niffler::get_writer(
+                        Box::new(&mut buffer),
+                        niffler::compression::Format::Gzip,
+                        niffler::compression::Level::Nine,
+                    )?;
+                    gz_writer.write_all(&json_bytes)?;
+                }
+
+                buffer.into_inner()
+            };
+
+            let now = Utc::now();
+            let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
+                .last_modification_date(ZipDateTime::from_chrono(&now))
+                .unix_permissions(0o644);
+
+            zip_writer
+                .write_entry_whole(builder, &gzipped_buffer)
+                .await
+                .map_err(|e| anyhow!("Error writing zip entry for signature: {}", e))?;
+        }
+
+        Ok(())
     }
 }
 
