@@ -392,21 +392,14 @@ where
 }
 
 impl BuildRecord {
-    pub fn from_param(param: &Params, input_moltype: &str) -> Self {
-        // Adjust ksize based on the is_protein flag
-        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
-            param.ksize * 3
-        } else {
-            param.ksize
-        };
-
+    pub fn from_params(param: &Params, input_moltype: &str) -> Self {
         // Calculate the hash of Params
         let mut hasher = DefaultHasher::new();
         param.hash(&mut hasher);
         let hashed_params = hasher.finish();
 
         BuildRecord {
-            ksize: adjusted_ksize,
+            ksize: param.ksize,
             moltype: input_moltype.to_string(),
             num: param.num,
             scaled: param.scaled,
@@ -554,7 +547,7 @@ impl BuildCollection {
         let sig = Signature::from_params(&cp);
 
         // Create the BuildRecord using from_param
-        let template_record = BuildRecord::from_param(&param, input_moltype);
+        let template_record = BuildRecord::from_params(&param, input_moltype);
 
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
