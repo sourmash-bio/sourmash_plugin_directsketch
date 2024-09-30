@@ -484,7 +484,7 @@ impl BuildManifest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
@@ -551,20 +551,6 @@ impl BuildCollection {
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
         self.sigs.push(sig);
-    }
-
-    pub fn extend(&mut self, other: BuildCollection) {
-        // Extend the manifest and signatures from another BuildCollection
-        self.manifest.records.extend(other.manifest.records);
-        self.sigs.extend(other.sigs);
-    }
-
-    pub fn extend_by_drain(&mut self, other: &mut BuildCollection) {
-        // Extend the manifest and signatures by draining from another BuildCollection
-        self.manifest
-            .records
-            .extend(other.manifest.records.drain(..));
-        self.sigs.extend(other.sigs.drain(..));
     }
 
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
@@ -690,7 +676,7 @@ impl BuildCollection {
             record.set_md5short(Some(sig.md5sum()[0..8].into()));
             record.set_n_hashes(Some(sig.size()));
 
-            // what to set this to?
+            // note, this needs to be set when writing sigs
             // record.set_internal_location("")
         }
     }
@@ -758,6 +744,27 @@ impl<'a> IntoIterator for &'a mut BuildCollection {
 
     fn into_iter(self) -> Self::IntoIter {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiBuildCollection {
+    pub collections: Vec<BuildCollection>,
+}
+
+impl MultiBuildCollection {
+    pub fn new() -> Self {
+        MultiBuildCollection {
+            collections: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
+    }
+
+    pub fn add_collection(&mut self, collection: &mut BuildCollection) {
+        self.collections.push(collection.clone())
     }
 }
 
