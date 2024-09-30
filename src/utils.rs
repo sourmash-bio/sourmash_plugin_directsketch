@@ -1,10 +1,24 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use async_zip::base::write::ZipFileWriter;
+use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
+use camino::Utf8PathBuf;
+use chrono::Utc;
+use getset::{Getters, Setters};
+use needletail::parser::SequenceRecord;
+use needletail::{parse_fastx_file, parse_fastx_reader};
 use reqwest::Url;
+use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
+use sourmash::manifest::Record;
 use sourmash::signature::Signature;
+use std::collections::hash_map::DefaultHasher;
+use std::collections::HashMap;
+use std::collections::HashSet;
 use std::fmt;
-use std::hash::Hash;
-use std::hash::Hasher;
+use std::hash::{Hash, Hasher};
+use std::io::{Cursor, Write};
+use tokio::fs::File;
+use tokio_util::compat::Compat;
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -299,6 +313,461 @@ impl Hash for Params {
     }
 }
 
+impl Params {
+    pub fn from_record(record: &Record) -> Self {
+        let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
+
+        Params {
+            ksize: record.ksize(),
+            track_abundance: record.with_abundance(),
+            num: record.num().clone(),
+            scaled: record.scaled().clone(),
+            seed: 42,
+            is_protein: moltype.protein(),
+            is_dayhoff: moltype.dayhoff(),
+            is_hp: moltype.hp(),
+            is_dna: moltype.dna(),
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
+pub struct BuildRecord {
+    // fields are ordered the same as Record to allow serialization to manifest
+    // required fields are currently immutable once set
+    #[getset(get = "pub", set = "pub")]
+    internal_location: Option<Utf8PathBuf>,
+
+    #[getset(get = "pub", set = "pub")]
+    md5: Option<String>,
+
+    #[getset(get = "pub", set = "pub")]
+    md5short: Option<String>,
+
+    #[getset(get_copy = "pub", set = "pub")]
+    ksize: u32,
+
+    moltype: String,
+
+    #[getset(get = "pub")]
+    num: u32,
+
+    #[getset(get = "pub")]
+    scaled: u64,
+
+    #[getset(get = "pub", set = "pub")]
+    n_hashes: Option<usize>,
+
+    #[getset(get_copy = "pub", set = "pub")]
+    #[serde(serialize_with = "intbool")]
+    with_abundance: bool,
+
+    #[getset(get = "pub", set = "pub")]
+    name: Option<String>,
+
+    #[getset(get = "pub", set = "pub")]
+    filename: Option<String>,
+
+    #[serde(skip)]
+    pub hashed_params: u64,
+}
+
+// from sourmash (intbool is currently private there)
+fn intbool<S>(x: &bool, s: S) -> std::result::Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    if *x {
+        s.serialize_i32(1)
+    } else {
+        s.serialize_i32(0)
+    }
+}
+
+impl BuildRecord {
+    pub fn from_params(param: &Params, input_moltype: &str) -> Self {
+        // Calculate the hash of Params
+        let mut hasher = DefaultHasher::new();
+        param.hash(&mut hasher);
+        let hashed_params = hasher.finish();
+
+        BuildRecord {
+            ksize: param.ksize,
+            moltype: input_moltype.to_string(),
+            num: param.num,
+            scaled: param.scaled,
+            with_abundance: param.track_abundance,
+            hashed_params,
+            ..Default::default() // automatically set optional fields to None
+        }
+    }
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct BuildManifest {
+    records: Vec<BuildRecord>,
+}
+
+impl BuildManifest {
+    pub fn new() -> Self {
+        BuildManifest {
+            records: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    pub fn size(&self) -> usize {
+        self.records.len()
+    }
+
+    // clear all records
+    pub fn clear(&mut self) {
+        self.records.clear();
+    }
+
+    pub fn add_record(&mut self, record: BuildRecord) {
+        self.records.push(record);
+    }
+
+    pub fn extend_records(&mut self, other: impl IntoIterator<Item = BuildRecord>) {
+        self.records.extend(other);
+    }
+
+    pub fn extend_from_manifest(&mut self, other: &BuildManifest) {
+        self.records.extend(other.records.clone()); // Clone the records from the other manifest
+    }
+
+    pub fn to_writer<W: Write>(&self, mut wtr: W) -> Result<()> {
+        // Write the manifest version as a comment
+        wtr.write_all(b"# SOURMASH-MANIFEST-VERSION: 1.0\n")?;
+
+        // Use CSV writer to serialize records
+        let mut csv_writer = csv::Writer::from_writer(wtr);
+
+        for record in &self.records {
+            csv_writer.serialize(record)?; // Serialize each BuildRecord
+        }
+
+        csv_writer.flush()?; // Ensure all data is written
+
+        Ok(())
+    }
+
+    /// Asynchronously writes manifest to a zip file
+    pub async fn async_write_manifest_to_zip(
+        &self,
+        zip_writer: &mut ZipFileWriter<Compat<File>>,
+    ) -> Result<()> {
+        let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
+        let mut manifest_buffer = Vec::new();
+
+        // Serialize the manifest using `to_writer`
+        self.to_writer(&mut manifest_buffer)
+            .map_err(|e| anyhow!("Error serializing manifest: {}", e))?;
+
+        // create the ZipEntryBuilder with the current time and permissions
+        let now = Utc::now();
+        let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
+            .last_modification_date(ZipDateTime::from_chrono(&now))
+            .unix_permissions(0o644);
+
+        // Write the manifest buffer to the zip file asynchronously
+        zip_writer
+            .write_entry_whole(builder, &manifest_buffer)
+            .await
+            .map_err(|e| anyhow!("Error writing manifest to zip: {}", e))?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildCollection {
+    pub manifest: BuildManifest,
+    pub sigs: Vec<Signature>,
+}
+
+impl BuildCollection {
+    pub fn new() -> Self {
+        BuildCollection {
+            manifest: BuildManifest::new(),
+            sigs: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.manifest.is_empty() && self.sigs.is_empty()
+    }
+
+    pub fn size(&self) -> usize {
+        self.manifest.size()
+    }
+
+    pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
+        let mut collection = BuildCollection::new();
+
+        for param in params.iter().cloned() {
+            collection.add_template_sig(param, input_moltype);
+        }
+
+        collection
+    }
+
+    pub fn add_template_sig(&mut self, param: Params, input_moltype: &str) {
+        // Check the input_moltype against Params to decide if this should be added
+        match input_moltype {
+            "dna" | "DNA" if !param.is_dna => return, // Skip if it's not the correct moltype
+            "protein" if !param.is_protein && !param.is_dayhoff && !param.is_hp => return,
+            _ => (),
+        }
+
+        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
+            param.ksize * 3
+        } else {
+            param.ksize
+        };
+
+        // Construct ComputeParameters
+        let cp = ComputeParameters::builder()
+            .ksizes(vec![adjusted_ksize])
+            .scaled(param.scaled)
+            .protein(param.is_protein)
+            .dna(param.is_dna)
+            .dayhoff(param.is_dayhoff)
+            .hp(param.is_hp)
+            .num_hashes(param.num)
+            .track_abundance(param.track_abundance)
+            .build();
+
+        // Create a Signature from the ComputeParameters
+        let sig = Signature::from_params(&cp);
+
+        // Create the BuildRecord using from_param
+        let template_record = BuildRecord::from_params(&param, input_moltype);
+
+        // Add the record and signature to the collection
+        self.manifest.records.push(template_record);
+        self.sigs.push(sig);
+    }
+
+    pub fn filter(&mut self, params_set: &HashSet<u64>) {
+        let mut index = 0;
+        while index < self.manifest.records.len() {
+            let record = &self.manifest.records[index];
+
+            // filter records with matching Params
+            if params_set.contains(&record.hashed_params) {
+                self.manifest.records.remove(index);
+                self.sigs.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+    }
+
+    pub fn sigs_iter_mut(&mut self) -> impl Iterator<Item = &mut Signature> {
+        self.sigs.iter_mut()
+    }
+
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (&mut BuildRecord, &mut Signature)> {
+        // zip together mutable iterators over records and sigs
+        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+
+    pub fn build_sigs_from_data(
+        &mut self,
+        data: Vec<u8>,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        name: String,
+        filename: String,
+    ) -> Result<()> {
+        let cursor = Cursor::new(data);
+        let mut fastx_reader =
+            parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+
+        // Iterate over FASTA records and add sequences/proteins to sigs
+        while let Some(record) = fastx_reader.next() {
+            let record = record.context("Failed to read record")?;
+            self.sigs_iter_mut().for_each(|sig| {
+                if input_moltype == "protein" {
+                    sig.add_protein(&record.seq())
+                        .expect("Failed to add protein");
+                } else {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                }
+            });
+        }
+
+        // After processing sequences, update sig, record information
+        self.update_info(name, filename);
+
+        Ok(())
+    }
+
+    pub fn build_sigs_from_file(
+        &mut self,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        name: String,
+        filename: String,
+    ) -> Result<()> {
+        let mut fastx_reader = parse_fastx_file(&filename)?;
+        // Iterate over FASTA records and add sequences/proteins to sigs
+        while let Some(record) = fastx_reader.next() {
+            let record = record.context("Failed to read record")?;
+            self.sigs_iter_mut().for_each(|sig| {
+                if input_moltype == "protein" {
+                    sig.add_protein(&record.seq())
+                        .expect("Failed to add protein");
+                } else {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                }
+            });
+        }
+
+        // After processing sequences, update sig, record information
+        self.update_info(name, filename);
+
+        Ok(())
+    }
+
+    pub fn build_singleton_sigs(
+        &mut self,
+        record: SequenceRecord,
+        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        filename: String,
+    ) -> Result<()> {
+        self.sigs_iter_mut().for_each(|sig| {
+            if input_moltype == "protein" {
+                sig.add_protein(&record.seq())
+                    .expect("Failed to add protein");
+            } else {
+                sig.add_sequence(&record.seq(), true)
+                    .expect("Failed to add sequence");
+                // if not force, panics with 'N' in dna sequence
+            }
+        });
+        let record_name = std::str::from_utf8(record.id())
+            .expect("could not get record id")
+            .to_string();
+        // After processing sequences, update sig, record information
+        self.update_info(record_name, filename);
+
+        Ok(())
+    }
+
+    pub fn update_info(&mut self, name: String, filename: String) {
+        // update the records to reflect information the signature;
+        for (record, sig) in self.iter_mut() {
+            // update signature name, filename
+            sig.set_name(name.as_str());
+            sig.set_filename(&filename.as_str());
+
+            // update record: set name, filename, md5sum, n_hashes
+            record.set_name(Some(name.clone()));
+            record.set_filename(Some(filename.clone()));
+            record.set_md5(Some(sig.md5sum().into()));
+            record.set_md5short(Some(sig.md5sum()[0..8].into()));
+            record.set_n_hashes(Some(sig.size()));
+
+            // note, this needs to be set when writing sigs
+            // record.set_internal_location("")
+        }
+    }
+
+    pub async fn async_write_sigs_to_zip(
+        &mut self, // need mutable to update records
+        zip_writer: &mut ZipFileWriter<Compat<File>>,
+        md5sum_occurrences: &mut HashMap<String, usize>,
+    ) -> Result<()> {
+        // iterate over both records and signatures
+        for (record, sig) in self.iter_mut() {
+            let md5sum_str = sig.md5sum();
+            let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
+            *count += 1;
+
+            // Generate the signature filename
+            let sig_filename = if *count > 1 {
+                format!("signatures/{}_{}.sig.gz", md5sum_str, count)
+            } else {
+                format!("signatures/{}.sig.gz", md5sum_str)
+            };
+
+            // update record's internal_location with the signature filename
+            record.internal_location = Some(sig_filename.clone().into());
+
+            // serialize signature to JSON
+            let wrapped_sig = vec![sig.clone()];
+            let json_bytes = serde_json::to_vec(&wrapped_sig)
+                .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
+
+            // gzip
+            let gzipped_buffer = {
+                let mut buffer = std::io::Cursor::new(Vec::new());
+                {
+                    let mut gz_writer = niffler::get_writer(
+                        Box::new(&mut buffer),
+                        niffler::compression::Format::Gzip,
+                        niffler::compression::Level::Nine,
+                    )?;
+                    gz_writer.write_all(&json_bytes)?;
+                }
+                buffer.into_inner()
+            };
+
+            // write to zip file
+            let now = Utc::now();
+            let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
+                .last_modification_date(ZipDateTime::from_chrono(&now))
+                .unix_permissions(0o644);
+
+            zip_writer
+                .write_entry_whole(builder, &gzipped_buffer)
+                .await
+                .map_err(|e| anyhow!("Error writing zip entry for signature: {}", e))?;
+        }
+
+        Ok(())
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BuildCollection {
+    type Item = (&'a mut BuildRecord, &'a mut Signature);
+    type IntoIter =
+        std::iter::Zip<std::slice::IterMut<'a, BuildRecord>, std::slice::IterMut<'a, Signature>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiBuildCollection {
+    pub collections: Vec<BuildCollection>,
+}
+
+impl MultiBuildCollection {
+    pub fn new() -> Self {
+        MultiBuildCollection {
+            collections: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
+    }
+
+    pub fn add_collection(&mut self, collection: &mut BuildCollection) {
+        self.collections.push(collection.clone())
+    }
+}
+
 pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     let mut unique_params: std::collections::HashSet<Params> = std::collections::HashSet::new();
 
@@ -374,40 +843,4 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     }
 
     Ok(unique_params.into_iter().collect())
-}
-
-pub fn build_siginfo(params: &[Params], input_moltype: &str) -> Vec<Signature> {
-    let mut sigs = Vec::new();
-
-    for param in params.iter().cloned() {
-        match input_moltype {
-            // if dna, only build dna sigs. if protein, only build protein sigs, etc
-            "dna" | "DNA" if !param.is_dna => continue,
-            "protein" if !param.is_protein && !param.is_dayhoff && !param.is_hp => continue,
-            _ => (),
-        }
-
-        // Adjust ksize value based on the is_protein flag
-        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
-            param.ksize * 3
-        } else {
-            param.ksize
-        };
-
-        let cp = ComputeParameters::builder()
-            .ksizes(vec![adjusted_ksize])
-            .scaled(param.scaled)
-            .protein(param.is_protein)
-            .dna(param.is_dna)
-            .dayhoff(param.is_dayhoff)
-            .hp(param.is_hp)
-            .num_hashes(param.num)
-            .track_abundance(param.track_abundance)
-            .build();
-
-        let sig = Signature::from_params(&cp);
-        sigs.push(sig);
-    }
-
-    sigs
 }

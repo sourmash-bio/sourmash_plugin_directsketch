@@ -1,14 +1,10 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
-use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf as PathBuf;
-use chrono::Utc;
-use needletail::parse_fastx_reader;
 use regex::Regex;
 use reqwest::Client;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::io::Cursor;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -19,12 +15,9 @@ use tokio_util::compat::Compat;
 
 use pyo3::prelude::*;
 
-use sourmash::manifest::{Manifest, Record};
-use sourmash::signature::Signature;
-
 use crate::utils::{
-    build_siginfo, load_accession_info, load_gbassembly_info, parse_params_str, AccessionData,
-    GBAssemblyData, GenBankFileType, InputMolType,
+    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
+    BuildManifest, GBAssemblyData, GenBankFileType, InputMolType, MultiBuildCollection,
 };
 use reqwest::Url;
 
@@ -211,43 +204,6 @@ async fn download_with_retry(
     }))
 }
 
-async fn sketch_data(
-    name: String,
-    filename: String,
-    compressed_data: Vec<u8>,
-    mut sigs: Vec<Signature>,
-    moltype: String,
-) -> Result<Vec<Signature>> {
-    tokio::task::spawn_blocking(move || {
-        let cursor = Cursor::new(compressed_data);
-        let mut fastx_reader =
-            parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
-
-        let mut set_name = false;
-        while let Some(record) = fastx_reader.next() {
-            let record = record.context("Failed to read record")?;
-            sigs.iter_mut().for_each(|sig| {
-                if !set_name {
-                    sig.set_name(&name);
-                    sig.set_filename(&filename);
-                };
-                if moltype == "protein" {
-                    sig.add_protein(&record.seq())
-                        .expect("Failed to add protein");
-                } else {
-                    sig.add_sequence(&record.seq(), true)
-                        .expect("Failed to add sequence");
-                    // if not force, panics with 'N' in dna sequence
-                }
-            });
-            if !set_name {
-                set_name = true;
-            }
-        }
-        Result::<Vec<Signature>, anyhow::Error>::Ok(sigs)
-    })
-    .await?
-}
 pub struct FailedDownload {
     accession: String,
     name: String,
@@ -275,14 +231,18 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    dna_sigs: Vec<Signature>,
-    prot_sigs: Vec<Signature>,
+    dna_sigs: &mut BuildCollection,
+    prot_sigs: &mut BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-) -> Result<(Vec<Signature>, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+) -> Result<(
+    MultiBuildCollection,
+    Vec<FailedDownload>,
+    Vec<FailedChecksum>,
+)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sigs = Vec::<Signature>::new();
+    let mut built_sigs = MultiBuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
@@ -318,7 +278,7 @@ async fn dl_sketch_assembly_accession(
                     download_failures.push(failed_download_protein);
                 }
 
-                return Ok((sigs, download_failures, checksum_failures));
+                return Ok((built_sigs, download_failures, checksum_failures));
             }
         };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
@@ -357,7 +317,7 @@ async fn dl_sketch_assembly_accession(
                 checksum_failures.push(failed_checksum_download);
             }
             // return early from function b/c we can't check any checksums
-            return Ok((sigs, download_failures, checksum_failures));
+            return Ok((built_sigs, download_failures, checksum_failures));
         }
     };
 
@@ -408,34 +368,25 @@ async fn dl_sketch_assembly_accession(
         if !download_only {
             // sketch data
             match file_type {
-                GenBankFileType::Genomic => sigs.extend(
-                    sketch_data(
+                GenBankFileType::Genomic => {
+                    dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
+                    built_sigs.add_collection(dna_sigs);
+                }
+                GenBankFileType::Protein => {
+                    prot_sigs.build_sigs_from_data(
+                        data,
+                        "protein",
                         name.clone(),
                         file_name.clone(),
-                        data,
-                        dna_sigs.clone(),
-                        "dna".to_string(),
-                    )
-                    .await?,
-                ),
-                GenBankFileType::Protein => {
-                    sigs.extend(
-                        sketch_data(
-                            name.clone(),
-                            file_name.clone(),
-                            data,
-                            prot_sigs.clone(),
-                            "protein".to_string(),
-                        )
-                        .await?,
-                    );
+                    )?;
+                    built_sigs.add_collection(prot_sigs);
                 }
                 _ => {} // Do nothing for other file types
             };
         }
     }
 
-    Ok((sigs, download_failures, checksum_failures))
+    Ok((built_sigs, download_failures, checksum_failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -445,15 +396,19 @@ async fn dl_sketch_url(
     location: &PathBuf,
     retry: Option<u32>,
     _keep_fastas: bool,
-    dna_sigs: Vec<Signature>,
-    prot_sigs: Vec<Signature>,
+    dna_sigs: &mut BuildCollection,
+    prot_sigs: &mut BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(Vec<Signature>, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+) -> Result<(
+    MultiBuildCollection,
+    Vec<FailedDownload>,
+    Vec<FailedChecksum>,
+)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sigs = Vec::<Signature>::new();
-    let mut failed = Vec::<FailedDownload>::new();
+    let mut built_sigs = MultiBuildCollection::new();
+    let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name;
@@ -474,27 +429,23 @@ async fn dl_sketch_url(
                 let filename = download_filename.clone().unwrap_or("".to_string());
                 // sketch data
                 match moltype {
-                    InputMolType::Dna => sigs.extend(
-                        sketch_data(
+                    InputMolType::Dna => {
+                        dna_sigs.build_sigs_from_data(
+                            data,
+                            "dna",
                             name.clone(),
                             filename.clone(),
-                            data,
-                            dna_sigs.clone(),
-                            "dna".to_string(),
-                        )
-                        .await?,
-                    ),
+                        )?;
+                        built_sigs.add_collection(dna_sigs);
+                    }
                     InputMolType::Protein => {
-                        sigs.extend(
-                            sketch_data(
-                                name.clone(),
-                                filename.clone(),
-                                data,
-                                prot_sigs.clone(),
-                                "protein".to_string(),
-                            )
-                            .await?,
-                        );
+                        prot_sigs.build_sigs_from_data(
+                            data,
+                            "protein",
+                            name.clone(),
+                            filename.clone(),
+                        )?;
+                        built_sigs.add_collection(prot_sigs);
                     }
                 };
             }
@@ -524,144 +475,97 @@ async fn dl_sketch_url(
                     download_filename,
                     url: Some(url),
                 };
-                failed.push(failed_download);
+                download_failures.push(failed_download);
             }
         }
     }
 
-    Ok((sigs, failed, checksum_failures))
+    Ok((built_sigs, download_failures, checksum_failures))
 }
 
-async fn write_sig(
-    sig: &Signature,
-    md5sum_occurrences: &mut HashMap<String, usize>,
-    manifest_rows: &mut Vec<Record>,
-    zip_writer: &mut ZipFileWriter<Compat<tokio::fs::File>>,
-) -> Result<()> {
-    let md5sum_str = sig.md5sum();
-    let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
-    *count += 1;
-
-    let sig_filename = if *count > 1 {
-        format!("signatures/{}_{}.sig.gz", md5sum_str, count)
-    } else {
-        format!("signatures/{}.sig.gz", md5sum_str)
-    };
-
-    let records: Vec<Record> = Record::from_sig(sig, &sig_filename);
-    manifest_rows.extend(records);
-
-    let wrapped_sig = vec![sig.clone()];
-    let json_bytes = serde_json::to_vec(&wrapped_sig)
-        .map_err(|e| anyhow!("Error serializing signature: {}", e))?;
-
-    let gzipped_buffer = {
-        let mut buffer = std::io::Cursor::new(Vec::new());
-        {
-            let mut gz_writer = niffler::get_writer(
-                Box::new(&mut buffer),
-                niffler::compression::Format::Gzip,
-                niffler::compression::Level::Nine,
-            )?;
-            //     .map_err(|e| anyhow!("Error creating gzip writer: {}", e))?;
-            gz_writer.write_all(&json_bytes)?;
-            //         .map_err(|e| anyhow!("Error writing gzip data: {}", e))?;
-        }
-
-        buffer.into_inner()
-    };
-
-    let now = Utc::now();
-    let builder = ZipEntryBuilder::new(sig_filename.into(), Compression::Stored)
-        .last_modification_date(ZipDateTime::from_chrono(&now))
-        .unix_permissions(0o644);
-    zip_writer
-        .write_entry_whole(builder, &gzipped_buffer)
+/// create zip file depending on batch size and index.
+async fn create_or_get_zip_file(
+    outpath: &PathBuf,
+) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
+    let file = File::create(&outpath)
         .await
-        .map_err(|e| anyhow!("Error writing zip entry: {}", e))
+        .with_context(|| format!("Failed to create file: {:?}", outpath))?;
+
+    Ok(ZipFileWriter::with_tokio(file))
 }
 
-pub fn sigwriter_handle(
-    mut recv_sigs: tokio::sync::mpsc::Receiver<Vec<Signature>>,
+pub fn zipwriter_handle(
+    mut recv_sigs: tokio::sync::mpsc::Receiver<MultiBuildCollection>,
     output_sigs: Option<String>,
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut md5sum_occurrences = HashMap::new();
-        let mut manifest_rows = Vec::new();
+        let mut zip_manifest = BuildManifest::new();
         let mut wrote_sigs = false;
+        let mut file_count = 0; // Count of files in the current batch
+
         if let Some(outpath) = output_sigs {
             let outpath: PathBuf = outpath.into();
 
-            let file = match File::create(&outpath).await {
-                Ok(file) => file,
+            // Create the initial zip file
+            let mut zip_writer = match create_or_get_zip_file(&outpath).await {
+                Ok(writer) => writer,
                 Err(e) => {
-                    let error =
-                        anyhow::Error::new(e).context("Failed to create file at specified path");
-                    let _ = error_sender.send(error).await; // Send the error through the channel
-                    return; // Simply exit the task as error handling is managed elsewhere
+                    let _ = error_sender.send(e).await;
+                    return;
                 }
             };
-            let mut zip_writer = ZipFileWriter::with_tokio(file);
 
-            while let Some(sigs) = recv_sigs.recv().await {
-                for sig in sigs {
-                    match write_sig(
-                        &sig,
-                        &mut md5sum_occurrences,
-                        &mut manifest_rows,
-                        &mut zip_writer,
-                    )
-                    .await
+            while let Some(mut multibuildcoll) = recv_sigs.recv().await {
+                // write all sigs from sigcoll. Note that this method updates each record's internal location
+                for sigcoll in &mut multibuildcoll.collections {
+                    match sigcoll
+                        .async_write_sigs_to_zip(&mut zip_writer, &mut md5sum_occurrences)
+                        .await
                     {
-                        Ok(_) => wrote_sigs = true,
+                        Ok(_) => {
+                            file_count += sigcoll.size();
+                            wrote_sigs = true;
+                        }
                         Err(e) => {
                             let error = e.context("Error processing signature");
-                            if (error_sender.send(error).await).is_err() {
-                                return; // Exit on failure to send error
+                            if error_sender.send(error).await.is_err() {
+                                return;
                             }
                         }
                     }
+                    // add all records from sigcoll manifest
+                    zip_manifest.extend_from_manifest(&sigcoll.manifest);
+                    file_count += sigcoll.size();
                 }
             }
 
-            if wrote_sigs {
-                println!("Writing manifest");
-                let manifest_filename = "SOURMASH-MANIFEST.csv".to_string();
-                let manifest: Manifest = manifest_rows.clone().into();
-                let mut manifest_buffer = Vec::new();
-                manifest
-                    .to_writer(&mut manifest_buffer)
-                    .expect("Failed to serialize manifest"); // Handle this more gracefully in production
-
-                let now = Utc::now();
-                let builder = ZipEntryBuilder::new(manifest_filename.into(), Compression::Stored)
-                    .last_modification_date(ZipDateTime::from_chrono(&now))
-                    .unix_permissions(0o644);
-
-                if let Err(e) = zip_writer
-                    .write_entry_whole(builder, &manifest_buffer)
+            if file_count > 0 {
+                // Write the final manifest
+                if let Err(e) = zip_manifest
+                    .async_write_manifest_to_zip(&mut zip_writer)
                     .await
                 {
-                    let error = anyhow::Error::new(e).context("Failed to write manifest to ZIP");
-                    let _ = error_sender.send(error).await;
-                    return;
+                    let _ = error_sender.send(e).await;
                 }
 
+                // Close the zip file for the final batch
                 if let Err(e) = zip_writer.close().await {
                     let error = anyhow::Error::new(e).context("Failed to close ZIP file");
                     let _ = error_sender.send(error).await;
                     return;
                 }
-            } else {
+            }
+            if !wrote_sigs {
+                // If no signatures were written at all
                 let error = anyhow::Error::new(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "No signatures written",
                 ));
-                let _ = error_sender.send(error).await; // Send error about no signatures written
+                let _ = error_sender.send(error).await;
             }
         }
-        drop(error_sender); // should be dropped automatically as it goes out of scope, but just in case
     })
 }
 
@@ -836,9 +740,8 @@ pub async fn gbsketch(
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
-
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
@@ -847,7 +750,9 @@ pub async fn gbsketch(
 
     // Set up collector/writing tasks
     let mut handles = Vec::new();
-    let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
+    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
     let checksum_failures_handle = checksum_failures_handle(
         failed_checksums_csv,
@@ -879,20 +784,21 @@ pub async fn gbsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_sig_templates = build_siginfo(&params_vec, "DNA");
+    // let dna_sig_templates = build_siginfo(&params_vec, "DNA");
+    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
     // prot will build protein, dayhoff, hp
-    let prot_sig_templates = build_siginfo(&params_vec, "protein");
+    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
 
     // Check if dna_sig_templates is empty and not keep_fastas
-    if dna_sig_templates.is_empty() && !keep_fastas {
+    if dna_template_collection.manifest.is_empty() && !keep_fastas {
         eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
         proteomes_only = true;
     }
     // Check if protein_sig_templates is empty and not keep_fastas
-    if prot_sig_templates.is_empty() && !keep_fastas {
+    if prot_template_collection.manifest.is_empty() && !keep_fastas {
         eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
     }
@@ -922,9 +828,8 @@ pub async fn gbsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-
-        let dna_sigs = dna_sig_templates.clone();
-        let prot_sigs = prot_sig_templates.clone();
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -945,17 +850,17 @@ pub async fn gbsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                dna_sigs,
-                prot_sigs,
+                &mut dna_sigs,
+                &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,
             )
             .await;
             match result {
-                Ok((sigs, failed_downloads, failed_checksums)) => {
-                    if !sigs.is_empty() {
-                        if let Err(e) = send_sigs.send(sigs).await {
+                Ok((coll, failed_downloads, failed_checksums)) => {
+                    if !coll.is_empty() {
+                        if let Err(e) = send_sigs.send(coll).await {
                             eprintln!("Failed to send signatures: {}", e);
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
@@ -1030,7 +935,7 @@ pub async fn urlsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<Vec<Signature>>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
@@ -1039,7 +944,9 @@ pub async fn urlsketch(
 
     // Set up collector/writing tasks
     let mut handles = Vec::new();
-    let sig_handle = sigwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
+    let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
+
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
 
     let mut write_failed_checksums = false;
@@ -1077,19 +984,19 @@ pub async fn urlsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_sig_templates = build_siginfo(&params_vec, "DNA");
-    let prot_sig_templates = build_siginfo(&params_vec, "protein");
+    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
+    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;
 
     // Check if dna_sig_templates is empty and not keep_fastas
-    if dna_sig_templates.is_empty() && !keep_fastas {
+    if dna_template_collection.manifest.is_empty() && !keep_fastas {
         eprintln!("No DNA signature templates provided, and --keep-fastas is not set.");
         proteomes_only = true;
     }
     // Check if protein_sig_templates is empty and not keep_fastas
-    if prot_sig_templates.is_empty() && !keep_fastas {
+    if prot_template_collection.manifest.is_empty() && !keep_fastas {
         eprintln!("No protein signature templates provided, and --keep-fastas is not set.");
         genomes_only = true;
     }
@@ -1120,8 +1027,8 @@ pub async fn urlsketch(
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
 
-        let dna_sigs = dna_sig_templates.clone();
-        let prot_sigs = prot_sig_templates.clone();
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1142,8 +1049,8 @@ pub async fn urlsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                dna_sigs,
-                prot_sigs,
+                &mut dna_sigs,
+                &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,

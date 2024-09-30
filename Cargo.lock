@@ -1909,6 +1909,7 @@ dependencies = [
  "chrono",
  "csv",
  "futures",
+ "getset",
  "lazy_static",
  "md5",
  "needletail",

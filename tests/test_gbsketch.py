@@ -21,7 +21,7 @@ def test_installed(runtmp):
     assert 'usage:  gbsketch' in runtmp.last_result.err
 
 
-def test_gbsketch_simple(runtmp):
+def test_gbsketch_simple(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -41,6 +41,9 @@ def test_gbsketch_simple(runtmp):
 
     assert os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
