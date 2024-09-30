@@ -505,8 +505,6 @@ impl BuildManifest {
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
-    pub name: Option<String>,
-    pub filename: Option<String>,
 }
 
 impl BuildCollection {
@@ -514,8 +512,6 @@ impl BuildCollection {
         BuildCollection {
             manifest: BuildManifest::new(),
             sigs: Vec::new(),
-            name: None,
-            filename: None,
         }
     }
 
@@ -525,10 +521,6 @@ impl BuildCollection {
 
     pub fn size(&self) -> usize {
         self.manifest.size()
-    }
-
-    pub fn is_compatible(&self, other: &BuildCollection) -> bool {
-        self.name == other.name && self.filename == other.filename
     }
 
     pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
@@ -694,8 +686,6 @@ impl BuildCollection {
 
     pub fn update_info(&mut self, name: String, filename: String) {
         // update the records to reflect information the signature;
-        self.name = Some(name.clone());
-        self.filename = Some(filename.clone());
         for (record, sig) in self.iter_mut() {
             // update signature name, filename
             sig.set_name(name.as_str());
