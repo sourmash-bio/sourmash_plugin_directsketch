@@ -14,6 +14,7 @@ def get_test_data(filename):
     thisdir = os.path.dirname(__file__)
     return os.path.join(thisdir, 'test-data', filename)
 
+
 def test_installed(runtmp):
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch')
@@ -195,6 +196,7 @@ def test_urlsketch_bad_acc(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
 def test_urlsketch_missing_accfile(runtmp, capfd):
     acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')
@@ -254,7 +256,6 @@ def test_urlsketch_bad_acc_fail(runtmp, capfd):
     assert "Error: No signatures written, exiting." in captured.err
 
 
-
 def test_urlsketch_missing_output(runtmp):
     # no output sig zipfile provided but also not --download-only
     acc_csv = runtmp.output('acc1.csv')
@@ -273,9 +274,10 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(failed)
@@ -293,6 +295,7 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
 
     out2 = runtmp.output('failed-retry.zip')
     fail2 = runtmp.output('fail2.csv')
+
     with pytest.raises(utils.SourmashCommandFailed):
 
         runtmp.sourmash('scripts', 'urlsketch', failed, '-o', out2,
@@ -352,7 +355,7 @@ def test_zip_file_permissions(runtmp):
             assert external_attr == 0o644
 
 
-def test_gbsketch_protein_dayhoff_hp(runtmp):
+def test_urlsketch_protein_dayhoff_hp(runtmp):
     acc_csv = get_test_data('acc-url.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -392,3 +395,89 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         assert len(fail_lines) == 1
         assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
 
+
+def test_urlsketch_md5sum_mismatch_checksum_file(runtmp, capfd):
+    acc_csv = get_test_data('acc-url-md5sum.csv')
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    sig1 = get_test_data('GCA_000961135.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert sig.name == ss1.name
+        assert sig.md5sum() == ss1.md5sum()
+
+    assert os.path.exists(ch_fail)
+    with open(ch_fail, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum_url, download_filename, url, expected_md5, reason= line.strip().split(',')
+            assert acc == "GCA_000175535.1"
+            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+            assert moltype == "DNA"
+            assert md5sum_url == ""
+            assert expected_md5 == "b1234567"
+            assert download_filename == "GCA_000175535.1_genomic.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert reason == "MD5 hash does not match. Expected: 'b1234567'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
+
+
+def test_urlsketch_md5sum_mismatch_no_checksum_file(runtmp, capfd):
+    acc_csv = get_test_data('acc-url-md5sum.csv')
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    sig1 = get_test_data('GCA_000961135.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert sig.name == ss1.name
+        assert sig.md5sum() == ss1.md5sum()
+
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url= line.strip().split(',')
+            assert acc == "GCA_000175535.1"
+            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+            assert moltype == "DNA"
+            assert md5sum == "b1234567"
+            assert download_filename == "GCA_000175535.1_genomic.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"

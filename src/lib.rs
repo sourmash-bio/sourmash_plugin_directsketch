@@ -49,12 +49,13 @@ fn set_tokio_thread_pool(num_threads: usize) -> PyResult<usize> {
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, output_sigs=None))]
+#[pyo3(signature = (input_csv, param_str, failed_csv, failed_checksums, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, output_sigs=None))]
 fn do_gbsketch(
     py: Python,
     input_csv: String,
     param_str: String,
     failed_csv: String,
+    failed_checksums: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
@@ -69,6 +70,7 @@ fn do_gbsketch(
         input_csv,
         param_str,
         failed_csv,
+        failed_checksums,
         retry_times,
         fasta_location,
         keep_fastas,
@@ -88,7 +90,7 @@ fn do_gbsketch(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, download_only, batch_size, output_sigs=None))]
+#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, download_only, batch_size, output_sigs=None, failed_checksums=None))]
 fn do_urlsketch(
     py: Python,
     input_csv: String,
@@ -100,6 +102,7 @@ fn do_urlsketch(
     download_only: bool,
     batch_size: u32,
     output_sigs: Option<String>,
+    failed_checksums: Option<String>,
 ) -> anyhow::Result<u8> {
     match directsketch::urlsketch(
         py,
@@ -112,6 +115,7 @@ fn do_urlsketch(
         download_only,
         batch_size,
         output_sigs,
+        failed_checksums,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {
