@@ -458,10 +458,24 @@ pub async fn find_existing_zip_batches(
 /// create zip file depending on batch size and index.
 async fn create_or_get_zip_file(
     outpath: &PathBuf,
+    batch_size: usize,
+    batch_index: usize,
 ) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
-    let file = File::create(&outpath)
+    let batch_outpath = if batch_size == 0 {
+        // If batch size is zero, use provided outpath (contains .zip extension)
+        outpath.clone()
+    } else {
+        // Otherwise, modify outpath to include the batch index
+        let outpath_base = outpath.with_extension(""); // remove .zip extension
+        outpath_base.with_file_name(format!(
+            "{}.{}.zip",
+            outpath_base.file_stem().unwrap(),
+            batch_index
+        ))
+    };
+    let file = File::create(&batch_outpath)
         .await
-        .with_context(|| format!("Failed to create file: {:?}", outpath))?;
+        .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
 
     Ok(ZipFileWriter::with_tokio(file))
 }
@@ -483,13 +497,14 @@ pub fn zipwriter_handle(
             let outpath: PathBuf = outpath.into();
 
             // Create the initial zip file
-            let mut zip_writer = match create_or_get_zip_file(&outpath).await {
-                Ok(writer) => writer,
-                Err(e) => {
-                    let _ = error_sender.send(e).await;
-                    return;
-                }
-            };
+            let mut zip_writer =
+                match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
+                    Ok(writer) => writer,
+                    Err(e) => {
+                        let _ = error_sender.send(e).await;
+                        return;
+                    }
+                };
 
             while let Some(mut multibuildcoll) = recv_sigs.recv().await {
                 // write all sigs from sigcoll. Note that this method updates each record's internal location
@@ -513,6 +528,32 @@ pub fn zipwriter_handle(
                     zip_manifest.extend_from_manifest(&sigcoll.manifest);
                     file_count += sigcoll.size();
                 }
+            }
+
+            // If batch size is non-zero and is reached, close the current ZIP and start a new one
+            if batch_size > 0 && file_count >= batch_size {
+                if let Err(e) = zip_manifest
+                    .async_write_manifest_to_zip(&mut zip_writer)
+                    .await
+                {
+                    let _ = error_sender.send(e).await;
+                }
+                if let Err(e) = zip_writer.close().await {
+                    let error = anyhow::Error::new(e).context("Failed to close ZIP file");
+                    let _ = error_sender.send(error).await;
+                    return;
+                }
+                // start a new batch
+                batch_index += 1;
+                file_count = 0;
+                zip_manifest.clear();
+                zip_writer = match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
+                    Ok(writer) => writer,
+                    Err(e) => {
+                        let _ = error_sender.send(e).await;
+                        return;
+                    }
+                };
             }
 
             if file_count > 0 {
@@ -723,7 +764,6 @@ pub async fn gbsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    // let dna_sig_templates = build_siginfo(&params_vec, "DNA");
     let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
     // prot will build protein, dayhoff, hp
     let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
