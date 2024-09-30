@@ -331,11 +331,6 @@ impl Params {
     }
 }
 
-// build a hashset from Records that can be compared with the BuildRecords
-fn build_params_hashset_from_records(records: &[Record]) -> HashSet<Params> {
-    records.iter().map(Params::from_record).collect()
-}
-
 #[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
 pub struct BuildRecord {
     // fields are ordered the same as Record to allow serialization to manifest
