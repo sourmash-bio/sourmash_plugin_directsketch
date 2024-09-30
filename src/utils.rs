@@ -335,10 +335,6 @@ impl Params {
     }
 }
 
-// pub fn build_params_hashset_from_records(records: &[&Record]) -> HashSet<Params> {
-//     records.iter().map(|record| Params::from_record(record)).collect()
-// }
-
 pub fn build_params_hashset_from_records(records: &[&Record]) -> HashSet<u64> {
     records
         .iter()
@@ -505,7 +501,7 @@ impl BuildManifest {
     }
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
@@ -580,44 +576,6 @@ impl BuildCollection {
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
         self.sigs.push(sig);
-    }
-
-    // pub fn extend(&mut self, other: BuildCollection) {
-    //     // Extend the manifest and signatures from another BuildCollection
-    //     self.manifest.records.extend(other.manifest.records);
-    //     self.sigs.extend(other.sigs);
-    // }
-    pub fn extend(&mut self, other: BuildCollection) -> Result<(), &'static str> {
-        if self.is_compatible(&other) {
-            // Extend the manifest and signatures from another BuildCollection
-            self.manifest.records.extend(other.manifest.records);
-            self.sigs.extend(other.sigs);
-            Ok(())
-        } else {
-            // Return an error if the collections are not compatible
-            Err("Collections are not compatible and cannot be extended")
-        }
-    }
-
-    // pub fn extend_by_drain(&mut self, other: &mut BuildCollection) {
-    //     // Extend the manifest and signatures by draining from another BuildCollection
-    //     self.manifest
-    //         .records
-    //         .extend(other.manifest.records.drain(..));
-    //     self.sigs.extend(other.sigs.drain(..));
-    // }
-    pub fn extend_by_drain(&mut self, other: &mut BuildCollection) -> Result<(), &'static str> {
-        if self.is_compatible(other) {
-            // Extend the manifest and signatures by draining from another BuildCollection
-            self.manifest
-                .records
-                .extend(other.manifest.records.drain(..));
-            self.sigs.extend(other.sigs.drain(..));
-            Ok(())
-        } else {
-            // Return an error if the collections are not compatible
-            Err("Collections are not compatible and cannot be extended by drain")
-        }
     }
 
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
@@ -749,6 +707,9 @@ impl BuildCollection {
             record.set_md5(Some(sig.md5sum().into()));
             record.set_md5short(Some(sig.md5sum()[0..8].into()));
             record.set_n_hashes(Some(sig.size()));
+
+            // note, this needs to be set when writing sigs
+            // record.set_internal_location("")
         }
     }
 
@@ -815,6 +776,27 @@ impl<'a> IntoIterator for &'a mut BuildCollection {
 
     fn into_iter(self) -> Self::IntoIter {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct MultiBuildCollection {
+    pub collections: Vec<BuildCollection>,
+}
+
+impl MultiBuildCollection {
+    pub fn new() -> Self {
+        MultiBuildCollection {
+            collections: Vec::new(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
+    }
+
+    pub fn add_collection(&mut self, collection: &mut BuildCollection) {
+        self.collections.push(collection.clone())
     }
 }
 

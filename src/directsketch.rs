@@ -21,7 +21,7 @@ use sourmash::signature::Signature;
 use crate::utils::{
     build_params_hashset_from_records, load_accession_info, load_gbassembly_info, parse_params_str,
     AccessionData, BuildCollection, BuildManifest, GBAssemblyData, GenBankFileType, InputMolType,
-    MultiCollection, Params,
+    MultiBuildCollection, MultiCollection,
 };
 use reqwest::Url;
 
@@ -220,9 +220,9 @@ async fn dl_sketch_assembly_accession(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>)> {
+) -> Result<(MultiBuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sig_collection = BuildCollection::new();
+    let mut built_sigs = MultiBuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
     let name = accinfo.name;
@@ -257,7 +257,7 @@ async fn dl_sketch_assembly_accession(
                     failed.push(failed_download_protein);
                 }
 
-                return Ok((sig_collection, failed));
+                return Ok((built_sigs, failed));
             }
         };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
@@ -313,7 +313,7 @@ async fn dl_sketch_assembly_accession(
             match file_type {
                 GenBankFileType::Genomic => {
                     dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
-                    sig_collection.extend_by_drain(dna_sigs);
+                    built_sigs.add_collection(dna_sigs);
                 }
                 GenBankFileType::Protein => {
                     prot_sigs.build_sigs_from_data(
@@ -322,14 +322,14 @@ async fn dl_sketch_assembly_accession(
                         name.clone(),
                         file_name.clone(),
                     )?;
-                    sig_collection.extend_by_drain(prot_sigs);
+                    built_sigs.add_collection(prot_sigs);
                 }
                 _ => {} // Do nothing for other file types
             };
         }
     }
 
-    Ok((sig_collection, failed))
+    Ok((built_sigs, failed))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,9 +344,9 @@ async fn dl_sketch_url(
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>)> {
+) -> Result<(MultiBuildCollection, Vec<FailedDownload>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut sig_collection = BuildCollection::new();
+    let mut built_sigs = MultiBuildCollection::new();
     let mut failed = Vec::<FailedDownload>::new();
 
     let name = accinfo.name;
@@ -377,7 +377,7 @@ async fn dl_sketch_url(
                             name.clone(),
                             filename.clone(),
                         )?;
-                        sig_collection.extend_by_drain(dna_sigs);
+                        built_sigs.add_collection(dna_sigs);
                     }
                     InputMolType::Protein => {
                         prot_sigs.build_sigs_from_data(
@@ -386,7 +386,7 @@ async fn dl_sketch_url(
                             name.clone(),
                             filename.clone(),
                         )?;
-                        sig_collection.extend_by_drain(prot_sigs);
+                        built_sigs.add_collection(prot_sigs);
                     }
                 };
             }
@@ -404,7 +404,7 @@ async fn dl_sketch_url(
         }
     }
 
-    Ok((sig_collection, failed))
+    Ok((built_sigs, failed))
 }
 
 // find existing batch files
@@ -458,31 +458,16 @@ pub async fn find_existing_zip_batches(
 /// create zip file depending on batch size and index.
 async fn create_or_get_zip_file(
     outpath: &PathBuf,
-    batch_size: usize,
-    batch_index: usize,
 ) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
-    let batch_outpath = if batch_size == 0 {
-        // If batch size is zero, use provided outpath (contains .zip extension)
-        outpath.clone()
-    } else {
-        // Otherwise, modify outpath to include the batch index
-        let outpath_base = outpath.with_extension(""); // remove .zip extension
-        outpath_base.with_file_name(format!(
-            "{}.{}.zip",
-            outpath_base.file_stem().unwrap(),
-            batch_index
-        ))
-    };
-
-    let file = File::create(&batch_outpath)
+    let file = File::create(&outpath)
         .await
-        .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
+        .with_context(|| format!("Failed to create file: {:?}", outpath))?;
 
     Ok(ZipFileWriter::with_tokio(file))
 }
 
 pub fn zipwriter_handle(
-    mut recv_sigs: tokio::sync::mpsc::Receiver<BuildCollection>,
+    mut recv_sigs: tokio::sync::mpsc::Receiver<MultiBuildCollection>,
     output_sigs: Option<String>,
     batch_size: usize,      // Tunable batch size
     mut batch_index: usize, // starting batch index
@@ -498,63 +483,35 @@ pub fn zipwriter_handle(
             let outpath: PathBuf = outpath.into();
 
             // Create the initial zip file
-            let mut zip_writer =
-                match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                    Ok(writer) => writer,
-                    Err(e) => {
-                        let _ = error_sender.send(e).await;
-                        return;
-                    }
-                };
-
-            while let Some(mut sigcoll) = recv_sigs.recv().await {
-                // write all sigs from sigcoll. Note that this method updates each record's internal location
-                match sigcoll
-                    .async_write_sigs_to_zip(&mut zip_writer, &mut md5sum_occurrences)
-                    .await
-                {
-                    Ok(_) => {
-                        file_count += sigcoll.size();
-                        wrote_sigs = true;
-                    }
-                    Err(e) => {
-                        let error = e.context("Error processing signature");
-                        if error_sender.send(error).await.is_err() {
-                            return;
-                        }
-                    }
+            let mut zip_writer = match create_or_get_zip_file(&outpath).await {
+                Ok(writer) => writer,
+                Err(e) => {
+                    let _ = error_sender.send(e).await;
+                    return;
                 }
-                // add all records from sigcoll manifest
-                zip_manifest.extend_from_manifest(&sigcoll.manifest);
-                file_count += sigcoll.size();
+            };
 
-                // If batch size is non-zero and is reached, close the current ZIP and start a new one
-                if batch_size > 0 && file_count >= batch_size {
-                    if let Err(e) = zip_manifest
-                        .async_write_manifest_to_zip(&mut zip_writer)
+            while let Some(mut multibuildcoll) = recv_sigs.recv().await {
+                // write all sigs from sigcoll. Note that this method updates each record's internal location
+                for sigcoll in &mut multibuildcoll.collections {
+                    match sigcoll
+                        .async_write_sigs_to_zip(&mut zip_writer, &mut md5sum_occurrences)
                         .await
                     {
-                        let _ = error_sender.send(e).await;
-                    }
-
-                    if let Err(e) = zip_writer.close().await {
-                        let error = anyhow::Error::new(e).context("Failed to close ZIP file");
-                        let _ = error_sender.send(error).await;
-                        return;
-                    }
-
-                    // start a new batch
-                    batch_index += 1;
-                    file_count = 0;
-                    zip_manifest.clear();
-                    zip_writer =
-                        match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                            Ok(writer) => writer,
-                            Err(e) => {
-                                let _ = error_sender.send(e).await;
+                        Ok(_) => {
+                            file_count += sigcoll.size();
+                            wrote_sigs = true;
+                        }
+                        Err(e) => {
+                            let error = e.context("Error processing signature");
+                            if error_sender.send(error).await.is_err() {
                                 return;
                             }
-                        };
+                        }
+                    }
+                    // add all records from sigcoll manifest
+                    zip_manifest.extend_from_manifest(&sigcoll.manifest);
+                    file_count += sigcoll.size();
                 }
             }
 
@@ -675,8 +632,8 @@ pub async fn gbsketch(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-    output_sigs: Option<String>,
     batch_size: u32,
+    output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     let batch_size = batch_size as usize;
@@ -725,7 +682,7 @@ pub async fn gbsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
@@ -906,8 +863,8 @@ pub async fn urlsketch(
     batch_size: u32,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    let batch_size = batch_size as usize;
     // if sig output provided but doesn't end in zip, bail
+    let batch_size = batch_size as usize;
     if let Some(ref output_sigs) = output_sigs {
         if Path::new(&output_sigs)
             .extension()
@@ -923,7 +880,7 @@ pub async fn urlsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);

@@ -75,8 +75,8 @@ fn do_gbsketch(
         genomes_only,
         proteomes_only,
         download_only,
-        output_sigs,
         batch_size,
+        output_sigs,
     ) {
         Ok(_) => Ok(0),
         Err(e) => {
