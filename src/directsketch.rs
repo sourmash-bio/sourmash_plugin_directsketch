@@ -15,8 +15,6 @@ use tokio_util::compat::Compat;
 
 use pyo3::prelude::*;
 
-use sourmash::signature::Signature;
-
 use crate::utils::{
     load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
     BuildManifest, GBAssemblyData, GenBankFileType, InputMolType, MultiBuildCollection,
@@ -110,6 +108,15 @@ async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<St
         .await
         .context("Failed to send request")?;
 
+    // Check if the status code is 200 OK
+    if !response.status().is_success() {
+        return Err(anyhow!(
+            "Failed to download MD5 checksum file from URL {}: HTTP status {}",
+            url,
+            response.status()
+        ));
+    }
+
     let content = response
         .text()
         .await
@@ -126,7 +133,7 @@ async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<St
             checksums.insert(filename.to_string(), parts[0].to_string());
         } else {
             return Err(anyhow!(
-                "Invalid checksum line format in URL {}: {}",
+                "Invalid checksum line format in URL '{}': '{}'",
                 url,
                 line
             ));
@@ -162,7 +169,7 @@ async fn download_with_retry(
                         return Ok(data.to_vec());
                     } else {
                         last_error = Some(anyhow!(
-                            "MD5 hash does not match. Expected: {}, Found: {}",
+                            "MD5 hash does not match. Expected: '{}'; Found: '{}'",
                             md5,
                             computed_hash
                         ));
@@ -206,6 +213,17 @@ pub struct FailedDownload {
     url: Option<Url>,
 }
 
+pub struct FailedChecksum {
+    accession: String,
+    name: String,
+    moltype: String,
+    md5sum_url: Option<Url>,
+    download_filename: Option<String>,
+    url: Option<Url>,
+    expected_md5sum: Option<String>,
+    reason: String,
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_assembly_accession(
     client: &Client,
@@ -218,10 +236,15 @@ async fn dl_sketch_assembly_accession(
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-) -> Result<(MultiBuildCollection, Vec<FailedDownload>)> {
+) -> Result<(
+    MultiBuildCollection,
+    Vec<FailedDownload>,
+    Vec<FailedChecksum>,
+)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let mut built_sigs = MultiBuildCollection::new();
-    let mut failed = Vec::<FailedDownload>::new();
+    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name;
     let accession = accinfo.accession;
@@ -241,7 +264,7 @@ async fn dl_sketch_assembly_accession(
                         download_filename: None,
                         url: None,
                     };
-                    failed.push(failed_download_dna);
+                    download_failures.push(failed_download_dna);
                 }
                 if !genomes_only {
                     let failed_download_protein = FailedDownload {
@@ -252,20 +275,13 @@ async fn dl_sketch_assembly_accession(
                         download_filename: None,
                         url: None,
                     };
-                    failed.push(failed_download_protein);
+                    download_failures.push(failed_download_protein);
                 }
 
-                return Ok((built_sigs, failed));
+                return Ok((built_sigs, download_failures, checksum_failures));
             }
         };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
-
-    let checksums = match download_and_parse_md5(client, &md5sum_url).await {
-        Ok(cs) => cs,
-        Err(e) => {
-            return Err(e);
-        }
-    };
 
     let mut file_types = vec![
         GenBankFileType::Genomic,
@@ -278,6 +294,33 @@ async fn dl_sketch_assembly_accession(
         file_types = vec![GenBankFileType::Protein];
     }
 
+    let checksums = match download_and_parse_md5(client, &md5sum_url).await {
+        Ok(cs) => cs,
+        Err(err) => {
+            // capture the error message as a string
+            let error_message = err.to_string();
+            // if we can't download/parse the md5sum file, write to checksum failures file to allow manual troubleshooting
+            for file_type in &file_types {
+                // get filename, filetype info to facilitate downstream
+                let url = file_type.url(&base_url, &full_name);
+                let file_name = file_type.filename_to_write(&accession);
+                let failed_checksum_download: FailedChecksum = FailedChecksum {
+                    accession: accession.clone(),
+                    name: name.clone(),
+                    moltype: file_type.moltype(),
+                    md5sum_url: Some(md5sum_url.clone()),
+                    download_filename: Some(file_name),
+                    url: Some(url),
+                    expected_md5sum: None,
+                    reason: error_message.clone(), // write full error message
+                };
+                checksum_failures.push(failed_checksum_download);
+            }
+            // return early from function b/c we can't check any checksums
+            return Ok((built_sigs, download_failures, checksum_failures));
+        }
+    };
+
     for file_type in &file_types {
         let url = file_type.url(&base_url, &full_name);
         let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
@@ -287,17 +330,33 @@ async fn dl_sketch_assembly_accession(
                 .await
             {
                 Ok(data) => data,
-                Err(_err) => {
+                Err(e) => {
+                    let error_message = e.to_string();
+                    // did we have a checksum error or a download error?
                     // here --> keep track of accession errors + filetype
-                    let failed_download = FailedDownload {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: file_type.moltype(),
-                        md5sum: expected_md5.map(|x| x.to_string()),
-                        download_filename: Some(file_name),
-                        url: Some(url),
-                    };
-                    failed.push(failed_download);
+                    if error_message.contains("MD5 hash does not match") {
+                        let checksum_mismatch: FailedChecksum = FailedChecksum {
+                            accession: accession.clone(),
+                            name: name.clone(),
+                            moltype: file_type.moltype(),
+                            md5sum_url: Some(md5sum_url.clone()),
+                            download_filename: Some(file_name.clone()),
+                            url: Some(url.clone()),
+                            expected_md5sum: expected_md5.cloned(),
+                            reason: error_message.clone(),
+                        };
+                        checksum_failures.push(checksum_mismatch);
+                    } else {
+                        let failed_download = FailedDownload {
+                            accession: accession.clone(),
+                            name: name.clone(),
+                            moltype: file_type.moltype(),
+                            md5sum: expected_md5.map(|x| x.to_string()),
+                            download_filename: Some(file_name),
+                            url: Some(url),
+                        };
+                        download_failures.push(failed_download);
+                    }
                     continue;
                 }
             };
@@ -327,7 +386,7 @@ async fn dl_sketch_assembly_accession(
         }
     }
 
-    Ok((built_sigs, failed))
+    Ok((built_sigs, download_failures, checksum_failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -342,10 +401,15 @@ async fn dl_sketch_url(
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(MultiBuildCollection, Vec<FailedDownload>)> {
+) -> Result<(
+    MultiBuildCollection,
+    Vec<FailedDownload>,
+    Vec<FailedChecksum>,
+)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let mut built_sigs = MultiBuildCollection::new();
-    let mut failed = Vec::<FailedDownload>::new();
+    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name;
     let accession = accinfo.accession;
@@ -354,11 +418,8 @@ async fn dl_sketch_url(
     let download_filename = accinfo.download_filename;
     let moltype = accinfo.moltype;
 
-    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count)
-        .await
-        .ok()
-    {
-        Some(data) => {
+    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
+        Ok(data) => {
             // check keep_fastas instead??
             if let Some(ref download_filename) = download_filename {
                 let path = location.join(download_filename);
@@ -389,20 +450,37 @@ async fn dl_sketch_url(
                 };
             }
         }
-        None => {
-            let failed_download = FailedDownload {
-                accession: accession.clone(),
-                name: name.clone(),
-                moltype: moltype.to_string(),
-                md5sum: expected_md5.map(|x| x.to_string()),
-                download_filename,
-                url: Some(url),
-            };
-            failed.push(failed_download);
+        Err(err) => {
+            let error_message = err.to_string();
+            // did we have a checksum error or a download error?
+            // here --> keep track of accession errors + filetype
+            if error_message.contains("MD5 hash does not match") {
+                let checksum_mismatch: FailedChecksum = FailedChecksum {
+                    accession: accession.clone(),
+                    name: name.clone(),
+                    moltype: moltype.to_string(),
+                    md5sum_url: None,
+                    download_filename,
+                    url: Some(url.clone()),
+                    expected_md5sum: expected_md5.clone(),
+                    reason: error_message.clone(),
+                };
+                checksum_failures.push(checksum_mismatch);
+            } else {
+                let failed_download = FailedDownload {
+                    accession: accession.clone(),
+                    name: name.clone(),
+                    moltype: moltype.to_string(),
+                    md5sum: expected_md5.map(|x| x.to_string()),
+                    download_filename,
+                    url: Some(url),
+                };
+                download_failures.push(failed_download);
+            }
         }
     }
 
-    Ok((built_sigs, failed))
+    Ok((built_sigs, download_failures, checksum_failures))
 }
 
 /// create zip file depending on batch size and index.
@@ -552,6 +630,71 @@ pub fn failures_handle(
     })
 }
 
+pub fn checksum_failures_handle(
+    checksum_failed_csv: String,
+    mut recv_failed: tokio::sync::mpsc::Receiver<FailedChecksum>,
+    error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        match File::create(&checksum_failed_csv).await {
+            Ok(file) => {
+                let mut writer = BufWriter::new(file);
+
+                // Attempt to write CSV headers
+                if let Err(e) = writer
+                    .write_all(b"accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n")
+                    .await
+                {
+                    let error = Error::new(e).context("Failed to write headers");
+                    let _ = error_sender.send(error).await;
+                    return; // Exit the task early after reporting the error
+                }
+
+                while let Some(FailedChecksum {
+                    accession,
+                    name,
+                    moltype,
+                    md5sum_url,
+                    download_filename,
+                    url,
+                    expected_md5sum,
+                    reason,
+                }) = recv_failed.recv().await
+                {
+                    let record = format!(
+                        "{},{},{},{},{},{},{},{}\n",
+                        accession,
+                        name,
+                        moltype,
+                        md5sum_url.map(|u| u.to_string()).unwrap_or("".to_string()),
+                        download_filename.unwrap_or("".to_string()),
+                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
+                        expected_md5sum.unwrap_or("".to_string()),
+                        reason,
+                    );
+                    // Attempt to write each record
+                    if let Err(e) = writer.write_all(record.as_bytes()).await {
+                        let error = Error::new(e).context("Failed to write failed checksum record");
+                        let _ = error_sender.send(error).await;
+                        continue; // continue to try to write next records
+                    }
+                }
+
+                // Attempt to flush the writer
+                if let Err(e) = writer.flush().await {
+                    let error = Error::new(e).context("Failed to flush failed checksum writer");
+                    let _ = error_sender.send(error).await;
+                }
+            }
+            Err(e) => {
+                let error = Error::new(e).context("Failed to create failed checksum file");
+                let _ = error_sender.send(error).await;
+            }
+        }
+        drop(error_sender);
+    })
+}
+
 pub fn error_handler(
     mut recv_errors: tokio::sync::mpsc::Receiver<anyhow::Error>,
     error_flag: Arc<AtomicBool>,
@@ -574,6 +717,7 @@ pub async fn gbsketch(
     input_csv: String,
     param_str: String,
     failed_csv: String,
+    failed_checksums_csv: String,
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
@@ -599,6 +743,8 @@ pub async fn gbsketch(
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed_checksums, recv_failed_checksum) =
+        tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
@@ -608,11 +754,17 @@ pub async fn gbsketch(
     let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
 
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+    let checksum_failures_handle = checksum_failures_handle(
+        failed_checksums_csv,
+        recv_failed_checksum,
+        error_sender.clone(),
+    );
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
     handles.push(error_handle);
+    handles.push(checksum_failures_handle);
 
     // Worker tasks
     let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
@@ -673,6 +825,7 @@ pub async fn gbsketch(
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
+        let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
         let mut dna_sigs = dna_template_collection.clone();
@@ -705,7 +858,7 @@ pub async fn gbsketch(
             )
             .await;
             match result {
-                Ok((coll, failed_downloads)) => {
+                Ok((coll, failed_downloads, failed_checksums)) => {
                     if !coll.is_empty() {
                         if let Err(e) = send_sigs.send(coll).await {
                             eprintln!("Failed to send signatures: {}", e);
@@ -715,6 +868,12 @@ pub async fn gbsketch(
                     for fail in failed_downloads {
                         if let Err(e) = send_failed.send(fail).await {
                             eprintln!("Failed to send failed download info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
+                    }
+                    for fail in failed_checksums {
+                        if let Err(e) = checksum_send_failed.send(fail).await {
+                            eprintln!("Failed to send failed checksum info: {}", e);
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
@@ -729,6 +888,7 @@ pub async fn gbsketch(
     // drop senders as we're done sending data
     drop(send_sigs);
     drop(send_failed);
+    drop(send_failed_checksums);
     drop(error_sender);
     // Wait for all tasks to complete
     for handle in handles {
@@ -757,6 +917,7 @@ pub async fn urlsketch(
     keep_fastas: bool,
     download_only: bool,
     output_sigs: Option<String>,
+    failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     // if sig output provided but doesn't end in zip, bail
     if let Some(ref output_sigs) = output_sigs {
@@ -776,6 +937,8 @@ pub async fn urlsketch(
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed_checksums, recv_failed_checksum) =
+        tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
     let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
@@ -785,6 +948,18 @@ pub async fn urlsketch(
     let sig_handle = zipwriter_handle(recv_sigs, output_sigs, error_sender.clone());
 
     let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+
+    let mut write_failed_checksums = false;
+    if let Some(ref failed_checksums) = failed_checksums_csv {
+        let checksum_failures_handle = checksum_failures_handle(
+            failed_checksums.clone(),
+            recv_failed_checksum,
+            error_sender.clone(),
+        );
+        write_failed_checksums = true;
+        handles.push(checksum_failures_handle);
+    }
+
     let critical_error_flag = Arc::new(AtomicBool::new(false));
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
@@ -848,6 +1023,7 @@ pub async fn urlsketch(
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
         let send_failed = send_failed.clone();
+        let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
 
@@ -881,7 +1057,7 @@ pub async fn urlsketch(
             )
             .await;
             match result {
-                Ok((sigs, failed_downloads)) => {
+                Ok((sigs, failed_downloads, failed_checksums)) => {
                     if !sigs.is_empty() {
                         if let Err(e) = send_sigs.send(sigs).await {
                             eprintln!("Failed to send signatures: {}", e);
@@ -892,6 +1068,30 @@ pub async fn urlsketch(
                         if let Err(e) = send_failed.send(fail).await {
                             eprintln!("Failed to send failed download info: {}", e);
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                        }
+                    }
+                    if write_failed_checksums {
+                        for fail in failed_checksums {
+                            if let Err(e) = checksum_send_failed.send(fail).await {
+                                eprintln!("Failed to send failed checksum info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                    } else {
+                        // if we don't have a failed checksum file, convert to failed downloads + write there
+                        for fail in failed_checksums {
+                            let dl_fail: FailedDownload = FailedDownload {
+                                accession: fail.accession,
+                                name: fail.name,
+                                moltype: fail.moltype,
+                                md5sum: fail.expected_md5sum,
+                                download_filename: fail.download_filename,
+                                url: fail.url,
+                            };
+                            if let Err(e) = send_failed.send(dl_fail).await {
+                                eprintln!("Failed to send failed download info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
                         }
                     }
                 }
@@ -906,6 +1106,7 @@ pub async fn urlsketch(
     drop(send_sigs);
     drop(send_failed);
     drop(error_sender);
+    drop(send_failed_checksums);
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {

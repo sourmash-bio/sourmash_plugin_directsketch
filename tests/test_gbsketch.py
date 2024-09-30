@@ -25,6 +25,7 @@ def test_gbsketch_simple(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -35,7 +36,7 @@ def test_gbsketch_simple(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -76,6 +77,7 @@ def test_gbsketch_simple_url(runtmp):
     acc_csv = get_test_data('acc-with-ftppath.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -86,7 +88,7 @@ def test_gbsketch_simple_url(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -112,6 +114,7 @@ def test_gbsketch_genomes_only(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -120,6 +123,7 @@ def test_gbsketch_genomes_only(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1', '--genomes-only',
+                    '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -142,6 +146,7 @@ def test_gbsketch_proteomes_only(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     # why does this need ksize =30 and not ksize = 10!???
@@ -149,6 +154,7 @@ def test_gbsketch_proteomes_only(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1', '--proteomes-only',
+                    '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -167,6 +173,7 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -174,7 +181,7 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -200,6 +207,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     # why does this need ksize =30 and not ksize = 10!???
@@ -207,6 +215,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1',
+                    '--checksum-fail', ch_fail,
                     '--param-str', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -230,6 +239,7 @@ def test_gbsketch_save_fastas(runtmp):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     out_dir = runtmp.output('out_fastas')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
@@ -242,6 +252,7 @@ def test_gbsketch_save_fastas(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -269,6 +280,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     out_dir = runtmp.output('out_fastas')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
@@ -281,6 +293,7 @@ def test_gbsketch_download_only(runtmp, capfd):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
                     '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert not runtmp.last_result.out # stdout should be empty
@@ -306,6 +319,7 @@ def test_gbsketch_bad_acc(runtmp):
 
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -317,6 +331,7 @@ def test_gbsketch_bad_acc(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
                     '--failed', failed, '-r', '1', #'--fastas', output_fastas,
+                    '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -335,6 +350,14 @@ def test_gbsketch_bad_acc(runtmp):
                 break
         else:
             assert False, "Modified accession not found"
+    
+    assert os.path.exists(failed)
+    with open(ch_fail, 'r') as ch_file:
+        # Read the lines of the file
+        lines = ch_file.readlines()
+        print("CHECKSUM FAILURES")
+        print(lines)
+        assert lines == ['accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n']
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
@@ -356,10 +379,11 @@ def test_gbsketch_missing_accfile(runtmp, capfd):
     acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -373,10 +397,11 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         file.write('')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -399,10 +424,11 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
         
     captured = capfd.readouterr()
@@ -416,12 +442,13 @@ def test_gbsketch_version_bug(runtmp):
     acc_csv = get_test_data('acc-version.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000193795.2.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -440,10 +467,11 @@ def test_gbsketch_cols_trailing_commas(runtmp, capfd):
     acc_csv = get_test_data('acc-cols.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                '--failed', failed, '-r', '1',
+                '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                 '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -456,10 +484,11 @@ def test_gbsketch_missing_output(runtmp):
     acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
@@ -473,6 +502,7 @@ def test_zip_file_permissions(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -482,7 +512,7 @@ def test_zip_file_permissions(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -503,6 +533,7 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000961135.2.protein.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.dayhoff.sig.gz')
@@ -513,6 +544,7 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1',
+                    '--checksum-fail', ch_fail,
                     '--param-str',"protein,k=10,scaled=200",
                     '-p', "dayhoff,k=10,scaled=200",
                     '-p', "hp,k=10,scaled=200")
