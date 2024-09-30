@@ -606,32 +606,34 @@ pub fn zipwriter_handle(
                     zip_manifest.extend_from_manifest(&sigcoll.manifest);
                     file_count += sigcoll.size();
                 }
-            }
 
-            // If batch size is non-zero and is reached, close the current ZIP and start a new one
-            if batch_size > 0 && file_count >= batch_size {
-                if let Err(e) = zip_manifest
-                    .async_write_manifest_to_zip(&mut zip_writer)
-                    .await
-                {
-                    let _ = error_sender.send(e).await;
-                }
-                if let Err(e) = zip_writer.close().await {
-                    let error = anyhow::Error::new(e).context("Failed to close ZIP file");
-                    let _ = error_sender.send(error).await;
-                    return;
-                }
-                // start a new batch
-                batch_index += 1;
-                file_count = 0;
-                zip_manifest.clear();
-                zip_writer = match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                    Ok(writer) => writer,
-                    Err(e) => {
+                // If batch size is non-zero and is reached, close the current ZIP and start a new one
+                if batch_size > 0 && file_count >= batch_size {
+                    eprintln!("writing batch {}", batch_index);
+                    if let Err(e) = zip_manifest
+                        .async_write_manifest_to_zip(&mut zip_writer)
+                        .await
+                    {
                         let _ = error_sender.send(e).await;
+                    }
+                    if let Err(e) = zip_writer.close().await {
+                        let error = anyhow::Error::new(e).context("Failed to close ZIP file");
+                        let _ = error_sender.send(error).await;
                         return;
                     }
-                };
+                    // start a new batch
+                    batch_index += 1;
+                    file_count = 0;
+                    zip_manifest.clear();
+                    zip_writer =
+                        match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
+                            Ok(writer) => writer,
+                            Err(e) => {
+                                let _ = error_sender.send(e).await;
+                                return;
+                            }
+                        };
+                }
             }
 
             if file_count > 0 {
@@ -649,6 +651,9 @@ pub fn zipwriter_handle(
                     let _ = error_sender.send(error).await;
                     return;
                 }
+            } else {
+                // to do -- can we avoid this happening?
+                eprintln!("Empty final batch! Please delete batch: {}", batch_index);
             }
             if !wrote_sigs {
                 // If no signatures were written at all
@@ -665,7 +670,7 @@ pub fn zipwriter_handle(
 pub fn failures_handle(
     failed_csv: String,
     mut recv_failed: tokio::sync::mpsc::Receiver<FailedDownload>,
-    error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
+    error_sender: tokio::sync::mpsc::Sender<Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         match File::create(&failed_csv).await {

@@ -577,3 +577,49 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
 
+
+def test_gbsketch_simple_batched(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+    
+    out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
+
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    idx = sourmash.load_file_as_index(out1)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 1
+    for sig in sigs:
+        assert sig.name == ss1.name
+        assert sig.md5sum() == ss1.md5sum()
+    
+    idx = sourmash.load_file_as_index(out2)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 2
+    for sig in sigs:
+        assert sig.name == ss2.name
+        if sig.minhash.moltype == 'DNA':
+            assert sig.md5sum() == ss2.md5sum()
+        else:
+            assert sig.md5sum() == ss3.md5sum()
