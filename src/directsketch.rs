@@ -3,9 +3,11 @@ use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use regex::Regex;
 use reqwest::Client;
+use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
+use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
@@ -484,10 +486,8 @@ async fn dl_sketch_url(
     Ok((built_sigs, download_failures, checksum_failures))
 }
 
-// find existing batch files
-pub async fn find_existing_zip_batches(
-    outpath: &PathBuf,
-) -> Result<(Vec<PathBuf>, usize), anyhow::Error> {
+// Load existing batch files into MultiCollection, skipping corrupt files
+async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection, usize)> {
     // Remove the .zip extension to get the base name
     let outpath_base = outpath.with_extension("");
 
@@ -498,8 +498,8 @@ pub async fn find_existing_zip_batches(
     ))
     .unwrap();
 
-    // Initialize a vector to store paths of existing zip files
-    let mut existing_zip_files = Vec::new();
+    // Initialize a vector to store valid collections
+    let mut collections = Vec::new();
     let mut highest_batch = 0; // Track the highest batch number
 
     // Read the directory containing the outpath
@@ -510,26 +510,44 @@ pub async fn find_existing_zip_batches(
 
     // Scan through all files in the directory
     while let Some(entry) = dir_entries.next_entry().await? {
-        if let Some(file_name) = entry.file_name().to_str() {
+        let entry_path: PathBuf = entry.path().try_into()?;
+
+        if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
-                existing_zip_files.push(entry.path().try_into()?);
+                // Wrap the `from_zipfile` call in `catch_unwind` to prevent panic propagation
+                let result = panic::catch_unwind(|| Collection::from_zipfile(&entry_path));
+                match result {
+                    Ok(Ok(collection)) => {
+                        // Successfully loaded the collection, push to `collections`
+                        collections.push(collection);
 
-                // Extract the batch number (if it exists) and update the highest_batch
-                if let Some(batch_str) = captures.get(1) {
-                    if let Ok(batch_num) = batch_str.as_str().parse::<usize>() {
-                        highest_batch = max(highest_batch, batch_num);
+                        // Extract the batch number (if it exists) and update the highest_batch
+                        if let Some(batch_str) = captures.get(1) {
+                            if let Ok(batch_num) = batch_str.as_str().parse::<usize>() {
+                                highest_batch = max(highest_batch, batch_num);
+                            }
+                        }
+                    }
+                    Ok(Err(e)) => {
+                        // Handle the case where `from_zipfile` returned an error
+                        eprintln!(
+                            "Warning: Failed to load zip file '{}'. Error: {:?}",
+                            entry_path, e
+                        );
+                        continue; // Skip the file and continue
+                    }
+                    Err(_) => {
+                        // The code inside `from_zipfile` panicked
+                        eprintln!("Warning: Invalid zip file '{}'; skipping.", entry_path);
+                        continue; // Skip the file and continue
                     }
                 }
             }
         }
     }
-
-    // Sort the files (optional)
-    existing_zip_files.sort();
-
-    // Return both the existing files and the highest batch number
-    Ok((existing_zip_files, highest_batch))
+    // Return the loaded MultiCollection and the max batch index, even if no collections were found
+    Ok((MultiCollection::new(collections), highest_batch))
 }
 
 /// create zip file depending on batch size and index.
@@ -835,22 +853,20 @@ pub async fn gbsketch(
             bail!("Output must be a zip file.");
         }
         // find and read any existing sigs
-        let (existing_batches, max_existing_batch_index) =
-            find_existing_zip_batches(&outpath).await?;
+        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
-        if !existing_batches.is_empty() {
-            let existing_sigs = MultiCollection::from_zipfiles(&existing_batches)?;
+        if !existing_sigs.is_empty() {
             name_params_map = existing_sigs.build_params_hashmap();
 
             batch_index = max_existing_batch_index + 1;
             eprintln!(
-                "Found {} existing zip batch(es). Starting new sig writing at batch {}",
+                "Found {} existing valid zip batch(es). Starting new sig writing at batch {}",
                 max_existing_batch_index, batch_index
             );
             filter = true;
         } else {
             // No existing batches, skipping signature filtering
-            eprintln!("No existing signature batches found; building all signatures.");
+            eprintln!("No valid existing signature batches found; building all signatures.");
         }
     }
 
@@ -1069,11 +1085,9 @@ pub async fn urlsketch(
             bail!("Output must be a zip file.");
         }
         // find and read any existing sigs
-        let (existing_batches, max_existing_batch_index) =
-            find_existing_zip_batches(&outpath).await?;
+        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
-        if !existing_batches.is_empty() {
-            let existing_sigs = MultiCollection::from_zipfiles(&existing_batches)?;
+        if !existing_sigs.is_empty() {
             name_params_map = existing_sigs.build_params_hashmap();
 
             batch_index = max_existing_batch_index + 1;

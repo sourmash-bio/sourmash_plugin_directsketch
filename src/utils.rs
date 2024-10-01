@@ -1,9 +1,8 @@
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, Context, Result};
 use async_zip::base::write::ZipFileWriter;
 use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
 use camino::Utf8PathBuf;
 use chrono::Utc;
-use futures::stream::{self, Stream, StreamExt};
 use getset::{Getters, Setters};
 use needletail::parser::SequenceRecord;
 use needletail::{parse_fastx_file, parse_fastx_reader};
@@ -11,7 +10,6 @@ use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
 use sourmash::collection::Collection;
-use sourmash::encodings::Idx;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
@@ -879,47 +877,12 @@ pub struct MultiCollection {
 }
 
 impl MultiCollection {
-    fn new(collections: Vec<Collection>) -> Self {
+    pub fn new(collections: Vec<Collection>) -> Self {
         Self { collections }
     }
 
-    pub fn from_zipfile(sigpath: &Utf8PathBuf) -> Result<Self> {
-        match Collection::from_zipfile(sigpath) {
-            Ok(collection) => Ok(MultiCollection::new(vec![collection])),
-            Err(_) => bail!("failed to load zipfile: '{}'", sigpath),
-        }
-    }
-
-    // Load from multiple zip files
-    pub fn from_zipfiles(sigpaths: &[Utf8PathBuf]) -> Result<Self> {
-        let mut collections = Vec::new();
-
-        for sigpath in sigpaths {
-            match Collection::from_zipfile(sigpath) {
-                Ok(collection) => collections.push(collection),
-                Err(_) => bail!("failed to load zipfile: '{}'", sigpath),
-            }
-        }
-
-        Ok(MultiCollection::new(collections))
-    }
-
-    pub fn stream_iter(&self) -> impl Stream<Item = (&Collection, Idx, &Record)> + '_ {
-        stream::iter(&self.collections).flat_map(|collection| {
-            stream::iter(
-                collection
-                    .iter()
-                    .map(move |(idx, record)| (collection, idx, record)),
-            )
-        })
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = (&Collection, Idx, &Record)> + '_ {
-        self.collections.iter().flat_map(|collection| {
-            collection
-                .iter()
-                .map(move |(idx, record)| (collection, idx, record))
-        })
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
     }
 
     pub fn build_params_hashmap(&self) -> HashMap<String, HashSet<u64>> {
