@@ -1142,7 +1142,10 @@ mod tests {
         filename.push("tests/test-data/GCA_000961135.2.sig.zip");
         let path = filename.clone();
 
-        let mc = MultiCollection::from_zipfiles(&[path]).unwrap();
+        let mut collections = Vec::new();
+        let coll = Collection::from_zipfile(&path).unwrap();
+        collections.push(coll);
+        let mc = MultiCollection::new(collections);
 
         //  Call build_params_hashmap
         let name_params_map = mc.build_params_hashmap();
