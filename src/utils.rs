@@ -318,6 +318,12 @@ impl Hash for Params {
 }
 
 impl Params {
+    pub fn calculate_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher); // Use the Hash trait implementation
+        hasher.finish() // Return the final u64 hash value
+    }
+
     pub fn from_record(record: &Record) -> Self {
         let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
 
@@ -333,19 +339,6 @@ impl Params {
             is_dna: moltype.dna(),
         }
     }
-}
-
-pub fn build_params_hashset_from_records(records: &[&Record]) -> HashSet<u64> {
-    records
-        .iter()
-        .map(|record| {
-            let params = Params::from_record(record);
-            // Create a hasher to hash the Params into a u64
-            let mut hasher = DefaultHasher::new();
-            params.hash(&mut hasher); // Hash the Params struct
-            hasher.finish() // Get the hashed value (u64)
-        })
-        .collect()
 }
 
 #[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
@@ -498,6 +491,24 @@ impl BuildManifest {
             .map_err(|e| anyhow!("Error writing manifest to zip: {}", e))?;
 
         Ok(())
+    }
+}
+
+impl<'a> IntoIterator for &'a BuildManifest {
+    type Item = &'a BuildRecord;
+    type IntoIter = std::slice::Iter<'a, BuildRecord>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.records.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BuildManifest {
+    type Item = &'a mut BuildRecord;
+    type IntoIter = std::slice::IterMut<'a, BuildRecord>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.records.iter_mut()
     }
 }
 
@@ -874,13 +885,13 @@ pub struct MultiCollection {
 }
 
 impl MultiCollection {
-    fn new(collections: Vec<Collection>, contains_revindex: bool) -> Self {
+    fn new(collections: Vec<Collection>) -> Self {
         Self { collections }
     }
 
     pub fn from_zipfile(sigpath: &Utf8PathBuf) -> Result<Self> {
         match Collection::from_zipfile(sigpath) {
-            Ok(collection) => Ok(MultiCollection::new(vec![collection], false)),
+            Ok(collection) => Ok(MultiCollection::new(vec![collection])),
             Err(_) => bail!("failed to load zipfile: '{}'", sigpath),
         }
     }
@@ -896,7 +907,7 @@ impl MultiCollection {
             }
         }
 
-        Ok(MultiCollection::new(collections, false))
+        Ok(MultiCollection::new(collections))
     }
 
     pub fn stream_iter(&self) -> impl Stream<Item = (&Collection, Idx, &Record)> + '_ {
@@ -915,5 +926,320 @@ impl MultiCollection {
                 .iter()
                 .map(move |(idx, record)| (collection, idx, record))
         })
+    }
+
+    pub fn build_params_hashmap(&self) -> HashMap<String, HashSet<u64>> {
+        let mut name_params_map = HashMap::new();
+
+        // Iterate over all collections in MultiCollection
+        for collection in &self.collections {
+            // Iterate over all records in the current collection
+            for (_, record) in collection.iter() {
+                // Get the record's name or fasta filename
+                let record_name = record.name().clone();
+
+                // Calculate the hash of the Params for the current record
+                let params_hash = Params::from_record(record).calculate_hash();
+
+                // If the name is already in the HashMap, extend the existing HashSet
+                // Otherwise, create a new HashSet and insert the hashed Params
+                name_params_map
+                    .entry(record_name)
+                    .or_insert_with(HashSet::new) // Create a new HashSet if the key doesn't exist
+                    .insert(params_hash); // Insert the hashed Params into the HashSet
+            }
+        }
+
+        name_params_map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_same_params_produce_same_hash() {
+        let params1 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let hash1 = params1.calculate_hash();
+        let hash2 = params2.calculate_hash();
+
+        // Check that the hash for two identical Params is the same
+        assert_eq!(hash1, hash2, "Hashes for identical Params should be equal");
+    }
+
+    #[test]
+    fn test_different_params_produce_different_hashes() {
+        let params1 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = Params {
+            ksize: 21, // Changed ksize
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let hash1 = params1.calculate_hash();
+        let hash2 = params2.calculate_hash();
+
+        // Check that the hash for different Params is different
+        assert_ne!(
+            hash1, hash2,
+            "Hashes for different Params should not be equal"
+        );
+    }
+
+    #[test]
+    fn test_consistent_hashing_across_multiple_calls() {
+        let params = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let hash1 = params.calculate_hash();
+        let hash2 = params.calculate_hash();
+
+        // Check that calling the hash function multiple times returns the same result
+        assert_eq!(
+            hash1, hash2,
+            "Hashes for the same Params should be consistent across multiple calls"
+        );
+    }
+
+    #[test]
+    fn test_params_generated_from_record() {
+        // load signature + build record
+        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        filename.push("tests/test-data/GCA_000175535.1.sig.gz");
+        let path = filename.clone();
+
+        let file = std::fs::File::open(filename).unwrap();
+        let mut reader = std::io::BufReader::new(file);
+        let sigs = Signature::load_signatures(
+            &mut reader,
+            Some(31),
+            Some("DNA".try_into().unwrap()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(sigs.len(), 1);
+
+        let sig = sigs.get(0).unwrap();
+        let record = Record::from_sig(sig, path.as_str());
+
+        // create the expected Params based on the Record data
+        let expected_params = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        // // Generate the Params from the Record using the from_record method
+        let generated_params = Params::from_record(&record[0]);
+
+        // // Assert that the generated Params match the expected Params
+        assert_eq!(
+            generated_params, expected_params,
+            "Generated Params did not match the expected Params"
+        );
+
+        // // Calculate the hash for the expected Params
+        let expected_hash = expected_params.calculate_hash();
+
+        // // Calculate the hash for the generated Params
+        let generated_hash = generated_params.calculate_hash();
+
+        // // Assert that the hash for the generated Params matches the expected Params hash
+        assert_eq!(
+            generated_hash, expected_hash,
+            "Hash of generated Params did not match the hash of expected Params"
+        );
+    }
+
+    #[test]
+    fn test_filter_removes_matching_params() {
+        let params1 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = Params {
+            ksize: 21,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params3 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 2000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params_list = [params1.clone(), params2.clone(), params3.clone()];
+        let mut build_collection = BuildCollection::from_params(&params_list, "DNA");
+
+        let mut params_set = HashSet::new();
+        params_set.insert(params1.calculate_hash());
+        params_set.insert(params3.calculate_hash());
+
+        // Call the filter method
+        build_collection.filter(&params_set);
+
+        // Check that the records and signatures with matching params are removed
+        assert_eq!(
+            build_collection.manifest.records.len(),
+            1,
+            "Only one record should remain after filtering"
+        );
+        assert_eq!(
+            build_collection.sigs.len(),
+            1,
+            "Only one signature should remain after filtering"
+        );
+
+        // Check that the remaining record is the one with hashed_params = 456
+        let h2 = params2.calculate_hash();
+        assert_eq!(
+            build_collection.manifest.records[0].hashed_params, h2,
+            "The remaining record should have hashed_params {}",
+            h2
+        );
+    }
+
+    #[test]
+    fn test_build_params_hashmap() {
+        // read in zipfiles to build a MultiCollection
+        // load signature + build record
+        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        filename.push("tests/test-data/GCA_000961135.2.sig.zip");
+        let path = filename.clone();
+
+        let mc = MultiCollection::from_zipfiles(&[path]).unwrap();
+
+        //  Call build_params_hashmap
+        let name_params_map = mc.build_params_hashmap();
+
+        // Check that the HashMap contains the correct names
+        assert_eq!(
+            name_params_map.len(),
+            1,
+            "There should be 1 unique names in the map"
+        );
+
+        let mut hashed_params = Vec::new();
+        for (name, params_set) in name_params_map.iter() {
+            eprintln!("Name: {}", name);
+            for param_hash in params_set {
+                eprintln!("  Param Hash: {}", param_hash);
+                hashed_params.push(param_hash);
+            }
+        }
+
+        let expected_params1 = Params {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let expected_params2 = Params {
+            ksize: 21,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let expected_hash1 = expected_params1.calculate_hash();
+        let expected_hash2 = expected_params2.calculate_hash();
+
+        assert!(
+            hashed_params.contains(&&expected_hash1),
+            "Expected hash1 should be in the hashed_params"
+        );
+        assert!(
+            hashed_params.contains(&&expected_hash2),
+            "Expected hash2 should be in the hashed_params"
+        );
     }
 }

@@ -17,9 +17,9 @@ use tokio_util::compat::Compat;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    build_params_hashset_from_records, load_accession_info, load_gbassembly_info, parse_params_str,
-    AccessionData, BuildCollection, BuildManifest, GBAssemblyData, GenBankFileType, InputMolType,
-    MultiBuildCollection, MultiCollection,
+    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
+    BuildManifest, GBAssemblyData, GenBankFileType, InputMolType, MultiBuildCollection,
+    MultiCollection,
 };
 use reqwest::Url;
 
@@ -844,24 +844,17 @@ pub async fn gbsketch(
         // Check if there are any existing batches to process
         if !existing_batches.is_empty() {
             let existing_sigs = MultiCollection::from_zipfiles(&existing_batches)?;
-
-            // Iterate through existing sigs and produce HashMap of fasta filename or name:: params hashsets
-            for (_collection, _idx, record) in existing_sigs.iter() {
-                // Get the record's name or fasta filename
-                let record_name = record.name().clone();
-
-                // Build the params hashset for this record
-                let params_hashset = build_params_hashset_from_records(&[record]);
-
-                // Insert into the HashMap
-                name_params_map.insert(record_name, params_hashset);
-            }
+            name_params_map = existing_sigs.build_params_hashmap();
 
             batch_index = max_existing_batch_index + 1;
+            eprintln!(
+                "Found {} existing zip batches. Starting new sig writing at batch {}",
+                max_existing_batch_index, batch_index
+            );
             filter = true;
         } else {
             // No existing batches, skipping signature filtering
-            eprintln!("No existing signature batches found, skipping filter step.");
+            eprintln!("No existing signature batches found; building all signatures.");
         }
     }
 
@@ -963,7 +956,6 @@ pub async fn gbsketch(
         // filter template sigs based on existing sigs
         if filter {
             if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
-                eprintln!("filtering!");
                 // If the key exists, filter template sigs
                 dna_sigs.filter(&existing_paramset);
                 prot_sigs.filter(&existing_paramset);
