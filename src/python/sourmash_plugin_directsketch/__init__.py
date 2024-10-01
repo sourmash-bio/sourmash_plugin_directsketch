@@ -47,7 +47,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         super().__init__(p)
         p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
         p.add_argument('-o', '--output', default=None,
-                       help='output zip file for the signatures')
+                       help="output zip file for the signatures. Must end with '.zip'")
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
         p.add_argument('--batch-size', type=non_negative_int, default = 0,

@@ -104,7 +104,8 @@ summary of sketches:
 If you're building large databases (over 20k files), we highly recommend you use batched zipfiles to facilitate restart.
 If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch` will have to re-download and
 re-sketch all files. If you instead set a number of accessions using `--batch-size`, e.g. 10000, then `gbsketch` can load any
-batched zips that finished writing, and avoid re-generating those signatures.
+batched zips that finished writing, and avoid re-generating those signatures. Note that batches will use the `--output` file
+to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
 
 
 Full Usage:
@@ -176,7 +177,8 @@ sourmash scripts urlsketch tests/test-data/acc-url.csv -o test-urlsketch.zip -f 
 If you're building large databases (over 20k files), we highly recommend you use batched zipfiles to facilitate restart.
 If you encounter unexpected failures and are using a single zipfile output (default), `urlsketch` will have to re-download and
 re-sketch all files. If you instead set a number of accessions using `--batch-size`, e.g. 10000, then `urlsketch` can load any
-batched zips that finished writing, and avoid re-generating those signatures.
+batched zips that finished writing, and avoid re-generating those signatures. Note that batches will use the `--output` file
+to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
 
 Full Usage:
 ```
