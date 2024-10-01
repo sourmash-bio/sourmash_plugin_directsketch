@@ -825,7 +825,6 @@ pub async fn gbsketch(
     batch_size: u32,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    // if sig output provided but doesn't end in zip, bail
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
     let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
@@ -1060,16 +1059,38 @@ pub async fn urlsketch(
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
-    // if sig output provided but doesn't end in zip, bail
     let batch_size = batch_size as usize;
+    let mut batch_index = 1;
+    let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut filter = false;
     if let Some(ref output_sigs) = output_sigs {
-        if Path::new(&output_sigs)
-            .extension()
-            .map_or(true, |ext| ext != "zip")
-        {
+        // Create outpath from output_sigs
+        let outpath = PathBuf::from(output_sigs);
+
+        // Check if the extension is "zip"
+        if outpath.extension().map_or(true, |ext| ext != "zip") {
             bail!("Output must be a zip file.");
         }
+        // find and read any existing sigs
+        let (existing_batches, max_existing_batch_index) =
+            find_existing_zip_batches(&outpath).await?;
+        // Check if there are any existing batches to process
+        if !existing_batches.is_empty() {
+            let existing_sigs = MultiCollection::from_zipfiles(&existing_batches)?;
+            name_params_map = existing_sigs.build_params_hashmap();
+
+            batch_index = max_existing_batch_index + 1;
+            eprintln!(
+                "Found {} existing zip batches. Starting new sig writing at batch {}",
+                max_existing_batch_index, batch_index
+            );
+            filter = true;
+        } else {
+            // No existing batches, skipping signature filtering
+            eprintln!("No existing signature batches found; building all signatures.");
+        }
     }
+
     // set up fasta download path
     let download_path = PathBuf::from(fasta_location);
     if !download_path.exists() {
@@ -1087,7 +1108,6 @@ pub async fn urlsketch(
     // Set up collector/writing tasks
     let mut handles = Vec::new();
 
-    let batch_index = 1;
     let sig_handle = zipwriter_handle(
         recv_sigs,
         output_sigs,
@@ -1168,6 +1188,18 @@ pub async fn urlsketch(
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
+        let mut dna_sigs = dna_template_collection.clone();
+        let mut prot_sigs = prot_template_collection.clone();
+
+        // filter template sigs based on existing sigs
+        if filter {
+            if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
+                // If the key exists, filter template sigs
+                dna_sigs.filter(&existing_paramset);
+                prot_sigs.filter(&existing_paramset);
+            }
+        }
+
         let semaphore_clone = Arc::clone(&semaphore);
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();
@@ -1175,9 +1207,6 @@ pub async fn urlsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-
-        let mut dna_sigs = dna_template_collection.clone();
-        let mut prot_sigs = prot_template_collection.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
