@@ -607,22 +607,22 @@ def test_gbsketch_simple_batched(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
 
-    idx = sourmash.load_file_as_index(out1)
-    sigs = list(idx.signatures())
-    assert len(sigs) == 1
-    for sig in sigs:
-        assert sig.name == ss1.name
-        assert sig.md5sum() == ss1.md5sum()
-    
-    idx = sourmash.load_file_as_index(out2)
-    sigs = list(idx.signatures())
-    assert len(sigs) == 2
-    for sig in sigs:
-        assert sig.name == ss2.name
-        if sig.minhash.moltype == 'DNA':
-            assert sig.md5sum() == ss2.md5sum()
-        else:
-            assert sig.md5sum() == ss3.md5sum()
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+        (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c of how it's written in acc.csv
+    }
+
+    # Collect the actual signature information from all the output files
+    all_siginfo = set()
+    for out_file in [out1, out2]:
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found (ignoring order)
+    assert all_siginfo == expected_siginfo
 
 
 def test_gbsketch_simple_batch_restart(runtmp, capfd):
@@ -662,7 +662,7 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
 
-    # we created this one with sig cat
+    # # we created this one with sig cat
     idx = sourmash.load_file_as_index(out1)
     sigs = list(idx.signatures())
     assert len(sigs) == 2
@@ -670,18 +670,19 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
         assert sig.name == ss2.name
         assert ss2.md5sum() in [ss2.md5sum(), ss3.md5sum()]
 
-    # these were created with gbsketch
-    idx = sourmash.load_file_as_index(out2)
-    sigs = list(idx.signatures())
-    assert len(sigs) == 1
-    for sig in sigs:
-        assert sig.name == ss1.name
-        assert sig.md5sum() == ss1.md5sum()
+    # # these were created with gbsketch
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+    }
 
-    idx = sourmash.load_file_as_index(out3)
-    sigs = list(idx.signatures())
-    assert len(sigs) == 1
-    for sig in sigs:
-        assert sig.name == ss4.name
-        assert sig.md5sum() == ss4.md5sum()
-        assert sig.minhash.moltype == 'protein'
+    # Collect actual signature information from gbsketch zip batches
+    all_siginfo = set()
+    for out_file in [out2, out3]:
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found (ignoring order)
+    assert all_siginfo == expected_siginfo
