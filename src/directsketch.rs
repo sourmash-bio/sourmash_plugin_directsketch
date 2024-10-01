@@ -6,7 +6,6 @@ use reqwest::Client;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
@@ -954,8 +953,8 @@ pub async fn gbsketch(
         if filter {
             if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter(&existing_paramset);
-                prot_sigs.filter(&existing_paramset);
+                dna_sigs.filter(existing_paramset);
+                prot_sigs.filter(existing_paramset);
             }
         }
 
@@ -1193,8 +1192,8 @@ pub async fn urlsketch(
         if filter {
             if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter(&existing_paramset);
-                prot_sigs.filter(&existing_paramset);
+                dna_sigs.filter(existing_paramset);
+                prot_sigs.filter(existing_paramset);
             }
         }
 

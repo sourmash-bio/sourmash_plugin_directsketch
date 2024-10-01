@@ -22,7 +22,6 @@ use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
 use tokio::fs::File;
 use tokio_util::compat::Compat;
-// use rayon::prelude::*;
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -330,8 +329,8 @@ impl Params {
         Params {
             ksize: record.ksize(),
             track_abundance: record.with_abundance(),
-            num: record.num().clone(),
-            scaled: record.scaled().clone(),
+            num: *record.num(),
+            scaled: *record.scaled(),
             seed: 42,
             is_protein: moltype.protein(),
             is_dayhoff: moltype.dayhoff(),
@@ -512,7 +511,7 @@ impl<'a> IntoIterator for &'a mut BuildManifest {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
@@ -605,11 +604,6 @@ impl BuildCollection {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 
-    // Parallel version of iter_mut using rayon's par_iter_mut
-    // pub fn par_iter_mut(&mut self) -> impl ParallelIterator<Item = (&mut BuildRecord, &mut Signature)> {
-    //     self.manifest.records.par_iter_mut().zip(self.sigs.par_iter_mut())
-    // }
-
     pub fn build_sigs_from_data(
         &mut self,
         data: Vec<u8>,
@@ -700,12 +694,12 @@ impl BuildCollection {
         for (record, sig) in self.iter_mut() {
             // update signature name, filename
             sig.set_name(name.as_str());
-            sig.set_filename(&filename.as_str());
+            sig.set_filename(filename.as_str());
 
             // update record: set name, filename, md5sum, n_hashes
             record.set_name(Some(name.clone()));
             record.set_filename(Some(filename.clone()));
-            record.set_md5(Some(sig.md5sum().into()));
+            record.set_md5(Some(sig.md5sum()));
             record.set_md5short(Some(sig.md5sum()[0..8].into()));
             record.set_n_hashes(Some(sig.size()));
 
