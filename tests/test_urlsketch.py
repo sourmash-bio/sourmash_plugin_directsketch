@@ -582,3 +582,17 @@ def test_urlsketch_simple_batch_restart(runtmp, capfd):
 
     # Verify that the loaded signatures match the expected signatures, order-independent
     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+
+
+def test_urlsketch_negative_batch_size(runtmp):
+    # negative int provided for batch size
+    acc_csv = runtmp.output('acc1.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_csv,
+                    '--failed', failed, '-r', '1', '--batch-size', '-2',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert "Batch size cannot be negative (input value: -2)" in runtmp.last_result.err

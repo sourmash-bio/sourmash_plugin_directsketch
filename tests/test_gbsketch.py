@@ -686,3 +686,17 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
 
     # Assert that all expected signatures are found (ignoring order)
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_negative_batch_size(runtmp):
+    # negative int provided for batch size
+    acc_csv = runtmp.output('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv,
+                    '--failed', failed, '-r', '1', '--batch-size', '-2',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert "Batch size cannot be negative (input value: -2)" in runtmp.last_result.err
