@@ -46,7 +46,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument('--batch-size', type=int, default = 0,
                        help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
                             This allows gbsketch to recover after unexpected failures, rather than needing to \
-                            restart sketching from scratch.')
+                            restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-k', '--keep-fasta', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
@@ -121,7 +121,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument('--batch-size', type=int, default = 0,
                        help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
                             This allows urlsketch to recover after unexpected failures, rather than needing to \
-                            restart sketching from scratch.')
+                            restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
         p.add_argument('-k', '--keep-fasta', '--keep-fastq', action='store_true',
