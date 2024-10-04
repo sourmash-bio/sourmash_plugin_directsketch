@@ -45,6 +45,13 @@ conda activate directsketch
 pip install sourmash_plugin_directsketch
 ```
 
+## Usage Considerations
+
+If you're building large databases (over 20k files), we highly recommend you use batched zipfiles to facilitate restart.
+If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a number of accessions using `--batch-size`, e.g. 10000, then `gbsketch`/`urlsketch` can load any
+batched zips that finished writing, and avoid re-generating those signatures. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
+
+
 ## Running the commands
 
 ## `gbsketch`
@@ -98,15 +105,6 @@ summary of sketches:
    2 sketches with dna, k=31, scaled=1000, abund      2823 total hashes
    1 sketches with protein, k=10, scaled=100, abund   5108 total hashes
 ```
-
-### Usage Considerations
-
-If you're building large databases (over 20k files), we highly recommend you use batched zipfiles to facilitate restart.
-If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch` will have to re-download and
-re-sketch all files. If you instead set a number of accessions using `--batch-size`, e.g. 10000, then `gbsketch` can load any
-batched zips that finished writing, and avoid re-generating those signatures. Note that batches will use the `--output` file
-to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
-
 
 Full Usage:
 
@@ -171,14 +169,6 @@ To run the test accession file at `tests/test-data/acc-url.csv`, run:
 ```
 sourmash scripts urlsketch tests/test-data/acc-url.csv -o test-urlsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
 ```
-
-### Usage Considerations
-
-If you're building large databases (over 20k files), we highly recommend you use batched zipfiles to facilitate restart.
-If you encounter unexpected failures and are using a single zipfile output (default), `urlsketch` will have to re-download and
-re-sketch all files. If you instead set a number of accessions using `--batch-size`, e.g. 10000, then `urlsketch` can load any
-batched zips that finished writing, and avoid re-generating those signatures. Note that batches will use the `--output` file
-to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
 
 Full Usage:
 ```
