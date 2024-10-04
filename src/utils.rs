@@ -886,7 +886,7 @@ impl MultiCollection {
         self.collections.is_empty()
     }
 
-    pub fn build_params_hashmap(&self) -> HashMap<String, HashSet<u64>> {
+    pub fn buildparams_hashmap(&self) -> HashMap<String, HashSet<u64>> {
         let mut name_params_map = HashMap::new();
 
         // Iterate over all collections in MultiCollection
@@ -1149,7 +1149,7 @@ mod tests {
         let mc = MultiCollection::new(collections);
 
         //  Call build_params_hashmap
-        let name_params_map = mc.build_params_hashmap();
+        let name_params_map = mc.buildparams_hashmap();
 
         // Check that the HashMap contains the correct names
         assert_eq!(
