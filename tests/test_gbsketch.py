@@ -2,6 +2,7 @@
 Tests for gbsketch
 """
 import os
+import csv
 import pytest
 
 import sourmash
@@ -578,15 +579,64 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
 
 
-def test_gbsketch_simple_batched(runtmp, capfd):
+def test_gbsketch_simple_batched_single(runtmp, capfd):
+    # make sure both sigs associated with same acc end up in same zip
+    acc_csv = get_test_data('acc.csv')
+    acc1 = runtmp.output('acc1.csv')
+    # open acc.csv with csv dictreader and keep accession= GCA_000961135.2 line
+    with open(acc_csv, 'r') as inF, open(acc1, 'w', newline='') as outF:
+        r = csv.DictReader(inF)
+        w = csv.DictWriter(outF, fieldnames=r.fieldnames)
+        w.writeheader()
+        for row in r:
+            if row['accession'] == "GCA_000961135.2":
+                w.writerow(row)
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000961135.2.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc1, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss1.name, ss2.md5sum(), ss2.minhash.moltype), # ss1 name b/c of how it's written in acc.csv
+    }
+
+    # Collect the actual signature information from all the output files
+    all_siginfo = set()
+    idx = sourmash.load_file_as_index(out1)
+    sigs = list(idx.signatures())
+    for sig in sigs:
+        all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found
+    assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
-    
+
     out1 = runtmp.output('simple.1.zip')
     out2 = runtmp.output('simple.2.zip')
-
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
