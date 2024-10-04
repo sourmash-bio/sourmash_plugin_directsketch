@@ -9,6 +9,7 @@ use needletail::{parse_fastx_file, parse_fastx_reader};
 use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
+use sourmash::collection::Collection;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
@@ -287,7 +288,7 @@ pub fn load_accession_info(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Params {
+pub struct BuildParams {
     pub ksize: u32,
     pub track_abundance: bool,
     pub num: u32,
@@ -299,7 +300,7 @@ pub struct Params {
     pub is_dna: bool,
 }
 
-impl Hash for Params {
+impl Hash for BuildParams {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ksize.hash(state);
         self.track_abundance.hash(state);
@@ -313,15 +314,21 @@ impl Hash for Params {
     }
 }
 
-impl Params {
+impl BuildParams {
+    pub fn calculate_hash(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher); // Use the Hash trait implementation
+        hasher.finish() // Return the final u64 hash value
+    }
+
     pub fn from_record(record: &Record) -> Self {
         let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
 
-        Params {
+        BuildParams {
             ksize: record.ksize(),
             track_abundance: record.with_abundance(),
-            num: record.num().clone(),
-            scaled: record.scaled().clone(),
+            num: *record.num(),
+            scaled: *record.scaled(),
             seed: 42,
             is_protein: moltype.protein(),
             is_dayhoff: moltype.dayhoff(),
@@ -385,7 +392,7 @@ where
 }
 
 impl BuildRecord {
-    pub fn from_params(param: &Params, input_moltype: &str) -> Self {
+    pub fn from_buildparams(param: &BuildParams, input_moltype: &str) -> Self {
         // Calculate the hash of Params
         let mut hasher = DefaultHasher::new();
         param.hash(&mut hasher);
@@ -484,7 +491,25 @@ impl BuildManifest {
     }
 }
 
-#[derive(Debug, Clone)]
+impl<'a> IntoIterator for &'a BuildManifest {
+    type Item = &'a BuildRecord;
+    type IntoIter = std::slice::Iter<'a, BuildRecord>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.records.iter()
+    }
+}
+
+impl<'a> IntoIterator for &'a mut BuildManifest {
+    type Item = &'a mut BuildRecord;
+    type IntoIter = std::slice::IterMut<'a, BuildRecord>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.records.iter_mut()
+    }
+}
+
+#[derive(Debug, Default, Clone)]
 pub struct BuildCollection {
     pub manifest: BuildManifest,
     pub sigs: Vec<Signature>,
@@ -506,7 +531,7 @@ impl BuildCollection {
         self.manifest.size()
     }
 
-    pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
+    pub fn from_buildparams(params: &[BuildParams], input_moltype: &str) -> Self {
         let mut collection = BuildCollection::new();
 
         for param in params.iter().cloned() {
@@ -516,7 +541,7 @@ impl BuildCollection {
         collection
     }
 
-    pub fn add_template_sig(&mut self, param: Params, input_moltype: &str) {
+    pub fn add_template_sig(&mut self, param: BuildParams, input_moltype: &str) {
         // Check the input_moltype against Params to decide if this should be added
         match input_moltype {
             "dna" | "DNA" if !param.is_dna => return, // Skip if it's not the correct moltype
@@ -546,7 +571,7 @@ impl BuildCollection {
         let sig = Signature::from_params(&cp);
 
         // Create the BuildRecord using from_param
-        let template_record = BuildRecord::from_params(&param, input_moltype);
+        let template_record = BuildRecord::from_buildparams(&param, input_moltype);
 
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
@@ -667,12 +692,12 @@ impl BuildCollection {
         for (record, sig) in self.iter_mut() {
             // update signature name, filename
             sig.set_name(name.as_str());
-            sig.set_filename(&filename.as_str());
+            sig.set_filename(filename.as_str());
 
             // update record: set name, filename, md5sum, n_hashes
             record.set_name(Some(name.clone()));
             record.set_filename(Some(filename.clone()));
-            record.set_md5(Some(sig.md5sum().into()));
+            record.set_md5(Some(sig.md5sum()));
             record.set_md5short(Some(sig.md5sum()[0..8].into()));
             record.set_n_hashes(Some(sig.size()));
 
@@ -768,8 +793,9 @@ impl MultiBuildCollection {
     }
 }
 
-pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
-    let mut unique_params: std::collections::HashSet<Params> = std::collections::HashSet::new();
+pub fn parse_params_str(params_strs: String) -> Result<Vec<BuildParams>, String> {
+    let mut unique_params: std::collections::HashSet<BuildParams> =
+        std::collections::HashSet::new();
 
     // split params_strs by _ and iterate over each param
     for p_str in params_strs.split('_').collect::<Vec<&str>>().iter() {
@@ -827,7 +853,7 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
         }
 
         for &k in &ksizes {
-            let param = Params {
+            let param = BuildParams {
                 ksize: k,
                 track_abundance,
                 num,
@@ -843,4 +869,320 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
     }
 
     Ok(unique_params.into_iter().collect())
+}
+
+// this should be replaced with branchwater's MultiCollection when it's ready
+#[derive(Clone)]
+pub struct MultiCollection {
+    collections: Vec<Collection>,
+}
+
+impl MultiCollection {
+    pub fn new(collections: Vec<Collection>) -> Self {
+        Self { collections }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.collections.is_empty()
+    }
+
+    pub fn buildparams_hashmap(&self) -> HashMap<String, HashSet<u64>> {
+        let mut name_params_map = HashMap::new();
+
+        // Iterate over all collections in MultiCollection
+        for collection in &self.collections {
+            // Iterate over all records in the current collection
+            for (_, record) in collection.iter() {
+                // Get the record's name or fasta filename
+                let record_name = record.name().clone();
+
+                // Calculate the hash of the Params for the current record
+                let params_hash = BuildParams::from_record(record).calculate_hash();
+
+                // If the name is already in the HashMap, extend the existing HashSet
+                // Otherwise, create a new HashSet and insert the hashed Params
+                name_params_map
+                    .entry(record_name)
+                    .or_insert_with(HashSet::new) // Create a new HashSet if the key doesn't exist
+                    .insert(params_hash); // Insert the hashed Params into the HashSet
+            }
+        }
+
+        name_params_map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_buildparams_consistent_hashing() {
+        let params1 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let hash1 = params1.calculate_hash();
+        let hash2 = params2.calculate_hash();
+        let hash3 = params2.calculate_hash();
+
+        // Check that the hash for two identical Params is the same
+        assert_eq!(hash1, hash2, "Hashes for identical Params should be equal");
+
+        assert_eq!(
+            hash2, hash3,
+            "Hashes for the same Params should be consistent across multiple calls"
+        );
+    }
+
+    #[test]
+    fn test_buildparams_hashing_different() {
+        let params1 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = BuildParams {
+            ksize: 21, // Changed ksize
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let hash1 = params1.calculate_hash();
+        let hash2 = params2.calculate_hash();
+
+        // Check that the hash for different Params is different
+        assert_ne!(
+            hash1, hash2,
+            "Hashes for different Params should not be equal"
+        );
+    }
+
+    #[test]
+    fn test_buildparams_generated_from_record() {
+        // load signature + build record
+        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        filename.push("tests/test-data/GCA_000175535.1.sig.gz");
+        let path = filename.clone();
+
+        let file = std::fs::File::open(filename).unwrap();
+        let mut reader = std::io::BufReader::new(file);
+        let sigs = Signature::load_signatures(
+            &mut reader,
+            Some(31),
+            Some("DNA".try_into().unwrap()),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(sigs.len(), 1);
+
+        let sig = sigs.get(0).unwrap();
+        let record = Record::from_sig(sig, path.as_str());
+
+        // create the expected Params based on the Record data
+        let expected_params = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        // // Generate the Params from the Record using the from_record method
+        let generated_params = BuildParams::from_record(&record[0]);
+
+        // // Assert that the generated Params match the expected Params
+        assert_eq!(
+            generated_params, expected_params,
+            "Generated Params did not match the expected Params"
+        );
+
+        // // Calculate the hash for the expected Params
+        let expected_hash = expected_params.calculate_hash();
+
+        // // Calculate the hash for the generated Params
+        let generated_hash = generated_params.calculate_hash();
+
+        // // Assert that the hash for the generated Params matches the expected Params hash
+        assert_eq!(
+            generated_hash, expected_hash,
+            "Hash of generated Params did not match the hash of expected Params"
+        );
+    }
+
+    #[test]
+    fn test_filter_removes_matching_buildparams() {
+        let params1 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params2 = BuildParams {
+            ksize: 21,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params3 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 2000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let params_list = [params1.clone(), params2.clone(), params3.clone()];
+        let mut build_collection = BuildCollection::from_buildparams(&params_list, "DNA");
+
+        let mut params_set = HashSet::new();
+        params_set.insert(params1.calculate_hash());
+        params_set.insert(params3.calculate_hash());
+
+        // Call the filter method
+        build_collection.filter(&params_set);
+
+        // Check that the records and signatures with matching params are removed
+        assert_eq!(
+            build_collection.manifest.records.len(),
+            1,
+            "Only one record should remain after filtering"
+        );
+        assert_eq!(
+            build_collection.sigs.len(),
+            1,
+            "Only one signature should remain after filtering"
+        );
+
+        // Check that the remaining record is the one with hashed_params = 456
+        let h2 = params2.calculate_hash();
+        assert_eq!(
+            build_collection.manifest.records[0].hashed_params, h2,
+            "The remaining record should have hashed_params {}",
+            h2
+        );
+    }
+
+    #[test]
+    fn test_buildparams_hashmap() {
+        // read in zipfiles to build a MultiCollection
+        // load signature + build record
+        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        filename.push("tests/test-data/GCA_000961135.2.sig.zip");
+        let path = filename.clone();
+
+        let mut collections = Vec::new();
+        let coll = Collection::from_zipfile(&path).unwrap();
+        collections.push(coll);
+        let mc = MultiCollection::new(collections);
+
+        //  Call build_params_hashmap
+        let name_params_map = mc.buildparams_hashmap();
+
+        // Check that the HashMap contains the correct names
+        assert_eq!(
+            name_params_map.len(),
+            1,
+            "There should be 1 unique names in the map"
+        );
+
+        let mut hashed_params = Vec::new();
+        for (name, params_set) in name_params_map.iter() {
+            eprintln!("Name: {}", name);
+            for param_hash in params_set {
+                eprintln!("  Param Hash: {}", param_hash);
+                hashed_params.push(param_hash);
+            }
+        }
+
+        let expected_params1 = BuildParams {
+            ksize: 31,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let expected_params2 = BuildParams {
+            ksize: 21,
+            track_abundance: true,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            is_protein: false,
+            is_dayhoff: false,
+            is_hp: false,
+            is_dna: true,
+        };
+
+        let expected_hash1 = expected_params1.calculate_hash();
+        let expected_hash2 = expected_params2.calculate_hash();
+
+        assert!(
+            hashed_params.contains(&&expected_hash1),
+            "Expected hash1 should be in the hashed_params"
+        );
+        assert!(
+            hashed_params.contains(&&expected_hash2),
+            "Expected hash2 should be in the hashed_params"
+        );
+    }
 }

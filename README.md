@@ -45,6 +45,11 @@ conda activate directsketch
 pip install sourmash_plugin_directsketch
 ```
 
+## Usage Considerations
+
+If you're building large databases (over 20k files), we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, e.g. 10000, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of total signatures included in each zip. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
+
+
 ## Running the commands
 
 ## `gbsketch`
@@ -76,7 +81,7 @@ For reference:
 To test `gbsketch`, you can download a csv file and run:
 ```
 curl -JLO https://raw.githubusercontent.com/sourmash-bio/sourmash_plugin_directsketch/main/tests/test-data/acc.csv
-sourmash scripts gbsketch acc.csv -o test-gbsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
+sourmash scripts gbsketch acc.csv -o test-gbsketch.zip -f out_fastas -k --failed test.failed.csv --checksum-fail test.checksum-failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
 ```
 To check that the `zip` was created properly, you can run:
 ```
@@ -102,7 +107,9 @@ summary of sketches:
 Full Usage:
 
 ```
-usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [-k] [--download-only] [--failed FAILED] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES] [-g | -m] input_csv
+usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] --failed FAILED --checksum-fail CHECKSUM_FAIL [-p PARAM_STRING] [-c CORES]
+                 [-r RETRY_TIMES] [-g | -m]
+                 input_csv
 
 download and sketch GenBank assembly datasets
 
@@ -117,9 +124,14 @@ options:
                         output zip file for the signatures
   -f FASTAS, --fastas FASTAS
                         Write fastas here
+  --batch-size BATCH_SIZE
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to
+                        restart sketching from scratch. Default: write all sigs to single zipfile.
   -k, --keep-fasta      write FASTA files in addition to sketching. Default: do not write FASTA files
   --download-only       just download genomes; do not sketch
   --failed FAILED       csv of failed accessions and download links (should be mostly protein).
+  --checksum-fail CHECKSUM_FAIL
+                        csv of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded
   -p PARAM_STRING, --param-string PARAM_STRING
                         parameter string for sketching (default: k=31,scaled=1000)
   -c CORES, --cores CORES
@@ -158,7 +170,9 @@ sourmash scripts urlsketch tests/test-data/acc-url.csv -o test-urlsketch.zip -f 
 
 Full Usage:
 ```
-usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [-k] [--download-only] [--failed FAILED] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES] input_csv
+usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [--batch-size BATCH_SIZE] [-f FASTAS] [-k] [--download-only] --failed FAILED [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES]
+                  [-r RETRY_TIMES]
+                  input_csv
 
 download and sketch GenBank assembly datasets
 
@@ -171,12 +185,17 @@ options:
   -d, --debug           provide debugging output
   -o OUTPUT, --output OUTPUT
                         output zip file for the signatures
+  --batch-size BATCH_SIZE
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows urlsketch to recover after unexpected failures, rather than needing to
+                        restart sketching from scratch. Default: write all sigs to single zipfile.
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   -k, --keep-fasta, --keep-fastq
                         write FASTA/Q files in addition to sketching. Default: do not write FASTA files
   --download-only       just download genomes; do not sketch
-  --failed FAILED       csv of failed accessions and download links (should be mostly protein).
+  --failed FAILED       csv of failed accessions and download links.
+  --checksum-fail CHECKSUM_FAIL
+                        csv of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).
   -p PARAM_STRING, --param-string PARAM_STRING
                         parameter string for sketching (default: k=31,scaled=1000)
   -c CORES, --cores CORES

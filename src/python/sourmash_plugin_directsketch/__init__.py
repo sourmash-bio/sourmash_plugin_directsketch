@@ -4,6 +4,7 @@ import sys
 from sourmash.logging import notify
 from sourmash.plugins import CommandLinePlugin
 import importlib.metadata
+import argparse
 
 from . import sourmash_plugin_directsketch
 
@@ -32,6 +33,12 @@ def set_thread_pool(user_cores):
     actual_tokio_cores = sourmash_plugin_directsketch.set_tokio_thread_pool(num_threads)
     return actual_tokio_cores
 
+def non_negative_int(value):
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"Batch size cannot be negative (input value: {value})")
+    return ivalue
+
 class Download_and_Sketch_Assemblies(CommandLinePlugin):
     command = 'gbsketch'
     description = 'download and sketch GenBank assembly datasets'
@@ -40,9 +47,13 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         super().__init__(p)
         p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
         p.add_argument('-o', '--output', default=None,
-                       help='output zip file for the signatures')
+                       help="output zip file for the signatures. Must end with '.zip'")
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
+        p.add_argument('--batch-size', type=non_negative_int, default = 0,
+                       help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
+                            This allows gbsketch to recover after unexpected failures, rather than needing to \
+                            restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-k', '--keep-fasta', action='store_true',
                        help="write FASTA files in addition to sketching. Default: do not write FASTA files")
         p.add_argument('--download-only', help='just download genomes; do not sketch', action='store_true')
@@ -92,6 +103,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.genomes_only,
                                                            args.proteomes_only,
                                                            args.download_only,
+                                                           args.batch_size,
                                                            args.output)
         
         if status == 0:
@@ -113,6 +125,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument('input_csv', help="a txt file or csv file containing accessions in the first column")
         p.add_argument('-o', '--output', default=None,
                        help='output zip file for the signatures')
+        p.add_argument('--batch-size', type=non_negative_int, default = 0,
+                       help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
+                            This allows urlsketch to recover after unexpected failures, rather than needing to \
+                            restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-f', '--fastas',
                        help='Write fastas here', default = '.')
         p.add_argument('-k', '--keep-fasta', '--keep-fastq', action='store_true',
@@ -159,6 +175,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                                                            args.fastas,
                                                            args.keep_fasta,
                                                            args.download_only,
+                                                           args.batch_size,
                                                            args.output,
                                                            args.checksum_fail)
         
