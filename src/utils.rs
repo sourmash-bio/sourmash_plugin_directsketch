@@ -288,7 +288,7 @@ pub fn load_accession_info(
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Params {
+pub struct BuildParams {
     pub ksize: u32,
     pub track_abundance: bool,
     pub num: u32,
@@ -300,7 +300,7 @@ pub struct Params {
     pub is_dna: bool,
 }
 
-impl Hash for Params {
+impl Hash for BuildParams {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ksize.hash(state);
         self.track_abundance.hash(state);
@@ -314,7 +314,7 @@ impl Hash for Params {
     }
 }
 
-impl Params {
+impl BuildParams {
     pub fn calculate_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.hash(&mut hasher); // Use the Hash trait implementation
@@ -324,7 +324,7 @@ impl Params {
     pub fn from_record(record: &Record) -> Self {
         let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
 
-        Params {
+        BuildParams {
             ksize: record.ksize(),
             track_abundance: record.with_abundance(),
             num: *record.num(),
@@ -392,7 +392,7 @@ where
 }
 
 impl BuildRecord {
-    pub fn from_params(param: &Params, input_moltype: &str) -> Self {
+    pub fn from_buildparams(param: &BuildParams, input_moltype: &str) -> Self {
         // Calculate the hash of Params
         let mut hasher = DefaultHasher::new();
         param.hash(&mut hasher);
@@ -531,7 +531,7 @@ impl BuildCollection {
         self.manifest.size()
     }
 
-    pub fn from_params(params: &[Params], input_moltype: &str) -> Self {
+    pub fn from_buildparams(params: &[BuildParams], input_moltype: &str) -> Self {
         let mut collection = BuildCollection::new();
 
         for param in params.iter().cloned() {
@@ -541,7 +541,7 @@ impl BuildCollection {
         collection
     }
 
-    pub fn add_template_sig(&mut self, param: Params, input_moltype: &str) {
+    pub fn add_template_sig(&mut self, param: BuildParams, input_moltype: &str) {
         // Check the input_moltype against Params to decide if this should be added
         match input_moltype {
             "dna" | "DNA" if !param.is_dna => return, // Skip if it's not the correct moltype
@@ -571,7 +571,7 @@ impl BuildCollection {
         let sig = Signature::from_params(&cp);
 
         // Create the BuildRecord using from_param
-        let template_record = BuildRecord::from_params(&param, input_moltype);
+        let template_record = BuildRecord::from_buildparams(&param, input_moltype);
 
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
@@ -793,8 +793,9 @@ impl MultiBuildCollection {
     }
 }
 
-pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
-    let mut unique_params: std::collections::HashSet<Params> = std::collections::HashSet::new();
+pub fn parse_params_str(params_strs: String) -> Result<Vec<BuildParams>, String> {
+    let mut unique_params: std::collections::HashSet<BuildParams> =
+        std::collections::HashSet::new();
 
     // split params_strs by _ and iterate over each param
     for p_str in params_strs.split('_').collect::<Vec<&str>>().iter() {
@@ -852,7 +853,7 @@ pub fn parse_params_str(params_strs: String) -> Result<Vec<Params>, String> {
         }
 
         for &k in &ksizes {
-            let param = Params {
+            let param = BuildParams {
                 ksize: k,
                 track_abundance,
                 num,
@@ -896,7 +897,7 @@ impl MultiCollection {
                 let record_name = record.name().clone();
 
                 // Calculate the hash of the Params for the current record
-                let params_hash = Params::from_record(record).calculate_hash();
+                let params_hash = BuildParams::from_record(record).calculate_hash();
 
                 // If the name is already in the HashMap, extend the existing HashSet
                 // Otherwise, create a new HashSet and insert the hashed Params
@@ -917,7 +918,7 @@ mod tests {
 
     #[test]
     fn test_same_params_produce_same_hash() {
-        let params1 = Params {
+        let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -929,7 +930,7 @@ mod tests {
             is_dna: true,
         };
 
-        let params2 = Params {
+        let params2 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -950,7 +951,7 @@ mod tests {
 
     #[test]
     fn test_different_params_produce_different_hashes() {
-        let params1 = Params {
+        let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -962,7 +963,7 @@ mod tests {
             is_dna: true,
         };
 
-        let params2 = Params {
+        let params2 = BuildParams {
             ksize: 21, // Changed ksize
             track_abundance: true,
             num: 0,
@@ -986,7 +987,7 @@ mod tests {
 
     #[test]
     fn test_consistent_hashing_across_multiple_calls() {
-        let params = Params {
+        let params = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -1031,7 +1032,7 @@ mod tests {
         let record = Record::from_sig(sig, path.as_str());
 
         // create the expected Params based on the Record data
-        let expected_params = Params {
+        let expected_params = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -1044,7 +1045,7 @@ mod tests {
         };
 
         // // Generate the Params from the Record using the from_record method
-        let generated_params = Params::from_record(&record[0]);
+        let generated_params = BuildParams::from_record(&record[0]);
 
         // // Assert that the generated Params match the expected Params
         assert_eq!(
@@ -1067,7 +1068,7 @@ mod tests {
 
     #[test]
     fn test_filter_removes_matching_params() {
-        let params1 = Params {
+        let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -1079,7 +1080,7 @@ mod tests {
             is_dna: true,
         };
 
-        let params2 = Params {
+        let params2 = BuildParams {
             ksize: 21,
             track_abundance: true,
             num: 0,
@@ -1091,7 +1092,7 @@ mod tests {
             is_dna: true,
         };
 
-        let params3 = Params {
+        let params3 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -1104,7 +1105,7 @@ mod tests {
         };
 
         let params_list = [params1.clone(), params2.clone(), params3.clone()];
-        let mut build_collection = BuildCollection::from_params(&params_list, "DNA");
+        let mut build_collection = BuildCollection::from_buildparams(&params_list, "DNA");
 
         let mut params_set = HashSet::new();
         params_set.insert(params1.calculate_hash());
@@ -1166,7 +1167,7 @@ mod tests {
             }
         }
 
-        let expected_params1 = Params {
+        let expected_params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
             num: 0,
@@ -1178,7 +1179,7 @@ mod tests {
             is_dna: true,
         };
 
-        let expected_params2 = Params {
+        let expected_params2 = BuildParams {
             ksize: 21,
             track_abundance: true,
             num: 0,

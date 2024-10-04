@@ -925,9 +925,9 @@ pub async fn gbsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
+    let dna_template_collection = BuildCollection::from_buildparams(&params_vec, "DNA");
     // prot will build protein, dayhoff, hp
-    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
+    let prot_template_collection = BuildCollection::from_buildparams(&params_vec, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
@@ -1164,8 +1164,8 @@ pub async fn urlsketch(
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = BuildCollection::from_params(&params_vec, "DNA");
-    let prot_template_collection = BuildCollection::from_params(&params_vec, "protein");
+    let dna_template_collection = BuildCollection::from_buildparams(&params_vec, "DNA");
+    let prot_template_collection = BuildCollection::from_buildparams(&params_vec, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;
