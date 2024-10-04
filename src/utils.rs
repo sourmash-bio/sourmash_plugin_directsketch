@@ -917,7 +917,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_same_params_produce_same_hash() {
+    fn test_buildparams_consistent_hashing() {
         let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
@@ -944,13 +944,19 @@ mod tests {
 
         let hash1 = params1.calculate_hash();
         let hash2 = params2.calculate_hash();
+        let hash3 = params2.calculate_hash();
 
         // Check that the hash for two identical Params is the same
         assert_eq!(hash1, hash2, "Hashes for identical Params should be equal");
+
+        assert_eq!(
+            hash2, hash3,
+            "Hashes for the same Params should be consistent across multiple calls"
+        );
     }
 
     #[test]
-    fn test_different_params_produce_different_hashes() {
+    fn test_buildparams_hashing_different() {
         let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
@@ -986,31 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn test_consistent_hashing_across_multiple_calls() {
-        let params = BuildParams {
-            ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
-        };
-
-        let hash1 = params.calculate_hash();
-        let hash2 = params.calculate_hash();
-
-        // Check that calling the hash function multiple times returns the same result
-        assert_eq!(
-            hash1, hash2,
-            "Hashes for the same Params should be consistent across multiple calls"
-        );
-    }
-
-    #[test]
-    fn test_params_generated_from_record() {
+    fn test_buildparams_generated_from_record() {
         // load signature + build record
         let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         filename.push("tests/test-data/GCA_000175535.1.sig.gz");
@@ -1067,7 +1049,7 @@ mod tests {
     }
 
     #[test]
-    fn test_filter_removes_matching_params() {
+    fn test_filter_removes_matching_buildparams() {
         let params1 = BuildParams {
             ksize: 31,
             track_abundance: true,
@@ -1136,7 +1118,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_params_hashmap() {
+    fn test_buildparams_hashmap() {
         // read in zipfiles to build a MultiCollection
         // load signature + build record
         let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
