@@ -18,9 +18,12 @@ use tokio_util::compat::Compat;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, parse_params_str, AccessionData, BuildCollection,
-    BuildManifest, GBAssemblyData, GenBankFileType, InputMolType, MultiBuildCollection,
-    MultiCollection,
+    load_accession_info, load_gbassembly_info, AccessionData, GBAssemblyData, GenBankFileType,
+    InputMolType, MultiCollection,
+};
+
+use crate::utils::buildutils::{
+    BuildCollection, BuildManifest, BuildParamsSet, MultiBuildCollection,
 };
 use reqwest::Url;
 
@@ -918,16 +921,17 @@ pub async fn gbsketch(
     }
 
     // parse param string into params_vec, print error if fail
-    let param_result = parse_params_str(param_str);
-    let params_vec = match param_result {
+    let param_result = BuildParamsSet::from_params_str(param_str);
+    let params_set = match param_result {
         Ok(params) => params,
         Err(e) => {
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = BuildCollection::from_buildparams(&params_vec, "DNA");
-    // prot will build protein, dayhoff, hp
-    let prot_template_collection = BuildCollection::from_buildparams(&params_vec, "protein");
+    // Use the BuildParamsSet to create template collections for DNA and protein
+    let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
+    // // prot will build protein, dayhoff, hp
+    let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
@@ -1157,15 +1161,16 @@ pub async fn urlsketch(
     }
 
     // parse param string into params_vec, print error if fail
-    let param_result = parse_params_str(param_str);
-    let params_vec = match param_result {
+    let param_result = BuildParamsSet::from_params_str(param_str);
+    let params_set = match param_result {
         Ok(params) => params,
         Err(e) => {
             bail!("Failed to parse params string: {}", e);
         }
     };
-    let dna_template_collection = BuildCollection::from_buildparams(&params_vec, "DNA");
-    let prot_template_collection = BuildCollection::from_buildparams(&params_vec, "protein");
+    // Use the BuildParamsSet to create template collections for DNA and protein
+    let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
+    let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;
