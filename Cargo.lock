@@ -1854,6 +1854,7 @@ checksum = "bceb57dc07c92cdae60f5b27b3fa92ecaaa42fe36c55e22dbfb0b44893e0b1f7"
 [[package]]
 name = "sourmash"
 version = "0.15.2"
+source = "git+https://github.com/sourmash-bio/sourmash.git?branch=sketch-upd#6a27c295ed7e4330eb26f4599254744bd8db6849"
 dependencies = [
  "az",
  "byteorder",
