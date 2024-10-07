@@ -818,3 +818,21 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
 
     # Assert that all expected signatures are found (ignoring order)
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_bad_param_str(runtmp, capfd):
+    # negative int provided for batch size
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('ch.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, "-o", output,
+                    '--failed', failed, '-r', '1', "--checksum-fail", ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,protein")
+        
+    captured = capfd.readouterr()
+    print(captured)
+
+    assert "Error: Failed to parse params string: Conflicting moltype settings in param string: 'protein' and another type" in captured.err

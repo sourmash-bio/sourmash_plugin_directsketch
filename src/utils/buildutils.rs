@@ -16,8 +16,11 @@ use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
+use std::num::ParseIntError;
+use std::str::FromStr;
 use tokio::fs::File;
 use tokio_util::compat::Compat;
 
@@ -93,10 +96,74 @@ impl BuildParams {
 }
 
 // helper functions for paramstr parsing
-fn parse_paramstr_value<T: std::str::FromStr>(value: &str, field: &str) -> Result<T, String> {
+
+// Helper function to parse and set a value, ensuring it's only set once if `allow_multiple` is false.
+// This function is constrained to types that can be parsed from strings and are integers.
+
+fn parse_paramstr_ksize(value: &str, field: &str) -> Result<u32, String> {
     value
         .parse()
-        .map_err(|_| format!("cannot parse {}='{}' as a number", field, value))
+        .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))
+}
+
+fn parse_paramstr_value_once<T>(
+    value: &str,
+    field: &str,
+    current: &mut Option<T>,
+    allow_multiple: bool,
+) -> Result<(), String>
+where
+    T: FromStr<Err = ParseIntError> + Display + Copy,
+{
+    let parsed_value = value
+        .parse::<T>()
+        .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))?;
+
+    if allow_multiple {
+        *current = Some(parsed_value);
+    } else if current.replace(parsed_value).is_some() {
+        return Err(format!("Conflicting values for '{}'", field));
+    }
+
+    Ok(())
+}
+
+fn parse_paramstr_moltype(item: &str, current: &mut Option<HashFunctions>) -> Result<(), String> {
+    let new_moltype = match item {
+        "protein" => HashFunctions::Murmur64Protein,
+        "dna" => HashFunctions::Murmur64Dna,
+        "dayhoff" => HashFunctions::Murmur64Dayhoff,
+        "hp" => HashFunctions::Murmur64Hp,
+        _ => return Err(format!("unknown moltype '{}'", item)),
+    };
+
+    // Check for conflicts and update the moltype.
+    if current.replace(new_moltype).is_some() {
+        return Err(format!(
+            "Conflicting moltype settings in param string: '{}' and another type",
+            item
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_paramstr_abund(item: &str, current: &mut Option<Abundance>) -> Result<(), String> {
+    let new_abundance = match item {
+        "abund" => Abundance::Abund,
+        "noabund" => Abundance::NoAbund,
+        _ => return Err(format!("unknown abundance setting '{}'", item)),
+    };
+
+    // Check for conflicts and update the abundance.
+    if current.replace(new_abundance).is_some() {
+        return Err(format!(
+            "Conflicting abundance settings in param string: '{}'",
+            item
+        ));
+    }
+
+    Ok(())
 }
 
 #[derive(Debug, Default)]
@@ -125,38 +192,70 @@ impl BuildParamsSet {
         for p_str in params_str.split('_') {
             let mut base_param = BuildParams::default();
             let mut ksizes = Vec::new();
+            let mut moltype: Option<HashFunctions> = None;
+            let mut abundance: Option<Abundance> = None;
+            let mut num: Option<u32> = None;
+            let mut scaled: Option<u64> = None;
+            let mut seed: Option<u32> = None;
 
             for item in p_str.split(',') {
                 match item {
                     _ if item.starts_with("k=") => {
-                        ksizes.push(parse_paramstr_value(&item[2..], "k")?)
+                        let k_value = parse_paramstr_ksize(&item[2..], "k")?;
+                        ksizes.push(k_value);
                     }
-
-                    // Set abundance using the Abundance enum
-                    "abund" => base_param.abundance = Abundance::Abund,
-                    "noabund" => base_param.abundance = Abundance::NoAbund,
-
+                    "abund" | "noabund" => {
+                        parse_paramstr_abund(item, &mut abundance)?;
+                    }
+                    "protein" | "dna" | "dayhoff" | "hp" => {
+                        parse_paramstr_moltype(item, &mut moltype)?;
+                    }
                     _ if item.starts_with("num=") => {
-                        base_param.num = parse_paramstr_value(&item[4..], "num")?
+                        parse_paramstr_value_once(&item[4..], "num", &mut num, false)?;
                     }
                     _ if item.starts_with("scaled=") => {
-                        base_param.scaled = parse_paramstr_value(&item[7..], "scaled")?
+                        parse_paramstr_value_once(&item[7..], "scaled", &mut scaled, false)?;
                     }
                     _ if item.starts_with("seed=") => {
-                        base_param.seed = parse_paramstr_value(&item[5..], "seed")?
+                        parse_paramstr_value_once(&item[5..], "seed", &mut seed, false)?;
                     }
-
-                    // Set moltype using the existing HashFunctions enum
-                    "protein" => base_param.moltype = HashFunctions::Murmur64Protein,
-                    "dna" => base_param.moltype = HashFunctions::Murmur64Dna,
-                    "dayhoff" => base_param.moltype = HashFunctions::Murmur64Dayhoff,
-                    "hp" => base_param.moltype = HashFunctions::Murmur64Hp,
-
                     _ => return Err(format!("unknown component '{}' in params string", item)),
                 }
             }
 
-            // Create a BuildParams for each ksize and add to the set
+            // Ensure that num and scaled are mutually exclusive unless num is 0.
+            if let (Some(n), Some(_)) = (num, scaled) {
+                if n != 0 {
+                    return Err("Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string".to_string());
+                }
+            }
+
+            // Apply the chosen moltype, abundance, num, scaled, and seed to the base_param.
+            if let Some(moltype) = moltype {
+                base_param.moltype = moltype;
+            }
+
+            if let Some(abundance) = abundance {
+                base_param.abundance = abundance;
+            }
+
+            if let Some(n) = num {
+                base_param.num = n;
+            }
+
+            if let Some(s) = scaled {
+                base_param.scaled = s;
+            }
+
+            if let Some(s) = seed {
+                base_param.seed = s;
+            }
+
+            // Create a BuildParams for each ksize and add to the set.
+            if ksizes.is_empty() {
+                ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
+            }
+
             for &k in &ksizes {
                 let mut param = base_param.clone();
                 param.ksize = k;
@@ -165,14 +264,6 @@ impl BuildParamsSet {
         }
 
         Ok(set)
-    }
-
-    pub fn get_params(&self) -> &HashSet<BuildParams> {
-        &self.params
-    }
-
-    pub fn into_vec(self) -> Vec<BuildParams> {
-        self.params.into_iter().collect()
     }
 }
 
@@ -815,5 +906,51 @@ mod tests {
             "The remaining record should have hashed_params {}",
             h2
         );
+    }
+
+    #[test]
+    fn test_valid_params_str() {
+        let params_str = "k=31,abund,dna";
+        let result = BuildParamsSet::from_params_str(params_str.to_string());
+
+        assert!(
+            result.is_ok(),
+            "Expected 'k=31,abund,dna' to be valid, but got an error: {:?}",
+            result
+        );
+        let params_set = result.unwrap();
+
+        // Ensure the BuildParamsSet contains the expected number of parameters.
+        assert_eq!(
+            params_set.iter().count(),
+            1,
+            "Expected 1 BuildParams in the set"
+        );
+
+        // Verify that the BuildParams has the correct settings.
+        let param = params_set.iter().next().unwrap();
+        assert_eq!(param.ksize, 31);
+        assert_eq!(param.abundance, Abundance::Abund);
+        assert_eq!(param.moltype, HashFunctions::Murmur64Dna);
+    }
+
+    #[test]
+    fn test_invalid_params_str_conflicting_moltypes() {
+        let params_str = "k=31,abund,dna,protein";
+        let result = BuildParamsSet::from_params_str(params_str.to_string());
+
+        assert!(
+            result.is_err(),
+            "Expected 'k=31,abund,dna,protein' to be invalid due to conflicting moltypes, but got a successful result"
+        );
+
+        // Check if the error message contains the expected conflict text.
+        if let Err(e) = result {
+            assert!(
+                e.contains("Conflicting moltype settings"),
+                "Expected error to contain 'Conflicting moltype settings', but got: {}",
+                e
+            );
+        }
     }
 }
