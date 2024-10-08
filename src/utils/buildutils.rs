@@ -16,8 +16,11 @@ use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
+use std::num::ParseIntError;
+use std::str::FromStr;
 use tokio::fs::File;
 use tokio_util::compat::Compat;
 
@@ -81,22 +84,31 @@ impl BuildParams {
             .map_err(|_| format!("cannot parse k='{}' as a valid integer", value))
     }
 
-    pub fn parse_num(value: &str) -> Result<u32, String> {
-        value
-            .parse::<u32>()
-            .map_err(|_| format!("cannot parse num='{}' as a valid integer", value))
-    }
+    // disallow repeated values for scaled, num, seed
+    pub fn parse_int_once<T>(
+        value: &str,
+        field: &str,
+        current: &mut Option<T>,
+    ) -> Result<(), String>
+    where
+        T: FromStr<Err = ParseIntError> + Display + Copy,
+    {
+        let parsed_value = value
+            .parse::<T>()
+            .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))?;
 
-    pub fn parse_scaled(value: &str) -> Result<u64, String> {
-        value
-            .parse::<u64>()
-            .map_err(|_| format!("cannot parse scaled='{}' as a valid integer", value))
-    }
+        // Check for conflicts; we don't allow multiple values for the same field.
+        if let Some(old_value) = *current {
+            return Err(format!(
+                "Conflicting values for '{}': {} and {}",
+                field, old_value, parsed_value
+            ));
+        }
 
-    pub fn parse_seed(value: &str) -> Result<u32, String> {
-        value
-            .parse::<u32>()
-            .map_err(|_| format!("cannot parse seed='{}' as a valid integer", value))
+        // Set the new value.
+        *current = Some(parsed_value);
+
+        Ok(())
     }
 
     pub fn parse_moltype(
@@ -164,13 +176,13 @@ impl BuildParams {
                     Self::parse_moltype(item, &mut moltype)?;
                 }
                 _ if item.starts_with("num=") => {
-                    num = Some(Self::parse_num(&item[4..])?);
+                    Self::parse_int_once(&item[4..], "num", &mut num)?;
                 }
                 _ if item.starts_with("scaled=") => {
-                    scaled = Some(Self::parse_scaled(&item[7..])?);
+                    Self::parse_int_once(&item[7..], "scaled", &mut scaled)?;
                 }
                 _ if item.starts_with("seed=") => {
-                    seed = Some(Self::parse_seed(&item[5..])?);
+                    Self::parse_int_once(&item[5..], "seed", &mut seed)?;
                 }
                 _ => return Err(format!("unknown component '{}' in params string", item)),
             }
@@ -1128,6 +1140,33 @@ mod tests {
         assert_eq!(
             result.unwrap_err(),
             "cannot parse seed='abc' as a valid integer"
+        );
+    }
+
+    #[test]
+    fn test_repeated_values() {
+        // repeated scaled
+        let result = BuildParamsSet::from_params_str("k=31,scaled=1,scaled=1000".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'scaled': 1 and 1000"
+        );
+
+        // repeated num
+        let result = BuildParamsSet::from_params_str("k=31,num=1,num=1000".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'num': 1 and 1000"
+        );
+
+        // repeated seed
+        let result = BuildParamsSet::from_params_str("k=31,seed=1,seed=42".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'seed': 1 and 42"
         );
     }
 
