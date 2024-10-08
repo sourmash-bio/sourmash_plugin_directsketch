@@ -252,6 +252,7 @@ impl BuildParamsSet {
                 ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
             }
 
+            // Create a BuildParams for each ksize and add to the set
             for &k in &ksizes {
                 let mut param = base_param.clone();
                 param.ksize = k;
@@ -260,6 +261,14 @@ impl BuildParamsSet {
         }
 
         Ok(set)
+    }
+
+    pub fn get_params(&self) -> &HashSet<BuildParams> {
+        &self.params
+    }
+
+    pub fn into_vec(self) -> Vec<BuildParams> {
+        self.params.into_iter().collect()
     }
 }
 
@@ -903,6 +912,7 @@ mod tests {
             h2
         );
     }
+
 
     #[test]
     fn test_valid_params_str() {
