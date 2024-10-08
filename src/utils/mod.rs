@@ -318,7 +318,6 @@ impl MultiCollection {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::buildutils::Abundance;
     use camino::Utf8PathBuf;
     #[test]
     fn test_buildparams_hashmap() {
@@ -353,13 +352,13 @@ mod tests {
         }
         let expected_params1 = BuildParams {
             ksize: 31,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
         let expected_params2 = BuildParams {
             ksize: 21,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
