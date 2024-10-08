@@ -913,7 +913,6 @@ mod tests {
         );
     }
 
-
     #[test]
     fn test_valid_params_str() {
         let params_str = "k=31,abund,dna";
