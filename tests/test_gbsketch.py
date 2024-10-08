@@ -835,4 +835,4 @@ def test_gbsketch_bad_param_str(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured)
 
-    assert "Error: Failed to parse params string: Conflicting moltype settings in param string: 'protein' and another type" in captured.err
+    assert "Failed to parse params string: Conflicting moltype settings in param string: 'DNA' and 'protein'" in captured.err

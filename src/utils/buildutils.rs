@@ -16,11 +16,8 @@ use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
-use std::num::ParseIntError;
-use std::str::FromStr;
 use tokio::fs::File;
 use tokio_util::compat::Compat;
 
@@ -77,74 +74,138 @@ impl BuildParams {
             moltype,
         }
     }
-}
 
-// helper functions for paramstr parsing
-fn parse_paramstr_ksize(value: &str, field: &str) -> Result<u32, String> {
-    value
-        .parse()
-        .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))
-}
-
-fn parse_paramstr_value_once<T>(
-    value: &str,
-    field: &str,
-    current: &mut Option<T>,
-    allow_multiple: bool,
-) -> Result<(), String>
-where
-    T: FromStr<Err = ParseIntError> + Display + Copy,
-{
-    let parsed_value = value
-        .parse::<T>()
-        .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))?;
-
-    if allow_multiple {
-        *current = Some(parsed_value);
-    } else if current.replace(parsed_value).is_some() {
-        return Err(format!("Conflicting values for '{}'", field));
+    pub fn parse_ksize(value: &str) -> Result<u32, String> {
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("cannot parse k='{}' as a valid integer", value))
     }
 
-    Ok(())
-}
-
-fn parse_paramstr_moltype(item: &str, current: &mut Option<HashFunctions>) -> Result<(), String> {
-    let new_moltype = match item {
-        "protein" => HashFunctions::Murmur64Protein,
-        "dna" => HashFunctions::Murmur64Dna,
-        "dayhoff" => HashFunctions::Murmur64Dayhoff,
-        "hp" => HashFunctions::Murmur64Hp,
-        _ => return Err(format!("unknown moltype '{}'", item)),
-    };
-
-    // Check for conflicts and update the moltype.
-    if current.replace(new_moltype).is_some() {
-        return Err(format!(
-            "Conflicting moltype settings in param string: '{}' and another type",
-            item
-        ));
+    pub fn parse_num(value: &str) -> Result<u32, String> {
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("cannot parse num='{}' as a valid integer", value))
     }
 
-    Ok(())
-}
+    pub fn parse_scaled(value: &str) -> Result<u64, String> {
+        value
+            .parse::<u64>()
+            .map_err(|_| format!("cannot parse scaled='{}' as a valid integer", value))
+    }
 
-fn parse_paramstr_abund(item: &str, current: &mut Option<bool>) -> Result<(), String> {
-    let new_abundance = item == "abund";
+    pub fn parse_seed(value: &str) -> Result<u32, String> {
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("cannot parse seed='{}' as a valid integer", value))
+    }
 
-    // Check for conflicts before updating the abundance.
-    if let Some(existing) = *current {
-        if existing != new_abundance {
-            return Err(format!(
-                "Conflicting abundance settings in param string: '{}'",
-                item
-            ));
+    pub fn parse_moltype(
+        item: &str,
+        current: &mut Option<HashFunctions>,
+    ) -> Result<HashFunctions, String> {
+        let new_moltype = match item {
+            "protein" => HashFunctions::Murmur64Protein,
+            "dna" => HashFunctions::Murmur64Dna,
+            "dayhoff" => HashFunctions::Murmur64Dayhoff,
+            "hp" => HashFunctions::Murmur64Hp,
+            _ => return Err(format!("unknown moltype '{}'", item)),
+        };
+
+        // Check for conflicts and update the moltype.
+        if let Some(existing) = current {
+            if *existing != new_moltype {
+                return Err(format!(
+                    "Conflicting moltype settings in param string: '{}' and '{}'",
+                    existing, new_moltype
+                ));
+            }
         }
+
+        // Update the current value.
+        *current = Some(new_moltype.clone());
+
+        Ok(new_moltype)
     }
 
-    // Update the current value.
-    *current = Some(new_abundance);
+    pub fn parse_abundance(item: &str, current: &mut Option<bool>) -> Result<(), String> {
+        let new_abundance = item == "abund";
 
-    Ok(())
+        if let Some(existing) = *current {
+            if existing != new_abundance {
+                return Err(format!(
+                    "Conflicting abundance settings in param string: '{}'",
+                    item
+                ));
+            }
+        }
+
+        *current = Some(new_abundance);
+        Ok(())
+    }
+
+    pub fn from_param_string(p_str: &str) -> Result<(Self, Vec<u32>), String> {
+        let mut base_param = BuildParams::default();
+        let mut ksizes = Vec::new();
+        let mut moltype: Option<HashFunctions> = None;
+        let mut track_abundance: Option<bool> = None;
+        let mut num: Option<u32> = None;
+        let mut scaled: Option<u64> = None;
+        let mut seed: Option<u32> = None;
+
+        for item in p_str.split(',') {
+            match item {
+                _ if item.starts_with("k=") => {
+                    ksizes.push(Self::parse_ksize(&item[2..])?);
+                }
+                "abund" | "noabund" => {
+                    Self::parse_abundance(item, &mut track_abundance)?;
+                }
+                "protein" | "dna" | "dayhoff" | "hp" => {
+                    Self::parse_moltype(item, &mut moltype)?;
+                }
+                _ if item.starts_with("num=") => {
+                    num = Some(Self::parse_num(&item[4..])?);
+                }
+                _ if item.starts_with("scaled=") => {
+                    scaled = Some(Self::parse_scaled(&item[7..])?);
+                }
+                _ if item.starts_with("seed=") => {
+                    seed = Some(Self::parse_seed(&item[5..])?);
+                }
+                _ => return Err(format!("unknown component '{}' in params string", item)),
+            }
+        }
+
+        // Ensure that num and scaled are mutually exclusive unless num is 0.
+        if let (Some(n), Some(_)) = (num, scaled) {
+            if n != 0 {
+                return Err("Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string".to_string());
+            }
+        }
+
+        // Apply parsed values to the base_param.
+        if let Some(moltype) = moltype {
+            base_param.moltype = moltype;
+        }
+        if let Some(track_abund) = track_abundance {
+            base_param.track_abundance = track_abund;
+        }
+        if let Some(n) = num {
+            base_param.num = n;
+        }
+        if let Some(s) = scaled {
+            base_param.scaled = s;
+        }
+        if let Some(s) = seed {
+            base_param.seed = s;
+        }
+
+        if ksizes.is_empty() {
+            ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
+        }
+
+        Ok((base_param, ksizes))
+    }
 }
 
 #[derive(Debug)]
@@ -180,7 +241,6 @@ impl BuildParamsSet {
     }
 
     pub fn from_params_str(params_str: String) -> Result<Self, String> {
-        // return an error if param string is empty or only whitespace
         if params_str.trim().is_empty() {
             return Err("Parameter string cannot be empty.".to_string());
         }
@@ -188,74 +248,9 @@ impl BuildParamsSet {
         let mut set = BuildParamsSet::new();
 
         for p_str in params_str.split('_') {
-            let mut base_param = BuildParams::default();
-            let mut ksizes = Vec::new();
-            let mut moltype: Option<HashFunctions> = None;
-            let mut track_abundance: Option<bool> = None;
-            let mut num: Option<u32> = None;
-            let mut scaled: Option<u64> = None;
-            let mut seed: Option<u32> = None;
+            let (base_param, ksizes) = BuildParams::from_param_string(p_str)?;
 
-            for item in p_str.split(',') {
-                match item {
-                    _ if item.starts_with("k=") => {
-                        let k_value = parse_paramstr_ksize(&item[2..], "k")?;
-                        ksizes.push(k_value);
-                    }
-                    "abund" | "noabund" => {
-                        parse_paramstr_abund(item, &mut track_abundance)?;
-                    }
-                    "protein" | "dna" | "dayhoff" | "hp" => {
-                        parse_paramstr_moltype(item, &mut moltype)?;
-                    }
-                    _ if item.starts_with("num=") => {
-                        parse_paramstr_value_once(&item[4..], "num", &mut num, false)?;
-                    }
-                    _ if item.starts_with("scaled=") => {
-                        parse_paramstr_value_once(&item[7..], "scaled", &mut scaled, false)?;
-                    }
-                    _ if item.starts_with("seed=") => {
-                        parse_paramstr_value_once(&item[5..], "seed", &mut seed, false)?;
-                    }
-                    _ => return Err(format!("unknown component '{}' in params string", item)),
-                }
-            }
-
-            // Ensure that num and scaled are mutually exclusive unless num is 0.
-            if let (Some(n), Some(_)) = (num, scaled) {
-                if n != 0 {
-                    return Err("Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string".to_string());
-                }
-            }
-
-            // Apply the chosen moltype, abundance, num, scaled, and seed to the base_param.
-            if let Some(moltype) = moltype {
-                base_param.moltype = moltype;
-            }
-
-            if let Some(track_abund) = track_abundance {
-                base_param.track_abundance = track_abund;
-            }
-
-            if let Some(n) = num {
-                base_param.num = n;
-            }
-
-            if let Some(s) = scaled {
-                base_param.scaled = s;
-            }
-
-            if let Some(s) = seed {
-                base_param.seed = s;
-            }
-
-            // Create a BuildParams for each ksize and add to the set.
-            if ksizes.is_empty() {
-                ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
-            }
-
-            // Create a BuildParams for each ksize and add to the set
-            for &k in &ksizes {
+            for k in ksizes {
                 let mut param = base_param.clone();
                 param.ksize = k;
                 set.insert(param);
