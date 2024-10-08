@@ -96,10 +96,6 @@ impl BuildParams {
 }
 
 // helper functions for paramstr parsing
-
-// Helper function to parse and set a value, ensuring it's only set once if `allow_multiple` is false.
-// This function is constrained to types that can be parsed from strings and are integers.
-
 fn parse_paramstr_ksize(value: &str, field: &str) -> Result<u32, String> {
     value
         .parse()
