@@ -1157,4 +1157,81 @@ mod tests {
         assert!(result.is_err(), "Expected an error but got Ok.");
         assert_eq!(result.unwrap_err(), "Parameter string cannot be empty.");
     }
+
+    #[test]
+    fn test_from_buildparams_abundance() {
+        let mut params = BuildParams::default();
+        params.track_abundance = true;
+
+        // Create a BuildRecord using from_buildparams.
+        let record = BuildRecord::from_buildparams(&params);
+
+        // Check thqat all fields are set correctly.
+        assert_eq!(record.ksize, 31, "Expected ksize to be 31.");
+        assert_eq!(record.moltype, "DNA", "Expected moltype to be 'DNA'.");
+        assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
+        assert_eq!(record.num, 0, "Expected num to be 0.");
+        assert!(record.with_abundance, "Expected with_abundance to be true.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_protein() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.scaled = 200;
+        params.moltype = HashFunctions::Murmur64Protein;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        // Check that all fields are set correctly.
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "protein", "Expected moltype to be protein.");
+        assert_eq!(record.scaled, 200, "Expected scaled to be 200.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_dayhoff() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.moltype = HashFunctions::Murmur64Dayhoff;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "dayhoff", "Expected moltype to be dayhoff.");
+        // didn't change default scaled here, so should still be 1000
+        assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_hp() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.moltype = HashFunctions::Murmur64Hp;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "hp", "Expected moltype to be hp.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
 }
