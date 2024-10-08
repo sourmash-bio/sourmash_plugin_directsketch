@@ -1,3 +1,5 @@
+//! sketching utilities
+
 use anyhow::{anyhow, Context, Result};
 use async_zip::base::write::ZipFileWriter;
 use async_zip::{Compression, ZipDateTime, ZipEntryBuilder};
@@ -6,311 +8,62 @@ use chrono::Utc;
 use getset::{Getters, Setters};
 use needletail::parser::SequenceRecord;
 use needletail::{parse_fastx_file, parse_fastx_reader};
-use reqwest::Url;
 use serde::Serialize;
 use sourmash::cmd::ComputeParameters;
-use sourmash::collection::Collection;
+use sourmash::encodings::HashFunctions;
 use sourmash::manifest::Record;
 use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
-use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
 use tokio::fs::File;
 use tokio_util::compat::Compat;
 
-#[derive(Clone)]
-pub enum InputMolType {
-    Dna,
-    Protein,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Abundance {
+    Abund,
+    NoAbund,
 }
 
-impl InputMolType {}
-
-impl fmt::Display for InputMolType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputMolType::Dna => write!(f, "DNA"),
-            InputMolType::Protein => write!(f, "protein"),
-        }
+impl Default for Abundance {
+    fn default() -> Self {
+        Abundance::NoAbund
     }
-}
-
-impl std::str::FromStr for InputMolType {
-    type Err = ();
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().as_str() {
-            "dna" => Ok(InputMolType::Dna),
-            "protein" => Ok(InputMolType::Protein),
-            _ => Err(()),
-        }
-    }
-}
-
-#[allow(dead_code)]
-pub enum GenBankFileType {
-    Genomic,
-    Protein,
-    AssemblyReport,
-    Checksum,
-}
-
-impl GenBankFileType {
-    pub fn suffix(&self) -> &'static str {
-        match self {
-            GenBankFileType::Genomic => "_genomic.fna.gz",
-            GenBankFileType::Protein => "_protein.faa.gz",
-            GenBankFileType::AssemblyReport => "_assembly_report.txt",
-            GenBankFileType::Checksum => "md5checksums.txt",
-        }
-    }
-
-    //use for checksums
-    pub fn server_filename(&self, full_name: &str) -> String {
-        format!("{}{}", full_name, self.suffix())
-    }
-
-    pub fn filename_to_write(&self, accession: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
-        match self {
-            GenBankFileType::Checksum => base_url
-                .join(&format!("{}/{}", full_name, self.suffix()))
-                .unwrap(),
-            _ => base_url
-                .join(&format!("{}/{}{}", full_name, full_name, self.suffix()))
-                .unwrap(),
-        }
-    }
-
-    pub fn moltype(&self) -> String {
-        match self {
-            GenBankFileType::Genomic => "DNA".to_string(),
-            GenBankFileType::Protein => "protein".to_string(),
-            _ => "".to_string(),
-        }
-    }
-}
-#[allow(dead_code)]
-#[derive(Clone)]
-pub struct AccessionData {
-    pub accession: String,
-    pub name: String,
-    pub moltype: InputMolType,
-    pub url: reqwest::Url,
-    pub expected_md5sum: Option<String>,
-    pub download_filename: Option<String>, // need to require this if --keep-fastas are used
-}
-
-#[derive(Clone)]
-pub struct GBAssemblyData {
-    pub accession: String,
-    pub name: String,
-    pub url: Option<reqwest::Url>,
-}
-
-pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
-    let mut results = Vec::new();
-    let mut row_count = 0;
-    let mut processed_rows = std::collections::HashSet::new();
-    let mut duplicate_count = 0;
-    let mut url_count = 0; // Counter for entries with URL
-                           // to do - maybe use HashSet for accessions too to avoid incomplete dupes
-    let mut rdr = csv::Reader::from_path(input_csv)?;
-
-    // Check column names
-    let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name", "ftp_path"];
-    if header != expected_header {
-        return Err(anyhow!(
-            "Invalid column names in CSV file. Columns should be: {:?}",
-            expected_header
-        ));
-    }
-
-    for result in rdr.records() {
-        let record = result?;
-        let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
-            duplicate_count += 1;
-            continue;
-        }
-        processed_rows.insert(row_string.clone());
-        row_count += 1;
-
-        // require acc, name
-        let acc = record
-            .get(0)
-            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
-            .to_string();
-        let name = record
-            .get(1)
-            .ok_or_else(|| anyhow!("Missing 'name' field"))?
-            .to_string();
-        // optionally get url
-        let url = record.get(2).and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                let trimmed_s = s.trim_end_matches('/');
-                reqwest::Url::parse(trimmed_s).map_err(|_| ()).ok()
-            }
-        });
-
-        if url.is_some() {
-            url_count += 1;
-        }
-        // store accession data
-        results.push(GBAssemblyData {
-            accession: acc.to_string(),
-            name: name.to_string(),
-            url,
-        });
-    }
-
-    // Print warning if there were duplicated rows.
-    if duplicate_count > 0 {
-        println!("Warning: {} duplicated rows were skipped.", duplicate_count);
-    }
-    println!(
-        "Loaded {} rows (including {} rows with valid URL).",
-        row_count, url_count
-    );
-
-    Ok((results, row_count))
-}
-
-pub fn load_accession_info(
-    input_csv: String,
-    keep_fasta: bool,
-) -> Result<(Vec<AccessionData>, usize)> {
-    let mut results = Vec::new();
-    let mut row_count = 0;
-    let mut processed_rows = std::collections::HashSet::new();
-    let mut duplicate_count = 0;
-    let mut md5sum_count = 0; // Counter for entries with MD5sum
-                              // to do - maybe use HashSet for accessions too to avoid incomplete dupes
-    let mut rdr = csv::Reader::from_path(input_csv)?;
-
-    // Check column names
-    let header = rdr.headers()?;
-    let expected_header = vec![
-        "accession",
-        "name",
-        "moltype",
-        "md5sum",
-        "download_filename",
-        "url",
-    ];
-    if header != expected_header {
-        return Err(anyhow!(
-            "Invalid column names in CSV file. Columns should be: {:?}",
-            expected_header
-        ));
-    }
-
-    for result in rdr.records() {
-        let record = result?;
-        let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
-            duplicate_count += 1;
-            continue;
-        }
-        processed_rows.insert(row_string.clone());
-        row_count += 1;
-
-        // require acc, name
-        let acc = record
-            .get(0)
-            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
-            .to_string();
-        let name = record
-            .get(1)
-            .ok_or_else(|| anyhow!("Missing 'name' field"))?
-            .to_string();
-        let moltype = record
-            .get(2)
-            .ok_or_else(|| anyhow!("Missing 'moltype' field"))?
-            .parse::<InputMolType>()
-            .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
-        let expected_md5sum = record.get(3).map(|s| s.to_string());
-        let download_filename = record.get(4).map(|s| s.to_string());
-        if keep_fasta && download_filename.is_none() {
-            return Err(anyhow!("Missing 'download_filename' field"));
-        }
-        let url = record
-            .get(5)
-            .ok_or_else(|| anyhow!("Missing 'url' field"))?
-            .split(',')
-            .filter_map(|s| {
-                if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://")
-                {
-                    reqwest::Url::parse(s).ok()
-                } else {
-                    None
-                }
-            })
-            .next()
-            .ok_or_else(|| anyhow!("Invalid 'url' value"))?;
-        // count entries with url and md5sum
-        if expected_md5sum.is_some() {
-            md5sum_count += 1;
-        }
-        // store accession data
-        results.push(AccessionData {
-            accession: acc,
-            name,
-            moltype,
-            url,
-            expected_md5sum,
-            download_filename,
-        });
-    }
-
-    // Print warning if there were duplicated rows.
-    if duplicate_count > 0 {
-        println!("Warning: {} duplicated rows were skipped.", duplicate_count);
-    }
-    println!(
-        "Loaded {} rows (including {} rows with MD5sum).",
-        row_count, md5sum_count
-    );
-
-    Ok((results, row_count))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildParams {
     pub ksize: u32,
-    pub track_abundance: bool,
+    pub abundance: Abundance,
     pub num: u32,
     pub scaled: u64,
     pub seed: u32,
-    pub is_protein: bool,
-    pub is_dayhoff: bool,
-    pub is_hp: bool,
-    pub is_dna: bool,
+    pub moltype: HashFunctions,
+}
+
+impl Default for BuildParams {
+    fn default() -> Self {
+        BuildParams {
+            ksize: 31,
+            abundance: Abundance::NoAbund,
+            num: 0,
+            scaled: 1000,
+            seed: 42,
+            moltype: HashFunctions::Murmur64Dna,
+        }
+    }
 }
 
 impl Hash for BuildParams {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ksize.hash(state);
-        self.track_abundance.hash(state);
+        self.abundance.hash(state);
         self.num.hash(state);
         self.scaled.hash(state);
         self.seed.hash(state);
-        self.is_protein.hash(state);
-        self.is_dayhoff.hash(state);
-        self.is_hp.hash(state);
-        self.is_dna.hash(state);
+        self.moltype.hash(state);
     }
 }
 
@@ -326,15 +79,100 @@ impl BuildParams {
 
         BuildParams {
             ksize: record.ksize(),
-            track_abundance: record.with_abundance(),
+            abundance: if record.with_abundance() {
+                Abundance::Abund
+            } else {
+                Abundance::NoAbund
+            },
             num: *record.num(),
             scaled: *record.scaled(),
             seed: 42,
-            is_protein: moltype.protein(),
-            is_dayhoff: moltype.dayhoff(),
-            is_hp: moltype.hp(),
-            is_dna: moltype.dna(),
+            moltype,
         }
+    }
+}
+
+// helper functions for paramstr parsing
+fn parse_paramstr_value<T: std::str::FromStr>(value: &str, field: &str) -> Result<T, String> {
+    value
+        .parse()
+        .map_err(|_| format!("cannot parse {}='{}' as a number", field, value))
+}
+
+#[derive(Debug, Default)]
+pub struct BuildParamsSet {
+    params: HashSet<BuildParams>,
+}
+
+impl BuildParamsSet {
+    pub fn new() -> Self {
+        Self {
+            params: HashSet::new(),
+        }
+    }
+
+    pub fn insert(&mut self, param: BuildParams) {
+        self.params.insert(param);
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = &BuildParams> {
+        self.params.iter()
+    }
+
+    pub fn from_params_str(params_str: String) -> Result<Self, String> {
+        let mut set = BuildParamsSet::new();
+
+        for p_str in params_str.split('_') {
+            let mut base_param = BuildParams::default();
+            let mut ksizes = Vec::new();
+
+            for item in p_str.split(',') {
+                match item {
+                    _ if item.starts_with("k=") => {
+                        ksizes.push(parse_paramstr_value(&item[2..], "k")?)
+                    }
+
+                    // Set abundance using the Abundance enum
+                    "abund" => base_param.abundance = Abundance::Abund,
+                    "noabund" => base_param.abundance = Abundance::NoAbund,
+
+                    _ if item.starts_with("num=") => {
+                        base_param.num = parse_paramstr_value(&item[4..], "num")?
+                    }
+                    _ if item.starts_with("scaled=") => {
+                        base_param.scaled = parse_paramstr_value(&item[7..], "scaled")?
+                    }
+                    _ if item.starts_with("seed=") => {
+                        base_param.seed = parse_paramstr_value(&item[5..], "seed")?
+                    }
+
+                    // Set moltype using the existing HashFunctions enum
+                    "protein" => base_param.moltype = HashFunctions::Murmur64Protein,
+                    "dna" => base_param.moltype = HashFunctions::Murmur64Dna,
+                    "dayhoff" => base_param.moltype = HashFunctions::Murmur64Dayhoff,
+                    "hp" => base_param.moltype = HashFunctions::Murmur64Hp,
+
+                    _ => return Err(format!("unknown component '{}' in params string", item)),
+                }
+            }
+
+            // Create a BuildParams for each ksize and add to the set
+            for &k in &ksizes {
+                let mut param = base_param.clone();
+                param.ksize = k;
+                set.insert(param);
+            }
+        }
+
+        Ok(set)
+    }
+
+    pub fn get_params(&self) -> &HashSet<BuildParams> {
+        &self.params
+    }
+
+    pub fn into_vec(self) -> Vec<BuildParams> {
+        self.params.into_iter().collect()
     }
 }
 
@@ -391,19 +229,19 @@ where
     }
 }
 
+// input moltype here? or params moltype???
 impl BuildRecord {
     pub fn from_buildparams(param: &BuildParams, input_moltype: &str) -> Self {
         // Calculate the hash of Params
-        let mut hasher = DefaultHasher::new();
-        param.hash(&mut hasher);
-        let hashed_params = hasher.finish();
+        let hashed_params = param.calculate_hash();
 
         BuildRecord {
             ksize: param.ksize,
             moltype: input_moltype.to_string(),
+            // moltype: param.moltype.to_string(),
             num: param.num,
             scaled: param.scaled,
-            with_abundance: param.track_abundance,
+            with_abundance: matches!(param.abundance, Abundance::Abund), // Convert the Abundance enum to a boolean
             hashed_params,
             ..Default::default() // automatically set optional fields to None
         }
@@ -541,30 +379,48 @@ impl BuildCollection {
         collection
     }
 
+    pub fn from_buildparams_set(params_set: &BuildParamsSet, input_moltype: &str) -> Self {
+        let mut collection = BuildCollection::new();
+
+        for param in params_set.iter().cloned() {
+            collection.add_template_sig(param, input_moltype);
+        }
+
+        collection
+    }
+
     pub fn add_template_sig(&mut self, param: BuildParams, input_moltype: &str) {
         // Check the input_moltype against Params to decide if this should be added
-        match input_moltype {
-            "dna" | "DNA" if !param.is_dna => return, // Skip if it's not the correct moltype
-            "protein" if !param.is_protein && !param.is_dayhoff && !param.is_hp => return,
+        match input_moltype.to_lowercase().as_str() {
+            "dna" if param.moltype != HashFunctions::Murmur64Dna => return, // Skip if it's not DNA
+            "protein"
+                if param.moltype != HashFunctions::Murmur64Protein
+                    && param.moltype != HashFunctions::Murmur64Dayhoff
+                    && param.moltype != HashFunctions::Murmur64Hp =>
+            {
+                return
+            } // Skip if not a protein type
             _ => (),
         }
 
-        let adjusted_ksize = if param.is_protein || param.is_dayhoff || param.is_hp {
-            param.ksize * 3
-        } else {
-            param.ksize
+        // Adjust ksize for protein, dayhoff, or hp, which typically require tripling the k-mer size
+        let adjusted_ksize = match param.moltype {
+            HashFunctions::Murmur64Protein
+            | HashFunctions::Murmur64Dayhoff
+            | HashFunctions::Murmur64Hp => param.ksize * 3,
+            _ => param.ksize,
         };
 
         // Construct ComputeParameters
         let cp = ComputeParameters::builder()
             .ksizes(vec![adjusted_ksize])
             .scaled(param.scaled)
-            .protein(param.is_protein)
-            .dna(param.is_dna)
-            .dayhoff(param.is_dayhoff)
-            .hp(param.is_hp)
+            .protein(param.moltype == HashFunctions::Murmur64Protein)
+            .dna(param.moltype == HashFunctions::Murmur64Dna)
+            .dayhoff(param.moltype == HashFunctions::Murmur64Dayhoff)
+            .hp(param.moltype == HashFunctions::Murmur64Hp)
             .num_hashes(param.num)
-            .track_abundance(param.track_abundance)
+            .track_abundance(param.abundance == Abundance::Abund)
             .build();
 
         // Create a Signature from the ComputeParameters
@@ -793,125 +649,6 @@ impl MultiBuildCollection {
     }
 }
 
-pub fn parse_params_str(params_strs: String) -> Result<Vec<BuildParams>, String> {
-    let mut unique_params: std::collections::HashSet<BuildParams> =
-        std::collections::HashSet::new();
-
-    // split params_strs by _ and iterate over each param
-    for p_str in params_strs.split('_').collect::<Vec<&str>>().iter() {
-        let items: Vec<&str> = p_str.split(',').collect();
-
-        let mut ksizes = Vec::new();
-        let mut track_abundance = false;
-        let mut num = 0;
-        let mut scaled = 1000;
-        let mut seed = 42;
-        let mut is_protein = false;
-        let mut is_dayhoff = false;
-        let mut is_hp = false;
-        let mut is_dna = false;
-
-        for item in items.iter() {
-            match *item {
-                _ if item.starts_with("k=") => {
-                    let k_value = item[2..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse k='{}' as a number", &item[2..]))?;
-                    ksizes.push(k_value);
-                }
-                "abund" => track_abundance = true,
-                "noabund" => track_abundance = false,
-                _ if item.starts_with("num=") => {
-                    num = item[4..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse num='{}' as a number", &item[4..]))?;
-                }
-                _ if item.starts_with("scaled=") => {
-                    scaled = item[7..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse scaled='{}' as a number", &item[7..]))?;
-                }
-                _ if item.starts_with("seed=") => {
-                    seed = item[5..]
-                        .parse()
-                        .map_err(|_| format!("cannot parse seed='{}' as a number", &item[5..]))?;
-                }
-                "protein" => {
-                    is_protein = true;
-                }
-                "dna" => {
-                    is_dna = true;
-                }
-                "dayhoff" => {
-                    is_dayhoff = true;
-                }
-                "hp" => {
-                    is_hp = true;
-                }
-                _ => return Err(format!("unknown component '{}' in params string", item)),
-            }
-        }
-
-        for &k in &ksizes {
-            let param = BuildParams {
-                ksize: k,
-                track_abundance,
-                num,
-                scaled,
-                seed,
-                is_protein,
-                is_dna,
-                is_dayhoff,
-                is_hp,
-            };
-            unique_params.insert(param);
-        }
-    }
-
-    Ok(unique_params.into_iter().collect())
-}
-
-// this should be replaced with branchwater's MultiCollection when it's ready
-#[derive(Clone)]
-pub struct MultiCollection {
-    collections: Vec<Collection>,
-}
-
-impl MultiCollection {
-    pub fn new(collections: Vec<Collection>) -> Self {
-        Self { collections }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.collections.is_empty()
-    }
-
-    pub fn buildparams_hashmap(&self) -> HashMap<String, HashSet<u64>> {
-        let mut name_params_map = HashMap::new();
-
-        // Iterate over all collections in MultiCollection
-        for collection in &self.collections {
-            // Iterate over all records in the current collection
-            for (_, record) in collection.iter() {
-                // Get the record's name or fasta filename
-                let record_name = record.name().clone();
-
-                // Calculate the hash of the Params for the current record
-                let params_hash = BuildParams::from_record(record).calculate_hash();
-
-                // If the name is already in the HashMap, extend the existing HashSet
-                // Otherwise, create a new HashSet and insert the hashed Params
-                name_params_map
-                    .entry(record_name)
-                    .or_insert_with(HashSet::new) // Create a new HashSet if the key doesn't exist
-                    .insert(params_hash); // Insert the hashed Params into the HashSet
-            }
-        }
-
-        name_params_map
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,26 +657,14 @@ mod tests {
     fn test_buildparams_consistent_hashing() {
         let params1 = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            ..Default::default()
         };
 
         let params2 = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            ..Default::default()
         };
 
         let hash1 = params1.calculate_hash();
@@ -959,34 +684,31 @@ mod tests {
     fn test_buildparams_hashing_different() {
         let params1 = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            ..Default::default()
         };
 
         let params2 = BuildParams {
             ksize: 21, // Changed ksize
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            ..Default::default()
+        };
+
+        let params3 = BuildParams {
+            ksize: 31,
+            moltype: HashFunctions::Murmur64Protein,
+            ..Default::default()
         };
 
         let hash1 = params1.calculate_hash();
         let hash2 = params2.calculate_hash();
+        let hash3 = params3.calculate_hash();
 
         // Check that the hash for different Params is different
         assert_ne!(
             hash1, hash2,
+            "Hashes for different Params should not be equal"
+        );
+        assert_ne!(
+            hash1, hash3,
             "Hashes for different Params should not be equal"
         );
     }
@@ -1016,14 +738,8 @@ mod tests {
         // create the expected Params based on the Record data
         let expected_params = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            ..Default::default()
         };
 
         // // Generate the Params from the Record using the from_record method
@@ -1052,38 +768,22 @@ mod tests {
     fn test_filter_removes_matching_buildparams() {
         let params1 = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            ..Default::default()
         };
 
         let params2 = BuildParams {
             ksize: 21,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            // moltype: HashFunctions::Murmur64Protein,
+            ..Default::default()
         };
 
         let params3 = BuildParams {
             ksize: 31,
-            track_abundance: true,
-            num: 0,
             scaled: 2000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
+            abundance: Abundance::Abund,
+            ..Default::default()
         };
 
         let params_list = [params1.clone(), params2.clone(), params3.clone()];
@@ -1114,75 +814,6 @@ mod tests {
             build_collection.manifest.records[0].hashed_params, h2,
             "The remaining record should have hashed_params {}",
             h2
-        );
-    }
-
-    #[test]
-    fn test_buildparams_hashmap() {
-        // read in zipfiles to build a MultiCollection
-        // load signature + build record
-        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        filename.push("tests/test-data/GCA_000961135.2.sig.zip");
-        let path = filename.clone();
-
-        let mut collections = Vec::new();
-        let coll = Collection::from_zipfile(&path).unwrap();
-        collections.push(coll);
-        let mc = MultiCollection::new(collections);
-
-        //  Call build_params_hashmap
-        let name_params_map = mc.buildparams_hashmap();
-
-        // Check that the HashMap contains the correct names
-        assert_eq!(
-            name_params_map.len(),
-            1,
-            "There should be 1 unique names in the map"
-        );
-
-        let mut hashed_params = Vec::new();
-        for (name, params_set) in name_params_map.iter() {
-            eprintln!("Name: {}", name);
-            for param_hash in params_set {
-                eprintln!("  Param Hash: {}", param_hash);
-                hashed_params.push(param_hash);
-            }
-        }
-
-        let expected_params1 = BuildParams {
-            ksize: 31,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
-        };
-
-        let expected_params2 = BuildParams {
-            ksize: 21,
-            track_abundance: true,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            is_protein: false,
-            is_dayhoff: false,
-            is_hp: false,
-            is_dna: true,
-        };
-
-        let expected_hash1 = expected_params1.calculate_hash();
-        let expected_hash2 = expected_params2.calculate_hash();
-
-        assert!(
-            hashed_params.contains(&&expected_hash1),
-            "Expected hash1 should be in the hashed_params"
-        );
-        assert!(
-            hashed_params.contains(&&expected_hash2),
-            "Expected hash2 should be in the hashed_params"
         );
     }
 }
