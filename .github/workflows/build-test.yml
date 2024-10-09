@@ -53,10 +53,14 @@ jobs:
     - name: Run cargo fmt
       run: cargo fmt --all -- --check --verbose
 
+    - name: rust tests
+      run: cargo test --verbose --no-fail-fast
+
     - name: build
       shell: bash -l {0}
       run: make
 
-    - name: test
+    - name: python tests
       shell: bash -l {0}
       run: pytest
+
