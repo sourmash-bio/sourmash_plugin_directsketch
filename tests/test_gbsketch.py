@@ -717,7 +717,7 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     assert len(sigs) == 2
     for sig in sigs:
         assert sig.name == ss2.name
-        assert ss2.md5sum() in [ss2.md5sum(), ss3.md5sum()]
+        assert sig.md5sum() in [ss2.md5sum(), ss3.md5sum()]
 
     # # these were created with gbsketch
     expected_siginfo = {

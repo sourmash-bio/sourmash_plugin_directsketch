@@ -845,7 +845,7 @@ pub async fn gbsketch(
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
-    let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
     let mut filter = false;
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
@@ -859,7 +859,8 @@ pub async fn gbsketch(
         let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
         if !existing_sigs.is_empty() {
-            name_params_map = existing_sigs.buildparams_hashmap();
+            // existing_records_map = existing_sigs.buildparams_hashmap();
+            existing_records_map = existing_sigs.build_recordsmap();
 
             batch_index = max_existing_batch_index + 1;
             eprintln!(
@@ -971,10 +972,12 @@ pub async fn gbsketch(
 
         // filter template sigs based on existing sigs
         if filter {
-            if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
+            if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter(existing_paramset);
-                prot_sigs.filter(existing_paramset);
+                dna_sigs.filter_by_manifest(existing_manifest);
+                prot_sigs.filter_by_manifest(existing_manifest);
+                // dna_sigs.filter(existing_paramset);
+                // prot_sigs.filter(existing_paramset);
             }
         }
 
@@ -1078,7 +1081,7 @@ pub async fn urlsketch(
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
-    let mut name_params_map: HashMap<String, HashSet<u64>> = HashMap::new();
+    let mut existing_recordsmap: HashMap<String, BuildManifest> = HashMap::new();
     let mut filter = false;
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
@@ -1092,7 +1095,8 @@ pub async fn urlsketch(
         let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
         if !existing_sigs.is_empty() {
-            name_params_map = existing_sigs.buildparams_hashmap();
+            // existing_recordsmap = existing_sigs.buildparams_hashmap();
+            existing_recordsmap = existing_sigs.build_recordsmap();
 
             batch_index = max_existing_batch_index + 1;
             eprintln!(
@@ -1209,10 +1213,12 @@ pub async fn urlsketch(
 
         // filter template sigs based on existing sigs
         if filter {
-            if let Some(existing_paramset) = name_params_map.get(&accinfo.name) {
+            if let Some(existing_manifest) = existing_recordsmap.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter(existing_paramset);
-                prot_sigs.filter(existing_paramset);
+                dna_sigs.filter_by_manifest(existing_manifest);
+                prot_sigs.filter_by_manifest(existing_manifest);
+                // dna_sigs.filter(existing_paramset);
+                // prot_sigs.filter(existing_paramset);
             }
         }
 

@@ -281,7 +281,7 @@ impl BuildParamsSet {
     }
 }
 
-#[derive(Debug, Default, Clone, Getters, Setters, Serialize)]
+#[derive(Debug, Default, Clone, Getters, Setters, Serialize, Eq, PartialEq)]
 pub struct BuildRecord {
     // fields are ordered the same as Record to allow serialization to manifest
     // required fields are currently immutable once set
@@ -335,6 +335,57 @@ where
 }
 
 impl BuildRecord {
+    pub fn default_dna() -> Self {
+        Self {
+            moltype: "DNA".to_string(),
+            ksize: 31,
+            scaled: 1000,
+            ..Default::default()
+        }
+    }
+
+    pub fn default_protein() -> Self {
+        Self {
+            moltype: "protein".to_string(),
+            ksize: 10,
+            scaled: 200,
+            ..Default::default()
+        }
+    }
+
+    pub fn default_dayhoff() -> Self {
+        Self {
+            moltype: "dayhoff".to_string(),
+            ksize: 10,
+            scaled: 200,
+            ..Default::default()
+        }
+    }
+
+    pub fn default_hp() -> Self {
+        Self {
+            moltype: "hp".to_string(),
+            ksize: 10,
+            scaled: 200,
+            ..Default::default()
+        }
+    }
+
+    pub fn moltype(&self) -> HashFunctions {
+        self.moltype.as_str().try_into().unwrap()
+    }
+
+    pub fn from_record(record: &Record) -> Self {
+        Self {
+            ksize: record.ksize(),
+            moltype: record.moltype().to_string(),
+            num: *record.num(),
+            scaled: *record.scaled(),
+            with_abundance: record.with_abundance(),
+            ..Default::default() // ignore remaining fields
+        }
+    }
+
     pub fn from_buildparams(param: &BuildParams) -> Self {
         // Calculate the hash of Params
         let hashed_params = param.calculate_hash();
@@ -348,6 +399,16 @@ impl BuildRecord {
             hashed_params,
             ..Default::default() // automatically set optional fields to None
         }
+    }
+}
+
+impl Hash for BuildRecord {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ksize.hash(state);
+        self.moltype.hash(state);
+        self.scaled.hash(state);
+        self.num.hash(state);
+        self.with_abundance.hash(state);
     }
 }
 
@@ -374,6 +435,21 @@ impl BuildManifest {
     // clear all records
     pub fn clear(&mut self) {
         self.records.clear();
+    }
+
+    pub fn filter_manifest(&self, other: &BuildManifest) -> Self {
+        // Create a HashSet of references to the `BuildRecord`s in `other`
+        let pairs: HashSet<_> = other.records.iter().collect();
+
+        // Filter `self.records` to retain only those `BuildRecord`s that are NOT in `pairs`
+        let records = self
+            .records
+            .iter()
+            .filter(|&build_record| !pairs.contains(build_record))
+            .cloned()
+            .collect();
+
+        Self { records }
     }
 
     pub fn add_record(&mut self, record: BuildRecord) {
@@ -492,6 +568,62 @@ impl BuildCollection {
         collection
     }
 
+    pub fn from_manifest(manifest: &BuildManifest, input_moltype: &str) -> Self {
+        let mut collection = BuildCollection::new();
+
+        // Iterate over each `BuildRecord` in the provided `BuildManifest`.
+        for record in &manifest.records {
+            // Add a signature to the collection using the `BuildRecord` and `input_moltype`.
+            collection.add_template_sig_from_record(record, input_moltype);
+        }
+
+        collection
+    }
+
+    pub fn add_template_sig_from_record(&mut self, record: &BuildRecord, input_moltype: &str) {
+        // Check the input_moltype against the `record`'s moltype to decide if this should be added.
+        // this is because we don't currently allow translation --> modify to allow translate.
+        match input_moltype.to_lowercase().as_str() {
+            "dna" if record.moltype != "DNA" => return, // Skip if it's not DNA.
+            "protein"
+                if record.moltype != "protein"
+                    && record.moltype != "dayhoff"
+                    && record.moltype != "hp" =>
+            {
+                return;
+            } // Skip if not a protein type.
+            _ => (),
+        }
+
+        // Adjust ksize for protein, dayhoff, or hp, which typically require tripling the k-mer size.
+        let adjusted_ksize = match record.moltype.as_str() {
+            "protein" | "dayhoff" | "hp" => record.ksize * 3,
+            _ => record.ksize,
+        };
+
+        // Construct ComputeParameters.
+        let cp = ComputeParameters::builder()
+            .ksizes(vec![adjusted_ksize])
+            .scaled(record.scaled)
+            .protein(record.moltype == "protein")
+            .dna(record.moltype == "DNA")
+            .dayhoff(record.moltype == "dayhoff")
+            .hp(record.moltype == "hp")
+            .num_hashes(record.num)
+            .track_abundance(record.with_abundance)
+            .build();
+
+        // Create a Signature from the ComputeParameters.
+        let sig = Signature::from_params(&cp);
+
+        // Clone the `BuildRecord` and use it directly.
+        let template_record = record.clone();
+
+        // Add the record and signature to the collection.
+        self.manifest.records.push(template_record);
+        self.sigs.push(sig);
+    }
+
     pub fn add_template_sig(&mut self, param: BuildParams, input_moltype: &str) {
         // Check the input_moltype against Params to decide if this should be added
         match input_moltype.to_lowercase().as_str() {
@@ -535,6 +667,24 @@ impl BuildCollection {
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
         self.sigs.push(sig);
+    }
+
+    pub fn filter_by_manifest(&mut self, other: &BuildManifest) {
+        // Create a HashSet for efficient filtering based on the `BuildRecord`s in `other`.
+        let other_records: HashSet<_> = other.records.iter().collect();
+
+        // Retain only the records that are not in `other_records`, filtering in place.
+        let mut sig_index = 0;
+        self.manifest.records.retain(|record| {
+            let keep = !other_records.contains(record);
+            if !keep {
+                // Remove the corresponding signature at the same index.
+                self.sigs.remove(sig_index);
+            } else {
+                sig_index += 1; // Only increment if we keep the record and signature.
+            }
+            keep
+        });
     }
 
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
@@ -1267,5 +1417,46 @@ mod tests {
             params.calculate_hash(),
             "Expected the hashed_params to match the calculated hash."
         );
+    }
+
+    #[test]
+    fn test_filter_by_manifest_with_matching_records() {
+        // Create a BuildCollection with some records and signatures.
+
+        let rec1 = BuildRecord::default_dna();
+        let rec2 = BuildRecord {
+            ksize: 21,
+            moltype: "DNA".to_string(),
+            scaled: 1000,
+            ..Default::default()
+        };
+        let rec3 = BuildRecord {
+            ksize: 31,
+            moltype: "DNA".to_string(),
+            scaled: 1000,
+            with_abundance: true,
+            ..Default::default()
+        };
+
+        let bmanifest = BuildManifest {
+            records: vec![rec1.clone(), rec2.clone(), rec3.clone()],
+        };
+        let mut dna_build_collection = BuildCollection::from_manifest(&bmanifest, "DNA");
+
+        // Create a BuildManifest with records to filter out.
+        let filter_manifest = BuildManifest {
+            records: vec![rec1],
+        };
+
+        // Apply the filter.
+        dna_build_collection.filter_by_manifest(&filter_manifest);
+
+        // check that the default DNA sig remains
+        assert_eq!(dna_build_collection.manifest.size(), 2);
+
+        let remaining_records = &dna_build_collection.manifest.records;
+
+        assert!(remaining_records.contains(&rec2));
+        assert!(remaining_records.contains(&rec3));
     }
 }

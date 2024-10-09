@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt;
 
 pub mod buildutils;
-use crate::utils::buildutils::BuildParams;
+use crate::utils::buildutils::{BuildManifest, BuildParams, BuildRecord};
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -312,6 +312,30 @@ impl MultiCollection {
         }
 
         name_params_map
+    }
+
+    pub fn build_recordsmap(&self) -> HashMap<String, BuildManifest> {
+        let mut records_map = HashMap::new();
+        // Iterate over all collections in MultiCollection
+        for collection in &self.collections {
+            // Iterate over all records in the current collection
+            for (_, record) in collection.iter() {
+                // Get the record's name or fasta filename
+                let record_name = record.name().clone();
+
+                // Create template buildrecord from this record
+                let build_record = BuildRecord::from_record(record);
+
+                // If the name is already in the HashMap, extend the existing HashSet
+                // Otherwise, create a new BuildManifest and insert the BuildRecord
+                records_map
+                    .entry(record_name)
+                    .or_insert_with(BuildManifest::default) // Create a new HashSet if the key doesn't exist
+                    .add_record(build_record); // add buildrecord to buildmanifest
+            }
+        }
+
+        records_map
     }
 }
 
