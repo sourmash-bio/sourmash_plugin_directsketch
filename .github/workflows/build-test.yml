@@ -57,6 +57,9 @@ jobs:
       shell: bash -l {0}
       run: make
 
-    - name: test
+    - name: python tests
       shell: bash -l {0}
       run: pytest
+
+    - name: rust tests
+      run: cargo test --verbose --no-fail-fast
