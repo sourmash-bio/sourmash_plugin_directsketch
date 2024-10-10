@@ -237,8 +237,9 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    dna_sigs: &mut BuildCollection,
-    prot_sigs: &mut BuildCollection,
+    // dna_sigs: &mut BuildCollection,
+    // prot_sigs: &mut BuildCollection,
+    sigs: &mut BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
@@ -265,7 +266,7 @@ async fn dl_sketch_assembly_accession(
                     let failed_download_dna = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        moltype: "dna".to_string(),
+                        moltype: "dna".to_string(), // to do : --> "DNA"
                         md5sum: None,
                         download_filename: None,
                         url: None,
@@ -375,21 +376,30 @@ async fn dl_sketch_assembly_accession(
             // sketch data
             match file_type {
                 GenBankFileType::Genomic => {
-                    dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
-                    built_sigs.add_collection(dna_sigs);
+                    // dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
+                    // built_sigs.add_collection(dna_sigs);
+                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone())?;
                 }
                 GenBankFileType::Protein => {
-                    prot_sigs.build_sigs_from_data(
-                        data,
-                        "protein",
-                        name.clone(),
-                        file_name.clone(),
-                    )?;
-                    built_sigs.add_collection(prot_sigs);
+                    // prot_sigs.build_sigs_from_data(
+                    //     data,
+                    //     "protein",
+                    //     name.clone(),
+                    //     file_name.clone(),
+                    // )?;
+                    // built_sigs.add_collection(prot_sigs);
+                    sigs.build_sigs_from_data(data, "protein", name.clone(), file_name.clone())?;
                 }
                 _ => {} // Do nothing for other file types
             };
         }
+    }
+    if !download_only {
+        // remove any template sigs that were not populated
+        sigs.filter_empty();
+        eprintln!("num sigs: {}", sigs.size());
+        // to do: can we use sigs directly rather than adding to a collection, now?
+        built_sigs.add_collection(sigs);
     }
 
     Ok((built_sigs, download_failures, checksum_failures))
@@ -489,6 +499,14 @@ async fn dl_sketch_url(
     Ok((built_sigs, download_failures, checksum_failures))
 }
 
+fn get_current_directory() -> Result<PathBuf> {
+    let current_dir =
+        std::env::current_dir().context("Failed to retrieve the current working directory")?;
+
+    PathBuf::from_path_buf(current_dir)
+        .map_err(|_| anyhow::anyhow!("Current directory is not valid UTF-8"))
+}
+
 // Load existing batch files into MultiCollection, skipping corrupt files
 async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection, usize)> {
     // Remove the .zip extension to get the base name
@@ -505,15 +523,32 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
     let mut collections = Vec::new();
     let mut highest_batch = 0; // Track the highest batch number
 
-    // Read the directory containing the outpath
+    // find parent dir (or use current dir)
     let dir = outpath_base
         .parent()
-        .ok_or_else(|| anyhow::anyhow!("Could not get parent directory"))?;
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(|p| p.to_path_buf())
+        .or_else(|| get_current_directory().ok())
+        .ok_or_else(|| anyhow::anyhow!("Failed to determine a valid directory"))?;
+
+    if !dir.exists() {
+        return Err(anyhow::anyhow!(
+            "Directory for output zipfile does not exist: {}",
+            dir
+        ));
+    }
     let mut dir_entries = tokio::fs::read_dir(dir).await?;
 
     // Scan through all files in the directory
     while let Some(entry) = dir_entries.next_entry().await? {
         let entry_path: PathBuf = entry.path().try_into()?;
+
+        // Skip the `outpath` itself to loading, as we just overwrite this file for now (not append)
+        // TO DO: if we can append to the original output file, we can include this and then just add new signatures
+        if entry_path == *outpath {
+            eprintln!("Skipping the original output file: {}", entry_path);
+            continue;
+        }
 
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
@@ -922,28 +957,39 @@ pub async fn gbsketch(
     }
 
     // parse param string into params_vec, print error if fail
-    let param_result = BuildParamsSet::from_params_str(param_str);
-    let params_set = match param_result {
-        Ok(params) => params,
+    // let param_result = BuildParamsSet::from_params_str(param_str);
+    // let params_set = match param_result {
+    //     Ok(params) => params,
+    //     Err(e) => {
+    //         bail!("Failed to parse params string: {}", e);
+    //     }
+    // };
+    // Use the BuildParamsSet to create template collections for DNA and protein
+    // let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
+    // // prot will build protein, dayhoff, hp
+    // let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
+    let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
+    let sig_templates = match sig_template_result {
+        Ok(sig_templates) => sig_templates,
         Err(e) => {
-            bail!("Failed to parse params string: {}", e);
+            bail!(
+                "Failed to parse params string to build template signatures: {}",
+                e
+            );
         }
     };
-    // Use the BuildParamsSet to create template collections for DNA and protein
-    let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
-    // // prot will build protein, dayhoff, hp
-    let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
 
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
 
-    // Check if dna_sig_templates is empty and not keep_fastas
-    if dna_template_collection.manifest.is_empty() && !keep_fastas {
+    // Check if we have dna signature templates and not keep_fastas
+    // if dna_template_collection.manifest.is_empty() && !keep_fastas {
+    if sig_templates.dna_size()? == 0 && !keep_fastas {
         eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
         proteomes_only = true;
     }
-    // Check if protein_sig_templates is empty and not keep_fastas
-    if prot_template_collection.manifest.is_empty() && !keep_fastas {
+    // Check if we have protein signature templates not keep_fastas
+    if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
         eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
     }
@@ -967,15 +1013,17 @@ pub async fn gbsketch(
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
 
-        let mut dna_sigs = dna_template_collection.clone();
-        let mut prot_sigs = prot_template_collection.clone();
+        // let mut dna_sigs = dna_template_collection.clone();
+        // let mut prot_sigs = prot_template_collection.clone();
+        let mut sigs = sig_templates.clone();
 
         // filter template sigs based on existing sigs
         if filter {
             if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter_by_manifest(existing_manifest);
-                prot_sigs.filter_by_manifest(existing_manifest);
+                // dna_sigs.filter_by_manifest(existing_manifest);
+                // prot_sigs.filter_by_manifest(existing_manifest);
+                sigs.filter_by_manifest(existing_manifest);
                 // dna_sigs.filter(existing_paramset);
                 // prot_sigs.filter(existing_paramset);
             }
@@ -1009,8 +1057,9 @@ pub async fn gbsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                &mut dna_sigs,
-                &mut prot_sigs,
+                &mut sigs,
+                // &mut dna_sigs,
+                // &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,
