@@ -16,27 +16,18 @@ use sourmash::signature::Signature;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::fmt::Display;
 use std::hash::{Hash, Hasher};
 use std::io::{Cursor, Write};
+use std::num::ParseIntError;
+use std::str::FromStr;
 use tokio::fs::File;
 use tokio_util::compat::Compat;
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Abundance {
-    Abund,
-    NoAbund,
-}
-
-impl Default for Abundance {
-    fn default() -> Self {
-        Abundance::NoAbund
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildParams {
     pub ksize: u32,
-    pub abundance: Abundance,
+    pub track_abundance: bool,
     pub num: u32,
     pub scaled: u64,
     pub seed: u32,
@@ -47,7 +38,7 @@ impl Default for BuildParams {
     fn default() -> Self {
         BuildParams {
             ksize: 31,
-            abundance: Abundance::NoAbund,
+            track_abundance: false,
             num: 0,
             scaled: 1000,
             seed: 42,
@@ -59,7 +50,7 @@ impl Default for BuildParams {
 impl Hash for BuildParams {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.ksize.hash(state);
-        self.abundance.hash(state);
+        self.track_abundance.hash(state);
         self.num.hash(state);
         self.scaled.hash(state);
         self.seed.hash(state);
@@ -70,8 +61,8 @@ impl Hash for BuildParams {
 impl BuildParams {
     pub fn calculate_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher); // Use the Hash trait implementation
-        hasher.finish() // Return the final u64 hash value
+        self.hash(&mut hasher);
+        hasher.finish()
     }
 
     pub fn from_record(record: &Record) -> Self {
@@ -79,29 +70,167 @@ impl BuildParams {
 
         BuildParams {
             ksize: record.ksize(),
-            abundance: if record.with_abundance() {
-                Abundance::Abund
-            } else {
-                Abundance::NoAbund
-            },
+            track_abundance: record.with_abundance(),
             num: *record.num(),
             scaled: *record.scaled(),
             seed: 42,
             moltype,
         }
     }
+
+    pub fn parse_ksize(value: &str) -> Result<u32, String> {
+        value
+            .parse::<u32>()
+            .map_err(|_| format!("cannot parse k='{}' as a valid integer", value))
+    }
+
+    // disallow repeated values for scaled, num, seed
+    pub fn parse_int_once<T>(
+        value: &str,
+        field: &str,
+        current: &mut Option<T>,
+    ) -> Result<(), String>
+    where
+        T: FromStr<Err = ParseIntError> + Display + Copy,
+    {
+        let parsed_value = value
+            .parse::<T>()
+            .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))?;
+
+        // Check for conflicts; we don't allow multiple values for the same field.
+        if let Some(old_value) = *current {
+            return Err(format!(
+                "Conflicting values for '{}': {} and {}",
+                field, old_value, parsed_value
+            ));
+        }
+
+        // Set the new value.
+        *current = Some(parsed_value);
+
+        Ok(())
+    }
+
+    pub fn parse_moltype(
+        item: &str,
+        current: &mut Option<HashFunctions>,
+    ) -> Result<HashFunctions, String> {
+        let new_moltype = match item {
+            "protein" => HashFunctions::Murmur64Protein,
+            "dna" => HashFunctions::Murmur64Dna,
+            "dayhoff" => HashFunctions::Murmur64Dayhoff,
+            "hp" => HashFunctions::Murmur64Hp,
+            _ => return Err(format!("unknown moltype '{}'", item)),
+        };
+
+        // Check for conflicts and update the moltype.
+        if let Some(existing) = current {
+            if *existing != new_moltype {
+                return Err(format!(
+                    "Conflicting moltype settings in param string: '{}' and '{}'",
+                    existing, new_moltype
+                ));
+            }
+        }
+
+        // Update the current value.
+        *current = Some(new_moltype.clone());
+
+        Ok(new_moltype)
+    }
+
+    pub fn parse_abundance(item: &str, current: &mut Option<bool>) -> Result<(), String> {
+        let new_abundance = item == "abund";
+
+        if let Some(existing) = *current {
+            if existing != new_abundance {
+                return Err(format!(
+                    "Conflicting abundance settings in param string: '{}'",
+                    item
+                ));
+            }
+        }
+
+        *current = Some(new_abundance);
+        Ok(())
+    }
+
+    pub fn from_param_string(p_str: &str) -> Result<(Self, Vec<u32>), String> {
+        let mut base_param = BuildParams::default();
+        let mut ksizes = Vec::new();
+        let mut moltype: Option<HashFunctions> = None;
+        let mut track_abundance: Option<bool> = None;
+        let mut num: Option<u32> = None;
+        let mut scaled: Option<u64> = None;
+        let mut seed: Option<u32> = None;
+
+        for item in p_str.split(',') {
+            match item {
+                _ if item.starts_with("k=") => {
+                    ksizes.push(Self::parse_ksize(&item[2..])?);
+                }
+                "abund" | "noabund" => {
+                    Self::parse_abundance(item, &mut track_abundance)?;
+                }
+                "protein" | "dna" | "dayhoff" | "hp" => {
+                    Self::parse_moltype(item, &mut moltype)?;
+                }
+                _ if item.starts_with("num=") => {
+                    Self::parse_int_once(&item[4..], "num", &mut num)?;
+                }
+                _ if item.starts_with("scaled=") => {
+                    Self::parse_int_once(&item[7..], "scaled", &mut scaled)?;
+                }
+                _ if item.starts_with("seed=") => {
+                    Self::parse_int_once(&item[5..], "seed", &mut seed)?;
+                }
+                _ => return Err(format!("unknown component '{}' in params string", item)),
+            }
+        }
+
+        // Ensure that num and scaled are mutually exclusive unless num is 0.
+        if let (Some(n), Some(_)) = (num, scaled) {
+            if n != 0 {
+                return Err("Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string".to_string());
+            }
+        }
+
+        // Apply parsed values to the base_param.
+        if let Some(moltype) = moltype {
+            base_param.moltype = moltype;
+        }
+        if let Some(track_abund) = track_abundance {
+            base_param.track_abundance = track_abund;
+        }
+        if let Some(n) = num {
+            base_param.num = n;
+        }
+        if let Some(s) = scaled {
+            base_param.scaled = s;
+        }
+        if let Some(s) = seed {
+            base_param.seed = s;
+        }
+
+        if ksizes.is_empty() {
+            ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
+        }
+
+        Ok((base_param, ksizes))
+    }
 }
 
-// helper functions for paramstr parsing
-fn parse_paramstr_value<T: std::str::FromStr>(value: &str, field: &str) -> Result<T, String> {
-    value
-        .parse()
-        .map_err(|_| format!("cannot parse {}='{}' as a number", field, value))
-}
-
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct BuildParamsSet {
     params: HashSet<BuildParams>,
+}
+
+impl Default for BuildParamsSet {
+    fn default() -> Self {
+        let mut set = HashSet::new();
+        set.insert(BuildParams::default());
+        BuildParamsSet { params: set }
+    }
 }
 
 impl BuildParamsSet {
@@ -109,6 +238,10 @@ impl BuildParamsSet {
         Self {
             params: HashSet::new(),
         }
+    }
+
+    pub fn size(&self) -> usize {
+        self.params.len()
     }
 
     pub fn insert(&mut self, param: BuildParams) {
@@ -120,44 +253,16 @@ impl BuildParamsSet {
     }
 
     pub fn from_params_str(params_str: String) -> Result<Self, String> {
+        if params_str.trim().is_empty() {
+            return Err("Parameter string cannot be empty.".to_string());
+        }
+
         let mut set = BuildParamsSet::new();
 
         for p_str in params_str.split('_') {
-            let mut base_param = BuildParams::default();
-            let mut ksizes = Vec::new();
+            let (base_param, ksizes) = BuildParams::from_param_string(p_str)?;
 
-            for item in p_str.split(',') {
-                match item {
-                    _ if item.starts_with("k=") => {
-                        ksizes.push(parse_paramstr_value(&item[2..], "k")?)
-                    }
-
-                    // Set abundance using the Abundance enum
-                    "abund" => base_param.abundance = Abundance::Abund,
-                    "noabund" => base_param.abundance = Abundance::NoAbund,
-
-                    _ if item.starts_with("num=") => {
-                        base_param.num = parse_paramstr_value(&item[4..], "num")?
-                    }
-                    _ if item.starts_with("scaled=") => {
-                        base_param.scaled = parse_paramstr_value(&item[7..], "scaled")?
-                    }
-                    _ if item.starts_with("seed=") => {
-                        base_param.seed = parse_paramstr_value(&item[5..], "seed")?
-                    }
-
-                    // Set moltype using the existing HashFunctions enum
-                    "protein" => base_param.moltype = HashFunctions::Murmur64Protein,
-                    "dna" => base_param.moltype = HashFunctions::Murmur64Dna,
-                    "dayhoff" => base_param.moltype = HashFunctions::Murmur64Dayhoff,
-                    "hp" => base_param.moltype = HashFunctions::Murmur64Hp,
-
-                    _ => return Err(format!("unknown component '{}' in params string", item)),
-                }
-            }
-
-            // Create a BuildParams for each ksize and add to the set
-            for &k in &ksizes {
+            for k in ksizes {
                 let mut param = base_param.clone();
                 param.ksize = k;
                 set.insert(param);
@@ -229,19 +334,17 @@ where
     }
 }
 
-// input moltype here? or params moltype???
 impl BuildRecord {
-    pub fn from_buildparams(param: &BuildParams, input_moltype: &str) -> Self {
+    pub fn from_buildparams(param: &BuildParams) -> Self {
         // Calculate the hash of Params
         let hashed_params = param.calculate_hash();
 
         BuildRecord {
             ksize: param.ksize,
-            moltype: input_moltype.to_string(),
-            // moltype: param.moltype.to_string(),
+            moltype: param.moltype.to_string(),
             num: param.num,
             scaled: param.scaled,
-            with_abundance: matches!(param.abundance, Abundance::Abund), // Convert the Abundance enum to a boolean
+            with_abundance: param.track_abundance,
             hashed_params,
             ..Default::default() // automatically set optional fields to None
         }
@@ -420,14 +523,14 @@ impl BuildCollection {
             .dayhoff(param.moltype == HashFunctions::Murmur64Dayhoff)
             .hp(param.moltype == HashFunctions::Murmur64Hp)
             .num_hashes(param.num)
-            .track_abundance(param.abundance == Abundance::Abund)
+            .track_abundance(param.track_abundance)
             .build();
 
         // Create a Signature from the ComputeParameters
         let sig = Signature::from_params(&cp);
 
         // Create the BuildRecord using from_param
-        let template_record = BuildRecord::from_buildparams(&param, input_moltype);
+        let template_record = BuildRecord::from_buildparams(&param);
 
         // Add the record and signature to the collection
         self.manifest.records.push(template_record);
@@ -657,13 +760,13 @@ mod tests {
     fn test_buildparams_consistent_hashing() {
         let params1 = BuildParams {
             ksize: 31,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
         let params2 = BuildParams {
             ksize: 31,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
@@ -738,7 +841,7 @@ mod tests {
         // create the expected Params based on the Record data
         let expected_params = BuildParams {
             ksize: 31,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
@@ -768,21 +871,20 @@ mod tests {
     fn test_filter_removes_matching_buildparams() {
         let params1 = BuildParams {
             ksize: 31,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
         let params2 = BuildParams {
             ksize: 21,
-            abundance: Abundance::Abund,
-            // moltype: HashFunctions::Murmur64Protein,
+            track_abundance: true,
             ..Default::default()
         };
 
         let params3 = BuildParams {
             ksize: 31,
             scaled: 2000,
-            abundance: Abundance::Abund,
+            track_abundance: true,
             ..Default::default()
         };
 
@@ -814,6 +916,356 @@ mod tests {
             build_collection.manifest.records[0].hashed_params, h2,
             "The remaining record should have hashed_params {}",
             h2
+        );
+    }
+
+    #[test]
+    fn test_build_params_set_default() {
+        // Create a default BuildParamsSet.
+        let default_set = BuildParamsSet::default();
+
+        // Check that the set contains exactly one item.
+        assert_eq!(
+            default_set.size(),
+            1,
+            "Expected default BuildParamsSet to contain one default BuildParams."
+        );
+
+        // Get the default parameter from the set.
+        let default_param = default_set.iter().next().unwrap();
+
+        // Verify that the default parameter has expected default values.
+        assert_eq!(default_param.ksize, 31, "Expected default ksize to be 31.");
+        assert_eq!(
+            default_param.track_abundance, false,
+            "Expected default track_abundance to be false."
+        );
+        assert_eq!(
+            default_param.moltype,
+            HashFunctions::Murmur64Dna,
+            "Expected default moltype to be DNA."
+        );
+        assert_eq!(default_param.num, 0, "Expected default num to be 0.");
+        assert_eq!(
+            default_param.scaled, 1000,
+            "Expected default scaled to be 1000."
+        );
+        assert_eq!(default_param.seed, 42, "Expected default seed to be 42.");
+    }
+
+    #[test]
+    fn test_valid_params_str() {
+        let params_str = "k=31,abund,dna";
+        let result = BuildParamsSet::from_params_str(params_str.to_string());
+
+        assert!(
+            result.is_ok(),
+            "Expected 'k=31,abund,dna' to be valid, but got an error: {:?}",
+            result
+        );
+        let params_set = result.unwrap();
+
+        // Ensure the BuildParamsSet contains the expected number of parameters.
+        assert_eq!(
+            params_set.iter().count(),
+            1,
+            "Expected 1 BuildParams in the set"
+        );
+
+        // Verify that the BuildParams has the correct settings.
+        let param = params_set.iter().next().unwrap();
+        assert_eq!(param.ksize, 31);
+        assert_eq!(param.track_abundance, true);
+        assert_eq!(param.moltype, HashFunctions::Murmur64Dna);
+    }
+
+    #[test]
+    fn test_multiple_valid_params_str() {
+        let params_str = "k=31,abund,dna_k=21,k=31,k=51,abund_k=10,protein";
+        let result = BuildParamsSet::from_params_str(params_str.to_string());
+
+        assert!(
+            result.is_ok(),
+            "Param str {} is valid, but got an error: {:?}",
+            params_str,
+            result
+        );
+        let params_set: BuildParamsSet = result.unwrap();
+
+        // Ensure the BuildParamsSet contains the expected number of parameters.
+        // note that k=31,dna,abund is in two diff param strs, should only show up once.
+        assert_eq!(params_set.size(), 4, "Expected 4 BuildParams in the set");
+        // Define the expected BuildParams for comparison.
+        let expected_params = vec![
+            {
+                let mut param = BuildParams::default();
+                param.ksize = 31;
+                param.track_abundance = true;
+                param
+            },
+            {
+                let mut param = BuildParams::default();
+                param.ksize = 21;
+                param.track_abundance = true;
+                param
+            },
+            {
+                let mut param = BuildParams::default();
+                param.ksize = 51;
+                param.track_abundance = true;
+                param
+            },
+            {
+                let mut param = BuildParams::default();
+                param.ksize = 10;
+                param.moltype = HashFunctions::Murmur64Protein;
+                param
+            },
+        ];
+
+        // Check that each expected BuildParams is present in the params_set.
+        for expected_param in expected_params {
+            assert!(
+            params_set.get_params().contains(&expected_param),
+            "Expected BuildParams with ksize: {}, track_abundance: {}, moltype: {:?} not found in the set",
+            expected_param.ksize,
+            expected_param.track_abundance,
+            expected_param.moltype
+        );
+        }
+    }
+
+    #[test]
+    fn test_invalid_params_str_conflicting_moltypes() {
+        let params_str = "k=31,abund,dna,protein";
+        let result = BuildParamsSet::from_params_str(params_str.to_string());
+
+        assert!(
+            result.is_err(),
+            "Expected 'k=31,abund,dna,protein' to be invalid due to conflicting moltypes, but got a successful result"
+        );
+
+        // Check if the error message contains the expected conflict text.
+        if let Err(e) = result {
+            assert!(
+                e.contains("Conflicting moltype settings"),
+                "Expected error to contain 'Conflicting moltype settings', but got: {}",
+                e
+            );
+        }
+    }
+
+    #[test]
+    fn test_unknown_component_error() {
+        // Test for an unknown component that should trigger an error.
+        let result = BuildParamsSet::from_params_str("k=31,notaparam".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "unknown component 'notaparam' in params string"
+        );
+    }
+
+    #[test]
+    fn test_unknown_component_error2() {
+        // Test a common param string error (k=31,51 compared with valid k=31,k=51)
+        let result = BuildParamsSet::from_params_str("k=31,51,abund".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "unknown component '51' in params string"
+        );
+    }
+
+    #[test]
+    fn test_conflicting_num_and_scaled() {
+        // Test for specifying both num and scaled, which should result in an error.
+        let result = BuildParamsSet::from_params_str("k=31,num=10,scaled=1000".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string"
+        );
+    }
+
+    #[test]
+    fn test_conflicting_abundance() {
+        // Test for providing conflicting abundance settings, which should result in an error.
+        let result = BuildParamsSet::from_params_str("k=31,abund,noabund".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting abundance settings in param string: 'noabund'"
+        );
+    }
+
+    #[test]
+    fn test_invalid_ksize_format() {
+        // Test for an invalid ksize format that should trigger an error.
+        let result = BuildParamsSet::from_params_str("k=abc".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot parse k='abc' as a valid integer"
+        );
+    }
+
+    #[test]
+    fn test_invalid_num_format() {
+        // Test for an invalid number format that should trigger an error.
+        let result = BuildParamsSet::from_params_str("k=31,num=abc".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot parse num='abc' as a valid integer"
+        );
+    }
+
+    #[test]
+    fn test_invalid_scaled_format() {
+        // Test for an invalid scaled format that should trigger an error.
+        let result = BuildParamsSet::from_params_str("k=31,scaled=abc".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot parse scaled='abc' as a valid integer"
+        );
+    }
+
+    #[test]
+    fn test_invalid_seed_format() {
+        // Test for an invalid seed format that should trigger an error.
+        let result = BuildParamsSet::from_params_str("k=31,seed=abc".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "cannot parse seed='abc' as a valid integer"
+        );
+    }
+
+    #[test]
+    fn test_repeated_values() {
+        // repeated scaled
+        let result = BuildParamsSet::from_params_str("k=31,scaled=1,scaled=1000".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'scaled': 1 and 1000"
+        );
+
+        // repeated num
+        let result = BuildParamsSet::from_params_str("k=31,num=1,num=1000".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'num': 1 and 1000"
+        );
+
+        // repeated seed
+        let result = BuildParamsSet::from_params_str("k=31,seed=1,seed=42".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(
+            result.unwrap_err(),
+            "Conflicting values for 'seed': 1 and 42"
+        );
+    }
+
+    #[test]
+    fn test_missing_ksize() {
+        // Test for a missing ksize, using default should not result in an error.
+        let result = BuildParamsSet::from_params_str("abund".to_string());
+        assert!(result.is_ok(), "Expected Ok but got an error.");
+    }
+
+    #[test]
+    fn test_repeated_ksize() {
+        // Repeated ksize settings should not trigger an error since it is valid to have multiple ksizes.
+        let result = BuildParamsSet::from_params_str("k=31,k=21".to_string());
+        assert!(result.is_ok(), "Expected Ok but got an error.");
+    }
+
+    #[test]
+    fn test_empty_string() {
+        // Test for an empty parameter string, which should now result in an error.
+        let result = BuildParamsSet::from_params_str("".to_string());
+        assert!(result.is_err(), "Expected an error but got Ok.");
+        assert_eq!(result.unwrap_err(), "Parameter string cannot be empty.");
+    }
+
+    #[test]
+    fn test_from_buildparams_abundance() {
+        let mut params = BuildParams::default();
+        params.track_abundance = true;
+
+        // Create a BuildRecord using from_buildparams.
+        let record = BuildRecord::from_buildparams(&params);
+
+        // Check thqat all fields are set correctly.
+        assert_eq!(record.ksize, 31, "Expected ksize to be 31.");
+        assert_eq!(record.moltype, "DNA", "Expected moltype to be 'DNA'.");
+        assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
+        assert_eq!(record.num, 0, "Expected num to be 0.");
+        assert!(record.with_abundance, "Expected with_abundance to be true.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_protein() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.scaled = 200;
+        params.moltype = HashFunctions::Murmur64Protein;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        // Check that all fields are set correctly.
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "protein", "Expected moltype to be protein.");
+        assert_eq!(record.scaled, 200, "Expected scaled to be 200.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_dayhoff() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.moltype = HashFunctions::Murmur64Dayhoff;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "dayhoff", "Expected moltype to be dayhoff.");
+        // didn't change default scaled here, so should still be 1000
+        assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
+        );
+    }
+
+    #[test]
+    fn test_from_buildparams_hp() {
+        let mut params = BuildParams::default();
+        params.ksize = 10;
+        params.moltype = HashFunctions::Murmur64Hp;
+
+        let record = BuildRecord::from_buildparams(&params);
+
+        assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
+        assert_eq!(record.moltype, "hp", "Expected moltype to be hp.");
+        assert_eq!(
+            record.hashed_params,
+            params.calculate_hash(),
+            "Expected the hashed_params to match the calculated hash."
         );
     }
 }
