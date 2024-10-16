@@ -502,8 +502,7 @@ async fn dl_sketch_url(
 fn get_current_directory() -> Result<PathBuf> {
     let current_dir =
         std::env::current_dir().context("Failed to retrieve the current working directory")?;
-
-    PathBuf::from_path_buf(current_dir)
+    PathBuf::try_from(current_dir)
         .map_err(|_| anyhow::anyhow!("Current directory is not valid UTF-8"))
 }
 
@@ -526,9 +525,9 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
     // find parent dir (or use current dir)
     let dir = outpath_base
         .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(|p| p.to_path_buf())
-        .or_else(|| get_current_directory().ok())
+        .filter(|p| !p.as_os_str().is_empty()) // Ensure the parent is not empty
+        .map(|p| p.to_path_buf()) // Use the parent if it's valid
+        .or_else(|| get_current_directory().ok()) // Fallback to current directory if no valid parent
         .ok_or_else(|| anyhow::anyhow!("Failed to determine a valid directory"))?;
 
     if !dir.exists() {
@@ -537,11 +536,43 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
             dir
         ));
     }
+
     let mut dir_entries = tokio::fs::read_dir(dir).await?;
+
+    // get absolute path for outpath
+    let current_dir = std::env::current_dir().context("Failed to retrieve current directory")?;
+    let outpath_absolute = outpath
+        .parent()
+        .filter(|parent| parent.as_std_path().exists())
+        .map(|_| outpath.clone())
+        .unwrap_or_else(|| {
+            PathBuf::from_path_buf(current_dir.join(outpath.as_std_path()))
+                .expect("Failed to convert to Utf8PathBuf")
+        });
 
     // Scan through all files in the directory
     while let Some(entry) = dir_entries.next_entry().await? {
         let entry_path: PathBuf = entry.path().try_into()?;
+        // Skip the `outpath` itself to loading, as we just overwrite this file for now (not append)
+        // TO DO: if we can append to the original output file, we can include this and then just add new signatures
+
+        // get absolute path of entry for comparison with outpath_absolute
+        let current_dir =
+            std::env::current_dir().context("Failed to retrieve current directory")?;
+        let entry_absolute = entry_path
+            .parent()
+            .filter(|parent| parent.as_std_path().exists())
+            .map(|_| entry_path.clone())
+            .unwrap_or_else(|| {
+                PathBuf::from_path_buf(current_dir.join(entry_path.as_std_path()))
+                    .expect("Failed to convert to Utf8PathBuf")
+            });
+
+        // For now, skip the `outpath` itself to avoid loading, since we will just overwrite it anyway.
+        if entry_absolute == outpath_absolute {
+            eprintln!("Skipping the original output file: {}", entry_absolute);
+            continue;
+        }
 
         // Skip the `outpath` itself to loading, as we just overwrite this file for now (not append)
         // TO DO: if we can append to the original output file, we can include this and then just add new signatures
