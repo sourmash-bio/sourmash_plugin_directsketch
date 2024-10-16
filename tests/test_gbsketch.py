@@ -836,3 +836,56 @@ def test_gbsketch_bad_param_str(runtmp, capfd):
     print(captured)
 
     assert "Failed to parse params string: Conflicting moltype settings in param string: 'DNA' and 'protein'" in captured.err
+
+
+def test_gbsketch_overwrite(runtmp, capfd):
+    # test restart with complete + incomplete zipfile batches
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    # ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    # run the workflow once - write all to single output
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200")
+    assert os.path.exists(output)
+    captured = capfd.readouterr()
+    print(captured.err)
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+    }
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    all_siginfo = set()
+    for sig in sigs:
+        all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    assert all_siginfo == expected_siginfo
+
+    # now, try running again - providing same output file.
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200")
+
+    # check that sigs can still be read
+    assert os.path.exists(output)
+    assert not os.path.exists(out1)
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    all_siginfo = set()
+    for sig in sigs:
+        all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+    assert all_siginfo == expected_siginfo
