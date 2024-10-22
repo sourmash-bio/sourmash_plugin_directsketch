@@ -574,13 +574,6 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
             continue;
         }
 
-        // Skip the `outpath` itself to loading, as we just overwrite this file for now (not append)
-        // TO DO: if we can append to the original output file, we can include this and then just add new signatures
-        if entry_path == *outpath {
-            eprintln!("Skipping the original output file: {}", entry_path);
-            continue;
-        }
-
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
