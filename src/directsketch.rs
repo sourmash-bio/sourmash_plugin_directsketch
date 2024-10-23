@@ -997,7 +997,7 @@ pub async fn gbsketch(
         Ok(sig_templates) => sig_templates,
         Err(e) => {
             bail!(
-                "Failed to parse params string to build template signatures: {}",
+                "Failed to parse params string: {}",
                 e
             );
         }
