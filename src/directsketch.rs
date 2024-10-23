@@ -4,6 +4,8 @@ use camino::Utf8PathBuf as PathBuf;
 use regex::Regex;
 use reqwest::Client;
 use sourmash::collection::Collection;
+use sourmash::encodings::HashFunctions;
+use sourmash::selection::Selection;
 use std::cmp::max;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, create_dir_all};
@@ -23,7 +25,8 @@ use crate::utils::{
 };
 
 use crate::utils::buildutils::{
-    BuildCollection, BuildManifest, BuildParamsSet, MultiBuildCollection,
+    BuildCollection, BuildManifest, BuildParamsSet, MultiBuildCollection, MultiSelect,
+    MultiSelection,
 };
 use reqwest::Url;
 
@@ -993,13 +996,10 @@ pub async fn gbsketch(
     // // prot will build protein, dayhoff, hp
     // let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
     let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-    let sig_templates = match sig_template_result {
+    let mut sig_templates = match sig_template_result {
         Ok(sig_templates) => sig_templates,
         Err(e) => {
-            bail!(
-                "Failed to parse params string: {}",
-                e
-            );
+            bail!("Failed to parse params string: {}", e);
         }
     };
 
@@ -1018,17 +1018,28 @@ pub async fn gbsketch(
         genomes_only = true;
     }
     if genomes_only {
+        // select only DNA templates
+        let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
+        sig_templates = sig_templates.select(&multiselection)?;
+
         if !download_only {
             eprintln!("Downloading and sketching genomes only.");
         } else {
             eprintln!("Downloading genomes only.");
         }
     } else if proteomes_only {
+        // select only protein templates
+        let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
+        sig_templates = sig_templates.select(&multiselection)?;
         if !download_only {
             eprintln!("Downloading and sketching proteomes only.");
         } else {
             eprintln!("Downloading proteomes only.");
         }
+    }
+
+    if sig_templates.is_empty() && !download_only {
+        bail!("No signatures to build.")
     }
 
     // report every 1 percent (or every 1, whichever is larger)

@@ -27,6 +27,42 @@ use std::str::FromStr;
 use tokio::fs::File;
 use tokio_util::compat::Compat;
 
+#[derive(Default, Debug, Clone)]
+pub struct MultiSelection {
+    pub selections: Vec<Selection>,
+}
+
+impl MultiSelection {
+    /// Create a `MultiSelection` from a single `Selection`
+    pub fn from_selection(selection: Selection) -> Self {
+        MultiSelection {
+            selections: vec![selection],
+        }
+    }
+
+    pub fn from_moltypes(moltypes: Vec<&str>) -> Result<Self, SourmashError> {
+        let selections: Result<Vec<Selection>, SourmashError> = moltypes
+            .into_iter()
+            .map(|moltype_str| {
+                let moltype = HashFunctions::try_from(moltype_str)?;
+                let mut new_selection = Selection::default(); // Create a default Selection
+                new_selection.set_moltype(moltype); // Set the moltype
+                Ok(new_selection)
+            })
+            .collect();
+
+        Ok(MultiSelection {
+            selections: selections?,
+        })
+    }
+}
+
+pub trait MultiSelect {
+    fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError>
+    where
+        Self: Sized;
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BuildParams {
     pub ksize: u32,
@@ -553,37 +589,36 @@ impl BuildManifest {
     }
 }
 
-impl Select for BuildManifest {
-    fn select(self, selection: &Selection) -> Result<Self, SourmashError> {
+impl MultiSelect for BuildManifest {
+    fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
         let rows = self.records.iter().filter(|row| {
-            let mut valid = true;
-            valid = if let Some(ksize) = selection.ksize() {
-                row.ksize == ksize
-            } else {
+            // For each row, check if it matches any of the Selection structs in MultiSelection
+            multi_selection.selections.iter().any(|selection| {
+                let mut valid = true;
+
+                if let Some(ksize) = selection.ksize() {
+                    valid = valid && row.ksize == ksize;
+                }
+
+                if let Some(moltype) = selection.moltype() {
+                    valid = valid && row.moltype() == moltype;
+                }
+
+                if let Some(abund) = selection.abund() {
+                    valid = valid && row.with_abundance == abund;
+                }
+
+                if let Some(scaled) = selection.scaled() {
+                    // num sigs have row.scaled = 0, don't include them
+                    valid = valid && row.scaled != 0 && row.scaled <= scaled as u64;
+                }
+
+                if let Some(num) = selection.num() {
+                    valid = valid && row.num == num;
+                }
+
                 valid
-            };
-            valid = if let Some(abund) = selection.abund() {
-                valid && row.with_abundance == abund
-            } else {
-                valid
-            };
-            valid = if let Some(moltype) = selection.moltype() {
-                valid && row.moltype() == moltype
-            } else {
-                valid
-            };
-            valid = if let Some(scaled) = selection.scaled() {
-                // num sigs have row.scaled = 0, don't include them
-                valid && row.scaled != 0 && row.scaled <= scaled as u64
-            } else {
-                valid
-            };
-            valid = if let Some(num) = selection.num() {
-                valid && row.num == num
-            } else {
-                valid
-            };
-            valid
+            })
         });
 
         Ok(BuildManifest {
@@ -647,53 +682,24 @@ impl BuildCollection {
     }
 
     pub fn dna_size(&self) -> Result<usize, SourmashError> {
-        let selection = Selection::builder()
-            .moltype(HashFunctions::Murmur64Dna)
-            .build();
-
-        let selected_manifest = self.manifest.clone().select(&selection)?;
+        let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
+        let selected_manifest = self.manifest.clone().select(&multiselection)?;
 
         Ok(selected_manifest.records.len())
     }
 
     pub fn protein_size(&self) -> Result<usize, SourmashError> {
-        let selection = Selection::builder()
-            .moltype(HashFunctions::Murmur64Protein)
-            .build();
-
-        let selected_manifest = self.manifest.clone().select(&selection)?;
+        let multiselection = MultiSelection::from_moltypes(vec!["protein"])?;
+        let selected_manifest = self.manifest.clone().select(&multiselection)?;
 
         Ok(selected_manifest.records.len())
     }
 
     pub fn anyprotein_size(&self) -> Result<usize, SourmashError> {
-        // Create selections for each protein type.
-        let protein_selection = Selection::builder()
-            .moltype(HashFunctions::Murmur64Protein)
-            .build();
-        let dayhoff_selection = Selection::builder()
-            .moltype(HashFunctions::Murmur64Dayhoff)
-            .build();
-        let hp_selection = Selection::builder()
-            .moltype(HashFunctions::Murmur64Hp)
-            .build();
+        let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
+        let selected_manifest = self.manifest.clone().select(&multiselection)?;
 
-        // Apply each selection and sum the sizes of the selected manifests.
-        let protein_count = self
-            .manifest
-            .clone()
-            .select(&protein_selection)?
-            .records
-            .len();
-        let dayhoff_count = self
-            .manifest
-            .clone()
-            .select(&dayhoff_selection)?
-            .records
-            .len();
-        let hp_count = self.manifest.clone().select(&hp_selection)?.records.len();
-
-        Ok(protein_count + dayhoff_count + hp_count)
+        Ok(selected_manifest.records.len())
     }
 
     pub fn parse_ksize(value: &str) -> Result<u32, String> {
@@ -1265,12 +1271,12 @@ impl<'a> IntoIterator for &'a mut BuildCollection {
     }
 }
 
-// impl Select for BuildCollection {
-//     fn select(mut self, selection: &Selection) -> Result<Self, SourmashError> {
-//         self.manifest = self.manifest.select(selection)?;
-//         Ok(self)
-//     }
-// }
+impl MultiSelect for BuildCollection {
+    fn select(mut self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
+        self.manifest = self.manifest.select(multi_selection)?;
+        Ok(self)
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MultiBuildCollection {
