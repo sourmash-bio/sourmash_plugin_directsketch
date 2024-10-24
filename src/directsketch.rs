@@ -387,8 +387,7 @@ async fn dl_sketch_assembly_accession(
     if !download_only {
         // remove any template sigs that were not populated
         sigs.filter_empty();
-        eprintln!("num sigs: {}", sigs.size());
-        // to do: can we use sigs directly rather than adding to a collection, now?
+        // to do: can we use sigs directly rather than adding to a multibuildcollection, now?
         if !sigs.is_empty() {
             built_sigs.add_collection(sigs);
         }
@@ -404,8 +403,7 @@ async fn dl_sketch_url(
     location: &PathBuf,
     retry: Option<u32>,
     _keep_fastas: bool,
-    dna_sigs: &mut BuildCollection,
-    prot_sigs: &mut BuildCollection,
+    sigs: &mut BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
@@ -436,26 +434,21 @@ async fn dl_sketch_url(
             if !download_only {
                 let filename = download_filename.clone().unwrap_or("".to_string());
                 // sketch data
+
                 match moltype {
                     InputMolType::Dna => {
-                        dna_sigs.build_sigs_from_data(
-                            data,
-                            "dna",
-                            name.clone(),
-                            filename.clone(),
-                        )?;
-                        built_sigs.add_collection(dna_sigs);
+                        sigs.build_sigs_from_data(data, "DNA", name.clone(), filename.clone())?;
                     }
                     InputMolType::Protein => {
-                        prot_sigs.build_sigs_from_data(
-                            data,
-                            "protein",
-                            name.clone(),
-                            filename.clone(),
-                        )?;
-                        built_sigs.add_collection(prot_sigs);
+                        sigs.build_sigs_from_data(data, "protein", name.clone(), filename.clone())?;
                     }
                 };
+                // remove any template sigs that were not populated
+                sigs.filter_empty();
+                // to do: can we use sigs directly rather than adding to a collection, now?
+                if !sigs.is_empty() {
+                    built_sigs.add_collection(sigs);
+                }
             }
         }
         Err(err) => {
@@ -1147,7 +1140,6 @@ pub async fn urlsketch(
         let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
         if !existing_sigs.is_empty() {
-            // existing_recordsmap = existing_sigs.buildparams_hashmap();
             existing_recordsmap = existing_sigs.build_recordsmap();
 
             batch_index = max_existing_batch_index + 1;
@@ -1216,38 +1208,41 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // parse param string into params_vec, print error if fail
-    let param_result = BuildParamsSet::from_params_str(param_str);
-    let params_set = match param_result {
-        Ok(params) => params,
+    let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
+    let mut sig_templates = match sig_template_result {
+        Ok(sig_templates) => sig_templates,
         Err(e) => {
             bail!("Failed to parse params string: {}", e);
         }
     };
-    // Use the BuildParamsSet to create template collections for DNA and protein
-    let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
-    let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
 
     let mut genomes_only = false;
     let mut proteomes_only = false;
 
-    // Check if dna_sig_templates is empty and not keep_fastas
-    if dna_template_collection.manifest.is_empty() && !keep_fastas {
-        eprintln!("No DNA signature templates provided, and --keep-fastas is not set.");
+    // Check if we have dna signature templates and not keep_fastas
+    if sig_templates.dna_size()? == 0 && !keep_fastas {
+        eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
         proteomes_only = true;
     }
-    // Check if protein_sig_templates is empty and not keep_fastas
-    if prot_template_collection.manifest.is_empty() && !keep_fastas {
-        eprintln!("No protein signature templates provided, and --keep-fastas is not set.");
+    // Check if we have protein signature templates not keep_fastas
+    if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
+        eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
     }
     if genomes_only {
+        // select only DNA templates
+        let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
+        sig_templates = sig_templates.select(&multiselection)?;
+
         if !download_only {
             eprintln!("Downloading and sketching genomes only.");
         } else {
             eprintln!("Downloading genomes only.");
         }
     } else if proteomes_only {
+        // select only protein templates
+        let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
+        sig_templates = sig_templates.select(&multiselection)?;
         if !download_only {
             eprintln!("Downloading and sketching proteomes only.");
         } else {
@@ -1255,28 +1250,22 @@ pub async fn urlsketch(
         }
     }
 
-    // if sig_templates.is_empty() && !download_only {
-    //     bail!("No signatures to build.")
-    // }
-
-    // eprintln!("Built {:?} DNA template signatures and {:?} protein/dayhoff/hp template signatures", sig_templates.dna_size(), sig_templates.anyprotein_size());
+    if sig_templates.is_empty() && !download_only {
+        bail!("No signatures to build.")
+    }
 
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
-        let mut dna_sigs = dna_template_collection.clone();
-        let mut prot_sigs = prot_template_collection.clone();
+        let mut sigs = sig_templates.clone();
 
         // filter template sigs based on existing sigs
         if filter {
             if let Some(existing_manifest) = existing_recordsmap.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                dna_sigs.filter_by_manifest(existing_manifest);
-                prot_sigs.filter_by_manifest(existing_manifest);
-                // dna_sigs.filter(existing_paramset);
-                // prot_sigs.filter(existing_paramset);
+                sigs.filter_by_manifest(existing_manifest);
             }
         }
 
@@ -1307,8 +1296,7 @@ pub async fn urlsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                &mut dna_sigs,
-                &mut prot_sigs,
+                &mut sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,

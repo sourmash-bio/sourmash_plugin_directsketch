@@ -1078,14 +1078,12 @@ impl BuildCollection {
                     if !rec.sequence_added {
                         rec.sequence_added = true
                     }
-                } else {
-                    if rec.moltype == "DNA" {
-                        sig.add_sequence(&record.seq(), true)
-                            .expect("Failed to add sequence");
-                        // if not force, panics with 'N' in dna sequence
-                        if !rec.sequence_added {
-                            rec.sequence_added = true
-                        }
+                } else if input_moltype == "DNA" && rec.moltype == "DNA" {
+                    sig.add_sequence(&record.seq(), true)
+                        .expect("Failed to add sequence");
+                    // if not force, panics with 'N' in dna sequence
+                    if !rec.sequence_added {
+                        rec.sequence_added = true
                     }
                 }
             });
@@ -1173,19 +1171,21 @@ impl BuildCollection {
     pub fn update_info(&mut self, name: String, filename: String) {
         // update the records to reflect information the signature;
         for (record, sig) in self.iter_mut() {
-            // update signature name, filename
-            sig.set_name(name.as_str());
-            sig.set_filename(filename.as_str());
+            if record.sequence_added {
+                // update signature name, filename
+                sig.set_name(name.as_str());
+                sig.set_filename(filename.as_str());
 
-            // update record: set name, filename, md5sum, n_hashes
-            record.set_name(Some(name.clone()));
-            record.set_filename(Some(filename.clone()));
-            record.set_md5(Some(sig.md5sum()));
-            record.set_md5short(Some(sig.md5sum()[0..8].into()));
-            record.set_n_hashes(Some(sig.size()));
+                // update record: set name, filename, md5sum, n_hashes
+                record.set_name(Some(name.clone()));
+                record.set_filename(Some(filename.clone()));
+                record.set_md5(Some(sig.md5sum()));
+                record.set_md5short(Some(sig.md5sum()[0..8].into()));
+                record.set_n_hashes(Some(sig.size()));
 
-            // note, this needs to be set when writing sigs
-            // record.set_internal_location("")
+                // note, this needs to be set when writing sigs
+                // record.set_internal_location("")
+            }
         }
     }
 
