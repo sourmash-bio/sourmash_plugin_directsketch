@@ -264,7 +264,7 @@ async fn dl_sketch_assembly_accession(
                     let failed_download_dna = FailedDownload {
                         accession: accession.clone(),
                         name: name.clone(),
-                        moltype: "dna".to_string(), // to do : --> "DNA"
+                        moltype: "dna".to_string(),
                         md5sum: None,
                         download_filename: None,
                         url: None,
