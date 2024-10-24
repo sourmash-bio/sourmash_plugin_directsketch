@@ -2,11 +2,11 @@ use anyhow::{anyhow, Result};
 use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
-use std::collections::HashSet;
+// use std::collections::HashSet;
 use std::fmt;
 
 pub mod buildutils;
-use crate::utils::buildutils::BuildParams;
+use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
 #[derive(Clone)]
 pub enum InputMolType {
@@ -289,9 +289,8 @@ impl MultiCollection {
         self.collections.is_empty()
     }
 
-    pub fn buildparams_hashmap(&self) -> HashMap<String, HashSet<u64>> {
-        let mut name_params_map = HashMap::new();
-
+    pub fn build_recordsmap(&self) -> HashMap<String, BuildManifest> {
+        let mut records_map = HashMap::new();
         // Iterate over all collections in MultiCollection
         for collection in &self.collections {
             // Iterate over all records in the current collection
@@ -299,79 +298,18 @@ impl MultiCollection {
                 // Get the record's name or fasta filename
                 let record_name = record.name().clone();
 
-                // Calculate the hash of the Params for the current record
-                let params_hash = BuildParams::from_record(record).calculate_hash();
+                // Create template buildrecord from this record
+                let build_record = BuildRecord::from_record(record);
 
                 // If the name is already in the HashMap, extend the existing HashSet
-                // Otherwise, create a new HashSet and insert the hashed Params
-                name_params_map
+                // Otherwise, create a new BuildManifest and insert the BuildRecord
+                records_map
                     .entry(record_name)
-                    .or_insert_with(HashSet::new) // Create a new HashSet if the key doesn't exist
-                    .insert(params_hash); // Insert the hashed Params into the HashSet
+                    .or_insert_with(BuildManifest::default) // Create a new HashSet if the key doesn't exist
+                    .add_record(build_record); // add buildrecord to buildmanifest
             }
         }
 
-        name_params_map
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use camino::Utf8PathBuf;
-    #[test]
-    fn test_buildparams_hashmap() {
-        // read in zipfiles to build a MultiCollection
-        // load signature + build record
-        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        filename.push("tests/test-data/GCA_000961135.2.sig.zip");
-        let path = filename.clone();
-
-        let mut collections = Vec::new();
-        let coll: Collection = Collection::from_zipfile(&path).unwrap();
-        collections.push(coll);
-        let mc = MultiCollection::new(collections);
-
-        //  Call build_params_hashmap
-        let name_params_map = mc.buildparams_hashmap();
-
-        // Check that the HashMap contains the correct names
-        assert_eq!(
-            name_params_map.len(),
-            1,
-            "There should be 1 unique names in the map"
-        );
-
-        let mut hashed_params = Vec::new();
-        for (name, params_set) in name_params_map.iter() {
-            eprintln!("Name: {}", name);
-            for param_hash in params_set {
-                eprintln!("  Param Hash: {}", param_hash);
-                hashed_params.push(param_hash);
-            }
-        }
-        let expected_params1 = BuildParams {
-            ksize: 31,
-            track_abundance: true,
-            ..Default::default()
-        };
-
-        let expected_params2 = BuildParams {
-            ksize: 21,
-            track_abundance: true,
-            ..Default::default()
-        };
-
-        let expected_hash1 = expected_params1.calculate_hash();
-        let expected_hash2 = expected_params2.calculate_hash();
-
-        assert!(
-            hashed_params.contains(&&expected_hash1),
-            "Expected hash1 should be in the hashed_params"
-        );
-        assert!(
-            hashed_params.contains(&&expected_hash2),
-            "Expected hash2 should be in the hashed_params"
-        );
+        records_map
     }
 }

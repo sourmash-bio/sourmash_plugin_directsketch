@@ -717,7 +717,7 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     assert len(sigs) == 2
     for sig in sigs:
         assert sig.name == ss2.name
-        assert ss2.md5sum() in [ss2.md5sum(), ss3.md5sum()]
+        assert sig.md5sum() in [ss2.md5sum(), ss3.md5sum()]
 
     # # these were created with gbsketch
     expected_siginfo = {
@@ -835,7 +835,7 @@ def test_gbsketch_bad_param_str(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured)
 
-    assert "Failed to parse params string: Conflicting moltype settings in param string: 'DNA' and 'protein'" in captured.err
+    assert "Failed to parse params string: Conflicting moltype settings in param string: 'dna' and 'protein'" in captured.err
 
 
 def test_gbsketch_overwrite(runtmp, capfd):
