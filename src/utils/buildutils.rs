@@ -465,6 +465,33 @@ impl BuildRecord {
             ..Default::default() // automatically set optional fields to None
         }
     }
+
+    pub fn matches_selection(&self, selection: &Selection) -> bool {
+        let mut valid = true;
+
+        if let Some(ksize) = selection.ksize() {
+            valid = valid && self.ksize == ksize;
+        }
+
+        if let Some(moltype) = selection.moltype() {
+            valid = valid && self.moltype() == moltype;
+        }
+
+        if let Some(abund) = selection.abund() {
+            valid = valid && self.with_abundance == abund;
+        }
+
+        if let Some(scaled) = selection.scaled() {
+            // num sigs have self.scaled = 0, don't include them
+            valid = valid && self.scaled != 0 && self.scaled <= scaled as u64;
+        }
+
+        if let Some(num) = selection.num() {
+            valid = valid && self.num == num;
+        }
+
+        valid
+    }
 }
 
 impl PartialEq for BuildRecord {
@@ -592,33 +619,11 @@ impl BuildManifest {
 impl MultiSelect for BuildManifest {
     fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
         let rows = self.records.iter().filter(|row| {
-            // For each row, check if it matches any of the Selection structs in MultiSelection
-            multi_selection.selections.iter().any(|selection| {
-                let mut valid = true;
-
-                if let Some(ksize) = selection.ksize() {
-                    valid = valid && row.ksize == ksize;
-                }
-
-                if let Some(moltype) = selection.moltype() {
-                    valid = valid && row.moltype() == moltype;
-                }
-
-                if let Some(abund) = selection.abund() {
-                    valid = valid && row.with_abundance == abund;
-                }
-
-                if let Some(scaled) = selection.scaled() {
-                    // num sigs have row.scaled = 0, don't include them
-                    valid = valid && row.scaled != 0 && row.scaled <= scaled as u64;
-                }
-
-                if let Some(num) = selection.num() {
-                    valid = valid && row.num == num;
-                }
-
-                valid
-            })
+            // for each row, check if it matches any of the Selection structs in MultiSelection
+            multi_selection
+                .selections
+                .iter()
+                .any(|selection| row.matches_selection(selection))
         });
 
         Ok(BuildManifest {
@@ -902,22 +907,7 @@ impl BuildCollection {
     }
 
     pub fn add_template_sig_from_record(&mut self, record: &BuildRecord) {
-        //, input_moltype: &str) {
-        // Check the input_moltype against the `record`'s moltype to decide if this should be added.
-        // this is because we don't currently allow translation --> modify to allow translate.
-        // match input_moltype.to_lowercase().as_str() {
-        //     "dna" if record.moltype != "DNA" => return, // Skip if it's not DNA.
-        //     "protein"
-        //         if record.moltype != "protein"
-        //             && record.moltype != "dayhoff"
-        //             && record.moltype != "hp" =>
-        //     {
-        //         return;
-        //     } // Skip if not a protein type.
-        //     _ => (),
-        // }
-
-        // Adjust ksize for protein, dayhoff, or hp, which typically require tripling the k-mer size.
+        // Adjust ksize for protein, dayhoff, or hp, which require tripling the k-mer size.
         let adjusted_ksize = match record.moltype.as_str() {
             "protein" | "dayhoff" | "hp" => record.ksize * 3,
             _ => record.ksize,
@@ -1068,7 +1058,7 @@ impl BuildCollection {
     pub fn build_sigs_from_data(
         &mut self,
         data: Vec<u8>,
-        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        input_moltype: &str,
         name: String,
         filename: String,
     ) -> Result<()> {
@@ -1081,9 +1071,7 @@ impl BuildCollection {
             let record = record.context("Failed to read record")?;
             self.iter_mut().for_each(|(rec, sig)| {
                 if input_moltype == "protein"
-                    && (rec.moltype() == HashFunctions::Murmur64Protein
-                        || rec.moltype() == HashFunctions::Murmur64Dayhoff
-                        || rec.moltype() == HashFunctions::Murmur64Hp)
+                    && (rec.moltype == "protein" || rec.moltype == "dayhoff" || rec.moltype == "hp")
                 {
                     sig.add_protein(&record.seq())
                         .expect("Failed to add protein");
@@ -1272,8 +1260,35 @@ impl<'a> IntoIterator for &'a mut BuildCollection {
 }
 
 impl MultiSelect for BuildCollection {
+    // to do --> think through the best/most efficient way to do this
+    // in sourmash core, we don't need to select sigs themselves. Is this due to the way that Idx/Storage work?
     fn select(mut self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
-        self.manifest = self.manifest.select(multi_selection)?;
+        // Collect indices while retaining matching records
+        let mut selected_indices = Vec::new();
+        let mut current_index = 0;
+
+        self.manifest.records.retain(|record| {
+            let keep = multi_selection
+                .selections
+                .iter()
+                .any(|selection| record.matches_selection(selection));
+
+            if keep {
+                selected_indices.push(current_index); // Collect the index of the retained record
+            }
+
+            current_index += 1; // Move to the next index
+            keep // Retain the record if it matches the selection
+        });
+
+        // Retain corresponding signatures using the collected indices
+        let mut sig_index = 0;
+        self.sigs.retain(|_sig| {
+            let keep = selected_indices.contains(&sig_index);
+            sig_index += 1;
+            keep
+        });
+
         Ok(self)
     }
 }

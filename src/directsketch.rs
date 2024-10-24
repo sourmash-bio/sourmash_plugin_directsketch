@@ -402,7 +402,9 @@ async fn dl_sketch_assembly_accession(
         sigs.filter_empty();
         eprintln!("num sigs: {}", sigs.size());
         // to do: can we use sigs directly rather than adding to a collection, now?
-        built_sigs.add_collection(sigs);
+        if !sigs.is_empty() {
+            built_sigs.add_collection(sigs);
+        }
     }
 
     Ok((built_sigs, download_failures, checksum_failures))
@@ -1013,6 +1015,7 @@ pub async fn gbsketch(
         proteomes_only = true;
     }
     // Check if we have protein signature templates not keep_fastas
+    // if prot_template_collection.manifest.is_empty() && !keep_fastas {
     if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
         eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
@@ -1286,6 +1289,12 @@ pub async fn urlsketch(
             eprintln!("Downloading proteomes only.");
         }
     }
+
+    // if sig_templates.is_empty() && !download_only {
+    //     bail!("No signatures to build.")
+    // }
+
+    // eprintln!("Built {:?} DNA template signatures and {:?} protein/dayhoff/hp template signatures", sig_templates.dna_size(), sig_templates.anyprotein_size());
 
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
