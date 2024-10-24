@@ -4,10 +4,8 @@ use camino::Utf8PathBuf as PathBuf;
 use regex::Regex;
 use reqwest::Client;
 use sourmash::collection::Collection;
-use sourmash::encodings::HashFunctions;
-use sourmash::selection::Selection;
 use std::cmp::max;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -240,8 +238,6 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    // dna_sigs: &mut BuildCollection,
-    // prot_sigs: &mut BuildCollection,
     sigs: &mut BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
@@ -379,18 +375,9 @@ async fn dl_sketch_assembly_accession(
             // sketch data
             match file_type {
                 GenBankFileType::Genomic => {
-                    // dna_sigs.build_sigs_from_data(data, "dna", name.clone(), file_name.clone())?;
-                    // built_sigs.add_collection(dna_sigs);
                     sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone())?;
                 }
                 GenBankFileType::Protein => {
-                    // prot_sigs.build_sigs_from_data(
-                    //     data,
-                    //     "protein",
-                    //     name.clone(),
-                    //     file_name.clone(),
-                    // )?;
-                    // built_sigs.add_collection(prot_sigs);
                     sigs.build_sigs_from_data(data, "protein", name.clone(), file_name.clone())?;
                 }
                 _ => {} // Do nothing for other file types
@@ -985,18 +972,6 @@ pub async fn gbsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // parse param string into params_vec, print error if fail
-    // let param_result = BuildParamsSet::from_params_str(param_str);
-    // let params_set = match param_result {
-    //     Ok(params) => params,
-    //     Err(e) => {
-    //         bail!("Failed to parse params string: {}", e);
-    //     }
-    // };
-    // Use the BuildParamsSet to create template collections for DNA and protein
-    // let dna_template_collection = BuildCollection::from_buildparams_set(&params_set, "DNA");
-    // // prot will build protein, dayhoff, hp
-    // let prot_template_collection = BuildCollection::from_buildparams_set(&params_set, "protein");
     let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
     let mut sig_templates = match sig_template_result {
         Ok(sig_templates) => sig_templates,
@@ -1009,13 +984,11 @@ pub async fn gbsketch(
     let mut proteomes_only = proteomes_only;
 
     // Check if we have dna signature templates and not keep_fastas
-    // if dna_template_collection.manifest.is_empty() && !keep_fastas {
     if sig_templates.dna_size()? == 0 && !keep_fastas {
         eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
         proteomes_only = true;
     }
     // Check if we have protein signature templates not keep_fastas
-    // if prot_template_collection.manifest.is_empty() && !keep_fastas {
     if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
         eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
         genomes_only = true;
@@ -1051,19 +1024,13 @@ pub async fn gbsketch(
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
 
-        // let mut dna_sigs = dna_template_collection.clone();
-        // let mut prot_sigs = prot_template_collection.clone();
         let mut sigs = sig_templates.clone();
 
         // filter template sigs based on existing sigs
         if filter {
             if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
                 // If the key exists, filter template sigs
-                // dna_sigs.filter_by_manifest(existing_manifest);
-                // prot_sigs.filter_by_manifest(existing_manifest);
                 sigs.filter_by_manifest(existing_manifest);
-                // dna_sigs.filter(existing_paramset);
-                // prot_sigs.filter(existing_paramset);
             }
         }
 
@@ -1096,8 +1063,6 @@ pub async fn gbsketch(
                 Some(retry_times),
                 keep_fastas,
                 &mut sigs,
-                // &mut dna_sigs,
-                // &mut prot_sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,

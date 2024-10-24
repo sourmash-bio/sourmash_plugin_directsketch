@@ -1079,11 +1079,13 @@ impl BuildCollection {
                         rec.sequence_added = true
                     }
                 } else {
-                    sig.add_sequence(&record.seq(), true)
-                        .expect("Failed to add sequence");
-                    // if not force, panics with 'N' in dna sequence
-                    if !rec.sequence_added {
-                        rec.sequence_added = true
+                    if rec.moltype == "DNA" {
+                        sig.add_sequence(&record.seq(), true)
+                            .expect("Failed to add sequence");
+                        // if not force, panics with 'N' in dna sequence
+                        if !rec.sequence_added {
+                            rec.sequence_added = true
+                        }
                     }
                 }
             });
