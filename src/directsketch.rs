@@ -902,7 +902,6 @@ pub async fn gbsketch(
         let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
         if !existing_sigs.is_empty() {
-            // existing_records_map = existing_sigs.buildparams_hashmap();
             existing_records_map = existing_sigs.build_recordsmap();
 
             batch_index = max_existing_batch_index + 1;
