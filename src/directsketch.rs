@@ -1366,3 +1366,51 @@ pub async fn urlsketch(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utils::buildutils::BuildRecord;
+    use camino::Utf8PathBuf;
+
+    #[test]
+    fn test_buildrecordsmap() {
+        // read in zipfiles to build a MultiCollection
+        let mut filename = Utf8PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        filename.push("tests/test-data/GCA_000961135.2.sig.zip");
+        let path = filename.clone();
+
+        let mut collections = Vec::new();
+        let coll: Collection = Collection::from_zipfile(&path).unwrap();
+        collections.push(coll);
+        let mc = MultiCollection::new(collections);
+
+        // build expected buildmanifest
+        let mut refbmf = BuildManifest::new();
+        let mut rec1 = BuildRecord::default_dna();
+        rec1.set_with_abundance(true);
+        refbmf.add_record(rec1);
+
+        //  Call build_recordsmap
+        let name_params_map = mc.build_recordsmap();
+
+        // Check that the recordsmap contains the correct names
+        assert_eq!(
+            name_params_map.len(),
+            1,
+            "There should be 1 unique names in the map"
+        );
+
+        for (name, buildmanifest) in name_params_map.iter() {
+            eprintln!("Name: {}", name);
+            assert_eq!(
+                "GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454",
+                name
+            );
+            assert_eq!(buildmanifest.size(), 2); // should be two records
+                                                 // check that we can filter out a record (k=31, abund)
+            let filtered = buildmanifest.filter_manifest(&refbmf);
+            assert_eq!(filtered.size(), 1)
+        }
+    }
+}
