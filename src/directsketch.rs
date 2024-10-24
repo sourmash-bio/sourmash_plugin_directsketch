@@ -23,8 +23,7 @@ use crate::utils::{
 };
 
 use crate::utils::buildutils::{
-    BuildCollection, BuildManifest, BuildParamsSet, MultiBuildCollection, MultiSelect,
-    MultiSelection,
+    BuildCollection, BuildManifest, MultiBuildCollection, MultiSelect, MultiSelection,
 };
 use reqwest::Url;
 

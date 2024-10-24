@@ -13,9 +13,8 @@ use sourmash::cmd::ComputeParameters;
 use sourmash::encodings::{HashFunctions, Idx};
 use sourmash::errors::SourmashError;
 use sourmash::manifest::Record;
-use sourmash::selection::{Select, Selection};
+use sourmash::selection::Selection;
 use sourmash::signature::Signature;
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -34,7 +33,7 @@ pub struct MultiSelection {
 
 impl MultiSelection {
     /// Create a `MultiSelection` from a single `Selection`
-    pub fn from_selection(selection: Selection) -> Self {
+    pub fn new(selection: Selection) -> Self {
         MultiSelection {
             selections: vec![selection],
         }
@@ -61,263 +60,6 @@ pub trait MultiSelect {
     fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError>
     where
         Self: Sized;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct BuildParams {
-    pub ksize: u32,
-    pub track_abundance: bool,
-    pub num: u32,
-    pub scaled: u64,
-    pub seed: u32,
-    pub moltype: HashFunctions,
-}
-
-impl Default for BuildParams {
-    fn default() -> Self {
-        BuildParams {
-            ksize: 31,
-            track_abundance: false,
-            num: 0,
-            scaled: 1000,
-            seed: 42,
-            moltype: HashFunctions::Murmur64Dna,
-        }
-    }
-}
-
-impl Hash for BuildParams {
-    fn hash<H: Hasher>(&self, state: &mut H) {
-        self.ksize.hash(state);
-        self.track_abundance.hash(state);
-        self.num.hash(state);
-        self.scaled.hash(state);
-        self.seed.hash(state);
-        self.moltype.hash(state);
-    }
-}
-
-impl BuildParams {
-    pub fn calculate_hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        self.hash(&mut hasher);
-        hasher.finish()
-    }
-
-    pub fn from_record(record: &Record) -> Self {
-        let moltype = record.moltype(); // Get the moltype (HashFunctions enum)
-
-        BuildParams {
-            ksize: record.ksize(),
-            track_abundance: record.with_abundance(),
-            num: *record.num(),
-            scaled: *record.scaled(),
-            seed: 42,
-            moltype,
-        }
-    }
-
-    pub fn parse_ksize(value: &str) -> Result<u32, String> {
-        value
-            .parse::<u32>()
-            .map_err(|_| format!("cannot parse k='{}' as a valid integer", value))
-    }
-
-    // disallow repeated values for scaled, num, seed
-    pub fn parse_int_once<T>(
-        value: &str,
-        field: &str,
-        current: &mut Option<T>,
-    ) -> Result<(), String>
-    where
-        T: FromStr<Err = ParseIntError> + Display + Copy,
-    {
-        let parsed_value = value
-            .parse::<T>()
-            .map_err(|_| format!("cannot parse {}='{}' as a valid integer", field, value))?;
-
-        // Check for conflicts; we don't allow multiple values for the same field.
-        if let Some(old_value) = *current {
-            return Err(format!(
-                "Conflicting values for '{}': {} and {}",
-                field, old_value, parsed_value
-            ));
-        }
-
-        // Set the new value.
-        *current = Some(parsed_value);
-
-        Ok(())
-    }
-
-    pub fn parse_moltype(
-        item: &str,
-        current: &mut Option<HashFunctions>,
-    ) -> Result<HashFunctions, String> {
-        let new_moltype = match item {
-            "protein" => HashFunctions::Murmur64Protein,
-            "dna" => HashFunctions::Murmur64Dna,
-            "dayhoff" => HashFunctions::Murmur64Dayhoff,
-            "hp" => HashFunctions::Murmur64Hp,
-            _ => return Err(format!("unknown moltype '{}'", item)),
-        };
-
-        // Check for conflicts and update the moltype.
-        if let Some(existing) = current {
-            if *existing != new_moltype {
-                return Err(format!(
-                    "Conflicting moltype settings in param string: '{}' and '{}'",
-                    existing, new_moltype
-                ));
-            }
-        }
-
-        // Update the current value.
-        *current = Some(new_moltype.clone());
-
-        Ok(new_moltype)
-    }
-
-    pub fn parse_abundance(item: &str, current: &mut Option<bool>) -> Result<(), String> {
-        let new_abundance = item == "abund";
-
-        if let Some(existing) = *current {
-            if existing != new_abundance {
-                return Err(format!(
-                    "Conflicting abundance settings in param string: '{}'",
-                    item
-                ));
-            }
-        }
-
-        *current = Some(new_abundance);
-        Ok(())
-    }
-
-    pub fn from_param_string(p_str: &str) -> Result<(Self, Vec<u32>), String> {
-        let mut base_param = BuildParams::default();
-        let mut ksizes = Vec::new();
-        let mut moltype: Option<HashFunctions> = None;
-        let mut track_abundance: Option<bool> = None;
-        let mut num: Option<u32> = None;
-        let mut scaled: Option<u64> = None;
-        let mut seed: Option<u32> = None;
-
-        for item in p_str.split(',') {
-            match item {
-                _ if item.starts_with("k=") => {
-                    ksizes.push(Self::parse_ksize(&item[2..])?);
-                }
-                "abund" | "noabund" => {
-                    Self::parse_abundance(item, &mut track_abundance)?;
-                }
-                "protein" | "dna" | "dayhoff" | "hp" => {
-                    Self::parse_moltype(item, &mut moltype)?;
-                }
-                _ if item.starts_with("num=") => {
-                    Self::parse_int_once(&item[4..], "num", &mut num)?;
-                }
-                _ if item.starts_with("scaled=") => {
-                    Self::parse_int_once(&item[7..], "scaled", &mut scaled)?;
-                }
-                _ if item.starts_with("seed=") => {
-                    Self::parse_int_once(&item[5..], "seed", &mut seed)?;
-                }
-                _ => return Err(format!("unknown component '{}' in params string", item)),
-            }
-        }
-
-        // Ensure that num and scaled are mutually exclusive unless num is 0.
-        if let (Some(n), Some(_)) = (num, scaled) {
-            if n != 0 {
-                return Err("Cannot specify both 'num' (non-zero) and 'scaled' in the same parameter string".to_string());
-            }
-        }
-
-        // Apply parsed values to the base_param.
-        if let Some(moltype) = moltype {
-            base_param.moltype = moltype;
-        }
-        if let Some(track_abund) = track_abundance {
-            base_param.track_abundance = track_abund;
-        }
-        if let Some(n) = num {
-            base_param.num = n;
-        }
-        if let Some(s) = scaled {
-            base_param.scaled = s;
-        }
-        if let Some(s) = seed {
-            base_param.seed = s;
-        }
-
-        if ksizes.is_empty() {
-            ksizes.push(base_param.ksize); // Use the default ksize if none were specified.
-        }
-
-        Ok((base_param, ksizes))
-    }
-}
-
-#[derive(Debug)]
-pub struct BuildParamsSet {
-    params: HashSet<BuildParams>,
-}
-
-impl Default for BuildParamsSet {
-    fn default() -> Self {
-        let mut set = HashSet::new();
-        set.insert(BuildParams::default());
-        BuildParamsSet { params: set }
-    }
-}
-
-impl BuildParamsSet {
-    pub fn new() -> Self {
-        Self {
-            params: HashSet::new(),
-        }
-    }
-
-    pub fn size(&self) -> usize {
-        self.params.len()
-    }
-
-    pub fn insert(&mut self, param: BuildParams) {
-        self.params.insert(param);
-    }
-
-    pub fn iter(&self) -> impl Iterator<Item = &BuildParams> {
-        self.params.iter()
-    }
-
-    pub fn from_params_str(params_str: String) -> Result<Self, String> {
-        if params_str.trim().is_empty() {
-            return Err("Parameter string cannot be empty.".to_string());
-        }
-
-        let mut set = BuildParamsSet::new();
-
-        for p_str in params_str.split('_') {
-            let (base_param, ksizes) = BuildParams::from_param_string(p_str)?;
-
-            for k in ksizes {
-                let mut param = base_param.clone();
-                param.ksize = k;
-                set.insert(param);
-            }
-        }
-
-        Ok(set)
-    }
-
-    pub fn get_params(&self) -> &HashSet<BuildParams> {
-        &self.params
-    }
-
-    pub fn into_vec(self) -> Vec<BuildParams> {
-        self.params.into_iter().collect()
-    }
 }
 
 #[derive(Debug, Clone, Getters, Setters, Serialize)]
@@ -448,21 +190,6 @@ impl BuildRecord {
             scaled: *record.scaled(),
             with_abundance: record.with_abundance(),
             ..Default::default() // ignore remaining fields
-        }
-    }
-
-    pub fn from_buildparams(param: &BuildParams) -> Self {
-        // Calculate the hash of Params
-        let hashed_params = param.calculate_hash();
-
-        BuildRecord {
-            ksize: param.ksize,
-            moltype: param.moltype.to_string(),
-            num: param.num,
-            scaled: param.scaled,
-            with_abundance: param.track_abundance,
-            hashed_params,
-            ..Default::default() // automatically set optional fields to None
         }
     }
 
@@ -826,7 +553,7 @@ impl BuildCollection {
             base_record.scaled = s;
         }
         if let Some(s) = seed {
-            base_record.seed = s as u32;
+            base_record.seed = s;
         }
 
         // Use the default ksize if none were specified.
@@ -872,34 +599,12 @@ impl BuildCollection {
         Ok(coll)
     }
 
-    pub fn from_buildparams(params: &[BuildParams], input_moltype: &str) -> Self {
-        let mut collection = BuildCollection::new();
-
-        for param in params.iter().cloned() {
-            collection.add_template_sig(param, input_moltype);
-        }
-
-        collection
-    }
-
-    pub fn from_buildparams_set(params_set: &BuildParamsSet, input_moltype: &str) -> Self {
-        let mut collection = BuildCollection::new();
-
-        for param in params_set.iter().cloned() {
-            collection.add_template_sig(param, input_moltype);
-        }
-
-        collection
-    }
-
-    // pub fn from_manifest(manifest: &BuildManifest, input_moltype: &str) -> Self {
     pub fn from_manifest(manifest: &BuildManifest) -> Self {
         let mut collection = BuildCollection::new();
 
         // Iterate over each `BuildRecord` in the provided `BuildManifest`.
         for record in &manifest.records {
             // Add a signature to the collection using the `BuildRecord` and `input_moltype`.
-            // collection.add_template_sig_from_record(record, input_moltype);
             collection.add_template_sig_from_record(record);
         }
 
@@ -936,54 +641,9 @@ impl BuildCollection {
         self.sigs.push(sig);
     }
 
-    pub fn add_template_sig(&mut self, param: BuildParams, input_moltype: &str) {
-        // Check the input_moltype against Params to decide if this should be added
-        match input_moltype.to_lowercase().as_str() {
-            "dna" if param.moltype != HashFunctions::Murmur64Dna => return, // Skip if it's not DNA
-            "protein"
-                if param.moltype != HashFunctions::Murmur64Protein
-                    && param.moltype != HashFunctions::Murmur64Dayhoff
-                    && param.moltype != HashFunctions::Murmur64Hp =>
-            {
-                return
-            } // Skip if not a protein type
-            _ => (),
-        }
-
-        // Adjust ksize for protein, dayhoff, or hp, which typically require tripling the k-mer size
-        let adjusted_ksize = match param.moltype {
-            HashFunctions::Murmur64Protein
-            | HashFunctions::Murmur64Dayhoff
-            | HashFunctions::Murmur64Hp => param.ksize * 3,
-            _ => param.ksize,
-        };
-
-        // Construct ComputeParameters
-        let cp = ComputeParameters::builder()
-            .ksizes(vec![adjusted_ksize])
-            .scaled(param.scaled)
-            .protein(param.moltype == HashFunctions::Murmur64Protein)
-            .dna(param.moltype == HashFunctions::Murmur64Dna)
-            .dayhoff(param.moltype == HashFunctions::Murmur64Dayhoff)
-            .hp(param.moltype == HashFunctions::Murmur64Hp)
-            .num_hashes(param.num)
-            .track_abundance(param.track_abundance)
-            .build();
-
-        // Create a Signature from the ComputeParameters
-        let sig = Signature::from_params(&cp);
-
-        // Create the BuildRecord using from_param
-        let template_record = BuildRecord::from_buildparams(&param);
-
-        // Add the record and signature to the collection
-        self.manifest.records.push(template_record);
-        self.sigs.push(sig);
+    pub fn filter_manifest(&mut self, other: &BuildManifest) {
+        self.manifest = self.manifest.filter_manifest(other)
     }
-
-    // pub fn filter_manifest(&mut self, other: &BuildManifest) {
-    //     self.manifest = self.manifest.filter_manifest(other)
-    // }
 
     pub fn filter_by_manifest(&mut self, other: &BuildManifest) {
         // Create a HashSet for efficient filtering based on the `BuildRecord`s in `other`.
@@ -1183,18 +843,13 @@ impl BuildCollection {
                 record.set_md5short(Some(sig.md5sum()[0..8].into()));
                 record.set_n_hashes(Some(sig.size()));
 
-                // note, this needs to be set when writing sigs
+                // note, this needs to be set when writing sigs (not here)
                 // record.set_internal_location("")
             }
         }
     }
 
-    // to do -- figure out how to skip sigs or warn user if no sequence was added to the template
-    // could do the following, BUT then any BuildManifest we're adding may get out of sync.
-    // would need to modify the collection, e.g. filter_empty or similar
-    // if !rec.sequence_added{
-    //     continue
-    // }
+    // to do -- use filter_empty to ensure we're not writing empty template sigs??
     pub async fn async_write_sigs_to_zip(
         &mut self, // need mutable to update records
         zip_writer: &mut ZipFileWriter<Compat<File>>,
@@ -1463,7 +1118,7 @@ mod tests {
     #[test]
     fn test_conflicting_abundance() {
         // Test for providing conflicting abundance settings, which should result in an error.
-        let result = BuildParamsSet::from_params_str("k=31,abund,noabund".to_string());
+        let result = BuildCollection::from_param_str("k=31,abund,noabund");
         assert!(result.is_err(), "Expected an error but got Ok.");
         assert_eq!(
             result.unwrap_err(),
@@ -1485,7 +1140,7 @@ mod tests {
     #[test]
     fn test_invalid_num_format() {
         // Test for an invalid number format that should trigger an error.
-        let result = BuildParamsSet::from_params_str("k=31,num=abc".to_string());
+        let result = BuildCollection::from_param_str("k=31,num=abc");
         assert!(result.is_err(), "Expected an error but got Ok.");
         assert_eq!(
             result.unwrap_err(),
@@ -1563,85 +1218,6 @@ mod tests {
         assert!(result.is_err(), "Expected an error but got Ok.");
         assert_eq!(result.unwrap_err(), "Parameter string cannot be empty.");
     }
-
-    // TODO -- maybe change these to checking the defaults for each of the moltypes.
-
-    // #[test]
-    // fn test_from_buildparams_abundance() {
-    //     let mut params = BuildParams::default();
-    //     params.track_abundance = true;
-
-    //     // Create a BuildRecord using from_buildparams.
-    //     let record = BuildRecord::from_buildparams(&params);
-
-    //     // Check thqat all fields are set correctly.
-    //     assert_eq!(record.ksize, 31, "Expected ksize to be 31.");
-    //     assert_eq!(record.moltype, "DNA", "Expected moltype to be 'DNA'.");
-    //     assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
-    //     assert_eq!(record.num, 0, "Expected num to be 0.");
-    //     assert!(record.with_abundance, "Expected with_abundance to be true.");
-    //     assert_eq!(
-    //         record.hashed_params,
-    //         params.calculate_hash(),
-    //         "Expected the hashed_params to match the calculated hash."
-    //     );
-    // }
-
-    // #[test]
-    // fn test_from_buildparams_protein() {
-    //     let mut params = BuildParams::default();
-    //     params.ksize = 10;
-    //     params.scaled = 200;
-    //     params.moltype = HashFunctions::Murmur64Protein;
-
-    //     let record = BuildRecord::from_buildparams(&params);
-
-    //     // Check that all fields are set correctly.
-    //     assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
-    //     assert_eq!(record.moltype, "protein", "Expected moltype to be protein.");
-    //     assert_eq!(record.scaled, 200, "Expected scaled to be 200.");
-    //     assert_eq!(
-    //         record.hashed_params,
-    //         params.calculate_hash(),
-    //         "Expected the hashed_params to match the calculated hash."
-    //     );
-    // }
-
-    // #[test]
-    // fn test_from_buildparams_dayhoff() {
-    //     let mut params = BuildParams::default();
-    //     params.ksize = 10;
-    //     params.moltype = HashFunctions::Murmur64Dayhoff;
-
-    //     let record = BuildRecord::from_buildparams(&params);
-
-    //     assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
-    //     assert_eq!(record.moltype, "dayhoff", "Expected moltype to be dayhoff.");
-    //     // didn't change default scaled here, so should still be 1000
-    //     assert_eq!(record.scaled, 1000, "Expected scaled to be 1000.");
-    //     assert_eq!(
-    //         record.hashed_params,
-    //         params.calculate_hash(),
-    //         "Expected the hashed_params to match the calculated hash."
-    //     );
-    // }
-
-    // #[test]
-    // fn test_from_buildparams_hp() {
-    //     let mut params = BuildParams::default();
-    //     params.ksize = 10;
-    //     params.moltype = HashFunctions::Murmur64Hp;
-
-    //     let record = BuildRecord::from_buildparams(&params);
-
-    //     assert_eq!(record.ksize, 10, "Expected ksize to be 10.");
-    //     assert_eq!(record.moltype, "hp", "Expected moltype to be hp.");
-    //     assert_eq!(
-    //         record.hashed_params,
-    //         params.calculate_hash(),
-    //         "Expected the hashed_params to match the calculated hash."
-    //     );
-    // }
 
     #[test]
     fn test_filter_by_manifest_with_matching_records() {
