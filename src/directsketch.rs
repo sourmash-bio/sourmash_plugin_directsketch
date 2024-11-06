@@ -1008,6 +1008,7 @@ pub async fn gbsketch(
     if sig_templates.is_empty() && !download_only {
         bail!("No signatures to build.")
     }
+    let _params = sig_templates.summarize_params();
 
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);

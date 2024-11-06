@@ -276,6 +276,7 @@ def test_gbsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
 def test_gbsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
@@ -889,3 +890,47 @@ def test_gbsketch_overwrite(runtmp, capfd):
     for sig in sigs:
         all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_multiple_ksizes(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig1, ksize=21)
+    ss4 = sourmash.load_one_signature(sig2, ksize=21)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,k=21,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 4
+    for sig in sigs:
+        if 'GCA_000175535.1' in sig.name:
+            assert sig.name == ss1.name
+            assert sig.md5sum() in [ss1.md5sum(), ss3.md5sum()]
+        elif 'GCA_000961135.2' in sig.name:
+            assert sig.name == ss2.name
+            assert sig.md5sum() in [ss2.md5sum(), ss4.md5sum()]
+
+    # check that we're not trying to download and build protein signatures
+    assert 'No protein signature templates provided, and --keep-fasta is not set.' in captured.err
+    assert 'Downloading and sketching genomes only.' in captured.err
+    assert "Building 2 sketch types:" in captured.err
+    assert "moltype: DNA, ksize: 31, scaled: 1000, num: 0, abundance tracking: false" in captured.err
+    assert "moltype: DNA, ksize: 21, scaled: 1000, num: 0, abundance tracking: false" in captured.err

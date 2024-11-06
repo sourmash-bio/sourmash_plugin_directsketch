@@ -219,6 +219,16 @@ impl BuildRecord {
 
         valid
     }
+
+    pub fn params(&self) -> (u32, String, bool, u32, u64) {
+        (
+            self.ksize,
+            self.moltype.clone(),
+            self.with_abundance,
+            self.num,
+            self.scaled,
+        )
+    }
 }
 
 impl PartialEq for BuildRecord {
@@ -272,6 +282,9 @@ impl BuildManifest {
         self.records.clear();
     }
 
+    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u64)> {
+        self.iter().map(|record| record.params()).collect()
+    }
     pub fn filter_manifest(&self, other: &BuildManifest) -> Self {
         // Create a HashSet of references to the `BuildRecord`s in `other`
         let pairs: HashSet<_> = other.records.iter().collect();
@@ -498,6 +511,21 @@ impl BuildCollection {
 
         *current = Some(new_abundance);
         Ok(())
+    }
+
+    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u64)> {
+        let params: HashSet<_> = self.manifest.iter().map(|record| record.params()).collect();
+
+        // Print a description of the summary
+        eprintln!("Building {} sketch types:", params.len());
+
+        for (ksize, moltype, with_abundance, num, scaled) in &params {
+            eprintln!(
+                "moltype: {}, ksize: {}, scaled: {}, num: {}, abundance tracking: {}",
+                moltype, ksize, scaled, num, with_abundance
+            );
+        }
+        params
     }
 
     pub fn parse_params(p_str: &str) -> Result<(BuildRecord, Vec<u32>), String> {
