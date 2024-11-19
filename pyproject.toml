@@ -25,7 +25,7 @@ urlsketch = "sourmash_plugin_directsketch:Download_and_Sketch_Url"
 [project.optional-dependencies]
 test = [
   "pytest>=6.2.4,<8.4.0",
-  "pytest-cov>=2.12,<6.0",
+  "pytest-cov>=2.12,<7.0",
   "pytest-xdist",
 ]
 
