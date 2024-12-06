@@ -884,6 +884,7 @@ pub async fn gbsketch(
     proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
+    n_permits: usize,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -954,7 +955,7 @@ pub async fn gbsketch(
     handles.push(checksum_failures_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
+    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
@@ -1119,6 +1120,7 @@ pub async fn urlsketch(
     keep_fastas: bool,
     download_only: bool,
     batch_size: u32,
+    n_permits: usize,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1197,7 +1199,7 @@ pub async fn urlsketch(
     handles.push(error_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
+    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
