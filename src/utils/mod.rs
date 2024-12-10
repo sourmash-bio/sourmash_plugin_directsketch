@@ -2,7 +2,6 @@ use anyhow::{anyhow, Result};
 use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
-// use std::collections::HashSet;
 use std::fmt;
 
 pub mod buildutils;
