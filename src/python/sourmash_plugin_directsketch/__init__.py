@@ -65,7 +65,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
-        p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int,
+        p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3],
                        help='number of accessions to download simultaneously (default=1)')
         group = p.add_mutually_exclusive_group()
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
@@ -146,8 +146,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
-
-        p.add_argument('-n', '--n-simultaneous-downloads', default=3, type=int,
+        p.add_argument('-n', '--n-simultaneous-downloads', default=3, type=int, choices = [1, 2, 3],
                        help='number of simultaneous downloads (default=3)')
 
 

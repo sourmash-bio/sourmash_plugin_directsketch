@@ -289,7 +289,6 @@ def test_gbsketch_download_only(runtmp, capfd):
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
@@ -301,6 +300,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     fa_files = os.listdir(out_dir)
     assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
     captured = capfd.readouterr()
+    print(captured)
     assert "Failed to send signatures: channel closed" not in captured.err
 
 
