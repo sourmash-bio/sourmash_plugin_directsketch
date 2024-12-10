@@ -22,9 +22,7 @@ use crate::utils::{
     InputMolType, MultiCollection,
 };
 
-use crate::utils::buildutils::{
-    BuildCollection, BuildManifest, MultiBuildCollection, MultiSelect, MultiSelection,
-};
+use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
 use reqwest::Url;
 
 async fn find_genome_directory(
@@ -380,12 +378,6 @@ async fn dl_sketch_assembly_accession(
             };
         }
     }
-    if !download_only {
-        // remove any template sigs that were not populated
-        // to do: I solved this better in branchwater by just not writing empty sigs in BuildUtils.
-        // Bring improvements back here.
-        sigs.filter_empty();
-    }
 
     Ok((sigs, download_failures, checksum_failures))
 }
@@ -433,9 +425,6 @@ async fn dl_sketch_url(
                         sigs.build_sigs_from_data(data, "protein", name.clone(), filename.clone())?;
                     }
                 };
-                // remove any template sigs that were not populated
-                // todo - skip this step, let the writing fn sort this out.
-                sigs.filter_empty();
             }
         }
         Err(err) => {
@@ -990,14 +979,14 @@ pub async fn gbsketch(
             genomes_only = true;
         }
         if genomes_only {
-            // select only DNA templates
-            let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
-            sig_templates = sig_templates.select(&multiselection)?;
+            // select only templates built from DNA input
+            let multiselection = MultiSelection::from_input_moltype("DNA")?;
+            sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
-            // select only protein templates
-            let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-            sig_templates = sig_templates.select(&multiselection)?;
+            // select only templates built from protein input
+            let multiselection = MultiSelection::from_input_moltype("protein")?;
+            sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
         if sig_templates.is_empty() && !download_only {
@@ -1235,12 +1224,12 @@ pub async fn urlsketch(
         if genomes_only {
             // select only DNA templates
             let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
-            sig_templates = sig_templates.select(&multiselection)?;
+            sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
             // select only protein templates
             let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-            sig_templates = sig_templates.select(&multiselection)?;
+            sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
         if sig_templates.is_empty() && !download_only {

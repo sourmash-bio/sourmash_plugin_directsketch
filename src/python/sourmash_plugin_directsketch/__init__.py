@@ -129,7 +129,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument('-o', '--output', default=None,
                        help='output zip file for the signatures')
         p.add_argument('--batch-size', type=non_negative_int, default = 0,
-                       help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
+                       help='Write smaller zipfiles, each containing sigs associated with this number of urls. \
                             This allows urlsketch to recover after unexpected failures, rather than needing to \
                             restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-f', '--fastas',
