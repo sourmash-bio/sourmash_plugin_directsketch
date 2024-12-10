@@ -48,7 +48,7 @@ jobs:
 
     - name: install dependencies 2
       shell: bash -l {0}
-      run: mamba install compilers maturin pytest pandas
+      run: mamba install compilers maturin pytest pandas xz-utils
 
     - name: Run cargo fmt
       run: cargo fmt --all -- --check --verbose
