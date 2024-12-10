@@ -276,20 +276,12 @@ def test_gbsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
 def test_gbsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
-    output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     out_dir = runtmp.output('out_fastas')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
-
-
-    sig1 = get_test_data('GCA_000175535.1.sig.gz')
-    sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
                     '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
@@ -643,7 +635,6 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,

@@ -47,8 +47,15 @@ pip install sourmash_plugin_directsketch
 
 ## Usage Considerations
 
-If you're building large databases (over 20k files), we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, e.g. 10000, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of total signatures included in each zip. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc.
+### Allowing restart with batching
 
+If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of sigs associated with each url provided. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc. For small genomes (e.g. microbes), you can keep batch sizes very large, e.g. 1000-10000. For large eukaryotic genomes where download takes much longer, you may want to use batch sizes in the hundreds.
+
+To build a single database after batched sketching, you can use `sig cat` to build a single zipfile (`sourmash sig cat *.zip -o OUTPUT.zip`) or `sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
+
+### Memory Requirements
+
+Directsketch downloads the full file, optionally checking the `md5sum`, then performs the sketch. As a result, you will need enough memory to hold up to 3 genomes in memory at once. For microbial genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
 
 ## Running the commands
 
@@ -125,7 +132,8 @@ options:
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. 
+                        This allows gbsketch to recover after unexpected failures, rather than needing to
                         restart sketching from scratch. Default: write all sigs to single zipfile.
   -k, --keep-fasta      write FASTA files in addition to sketching. Default: do not write FASTA files
   --download-only       just download genomes; do not sketch
@@ -186,7 +194,8 @@ options:
   -o OUTPUT, --output OUTPUT
                         output zip file for the signatures
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows urlsketch to recover after unexpected failures, rather than needing to
+                        Write smaller zipfiles, each containing sigs associated with this number of urls.
+                        This allows urlsketch to recover after unexpected failures, rather than needing to
                         restart sketching from scratch. Default: write all sigs to single zipfile.
   -f FASTAS, --fastas FASTAS
                         Write fastas here
