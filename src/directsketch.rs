@@ -459,7 +459,6 @@ async fn dl_sketch_url(
         }
     }
 
-    // Ok((built_sigs, download_failures, checksum_failures))
     Ok((sigs, download_failures, checksum_failures))
 }
 
@@ -613,7 +612,6 @@ pub fn zipwriter_handle(
         let mut zip_manifest = BuildManifest::new();
         let mut wrote_sigs = false;
         let mut acc_count = 0; // count the number of accessions (or urls, in urlsketch)
-                               // let mut file_count = 0; // Count of files in the current batch
         let mut zip_writer = None;
 
         if let Some(outpath) = output_sigs {
@@ -639,7 +637,6 @@ pub fn zipwriter_handle(
                         .await
                     {
                         Ok(_) => {
-                            // file_count += sigcoll.size();
                             wrote_sigs = true;
                         }
                         Err(e) => {
@@ -651,14 +648,12 @@ pub fn zipwriter_handle(
                     }
                     // Add all records from buildcoll manifest
                     zip_manifest.extend_from_manifest(&buildcoll.manifest);
-                    // }
                     // each buildcoll has accession
                     acc_count += 1;
                 }
 
                 // if batch size is non-zero and is reached, close the current zip
                 if batch_size > 0 && acc_count >= batch_size {
-                    // if batch_size > 0 && file_count >= batch_size {
                     eprintln!("writing batch {}", batch_index);
                     if let Some(mut zip_writer) = zip_writer.take() {
                         if let Err(e) = zip_manifest
@@ -675,14 +670,12 @@ pub fn zipwriter_handle(
                     }
                     // Start a new batch
                     batch_index += 1;
-                    // file_count = 0;
                     acc_count = 0;
                     zip_manifest.clear();
                     zip_writer = None; // reset zip_writer so a new zip will be created when needed
                 }
             }
 
-            // if file_count > 0 {
             if acc_count > 0 {
                 // write the final manifest
                 if let Some(mut zip_writer) = zip_writer.take() {
@@ -1144,7 +1137,6 @@ pub async fn urlsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    // let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     let (send_failed_checksums, recv_failed_checksum) =
