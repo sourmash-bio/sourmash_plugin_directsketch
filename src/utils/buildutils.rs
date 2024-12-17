@@ -471,6 +471,13 @@ impl BuildCollection {
         Ok(mf.records.len())
     }
 
+    pub fn anydna_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["DNA", "skipm1n3", "skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
     pub fn protein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein"])?;
         let mut mf = self.manifest.clone();
@@ -644,7 +651,6 @@ impl BuildCollection {
                 // Check if the record is already in the set.
                 if seen_records.insert(record.clone()) {
                     // Add the record and its associated signature to the collection.
-                    // coll.add_template_sig_from_record(&record, &record.moltype);
                     coll.add_template_sig_from_record(&record);
                 }
             }
@@ -755,7 +761,6 @@ impl BuildCollection {
         input_moltype: &str,
         record: &SequenceRecord,
     ) -> Result<()> {
-        // Optionally use `par_iter_mut` for parallel execution
         self.iter_mut().try_for_each(|(rec, sig)| {
             if input_moltype == "protein"
                 && (rec.moltype() == HashFunctions::Murmur64Protein
@@ -768,9 +773,9 @@ impl BuildCollection {
                     rec.sequence_added = true;
                 }
             } else if (input_moltype == "DNA" || input_moltype == "dna")
-                && rec.moltype() == HashFunctions::Murmur64Dna
-                || rec.moltype() == HashFunctions::Murmur64Skipm2n3
-                || rec.moltype() == HashFunctions::Murmur64Skipm1n3
+                && (rec.moltype() == HashFunctions::Murmur64Dna
+                    || rec.moltype() == HashFunctions::Murmur64Skipm2n3
+                    || rec.moltype() == HashFunctions::Murmur64Skipm1n3)
             {
                 sig.add_sequence(&record.seq(), true)
                     .context("Failed to add sequence")?;

@@ -952,7 +952,7 @@ pub async fn gbsketch(
             }
         };
         // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.dna_size()? == 0 && !keep_fastas {
+        if sig_templates.anydna_size()? == 0 && !keep_fastas {
             eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
             proteomes_only = true;
         }
@@ -1084,6 +1084,8 @@ pub async fn urlsketch(
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
+    genomes_only: bool,
+    proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
@@ -1174,10 +1176,9 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // todo: add genomes_only / proteomes_only to the input options
     let mut sig_templates = BuildCollection::new();
-    let mut genomes_only = false;
-    let mut proteomes_only = false;
+    let mut genomes_only = genomes_only;
+    let mut proteomes_only = proteomes_only;
 
     if download_only {
         if genomes_only {
@@ -1194,7 +1195,7 @@ pub async fn urlsketch(
             }
         };
         // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.dna_size()? == 0 && !keep_fastas {
+        if sig_templates.anydna_size()? == 0 && !keep_fastas {
             eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
             proteomes_only = true;
         }
@@ -1205,12 +1206,12 @@ pub async fn urlsketch(
         }
         if genomes_only {
             // select only DNA templates
-            let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
+            let multiselection = MultiSelection::from_input_moltype("DNA")?;
             sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
             // select only protein templates
-            let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
+            let multiselection = MultiSelection::from_input_moltype("protein")?;
             sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
