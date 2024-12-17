@@ -51,7 +51,7 @@ impl MultiSelection {
     pub fn from_input_moltype(input_moltype: &str) -> Result<Self, SourmashError> {
         // currently we don't allow translation. Will need to change this when we do.
         // is there a better way to do this?
-        let mut moltypes = vec!["DNA"];
+        let mut moltypes = vec!["DNA", "skipm1n3", "skipm2n3"];
         if input_moltype == "protein" {
             moltypes = vec!["protein", "dayhoff", "hp"];
         }
@@ -97,7 +97,7 @@ pub struct BuildRecord {
     num: u32,
 
     #[getset(get = "pub")]
-    scaled: u64,
+    scaled: u32,
 
     #[getset(get = "pub", set = "pub")]
     n_hashes: Option<usize>,
@@ -183,6 +183,24 @@ impl BuildRecord {
         }
     }
 
+    pub fn default_skipm1n3() -> Self {
+        Self {
+            moltype: "skipm1n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
+        }
+    }
+
+    pub fn default_skipm2n3() -> Self {
+        Self {
+            moltype: "skipm2n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
+        }
+    }
+
     pub fn moltype(&self) -> HashFunctions {
         self.moltype.as_str().try_into().unwrap()
     }
@@ -215,7 +233,7 @@ impl BuildRecord {
 
         if let Some(scaled) = selection.scaled() {
             // num sigs have self.scaled = 0, don't include them
-            valid = valid && self.scaled != 0 && self.scaled <= scaled as u64;
+            valid = valid && self.scaled != 0 && self.scaled <= scaled;
         }
 
         if let Some(num) = selection.num() {
@@ -225,7 +243,7 @@ impl BuildRecord {
         valid
     }
 
-    pub fn params(&self) -> (u32, String, bool, u32, u64) {
+    pub fn params(&self) -> (u32, String, bool, u32, u32) {
         (
             self.ksize,
             self.moltype.clone(),
@@ -287,7 +305,7 @@ impl BuildManifest {
         self.records.clear();
     }
 
-    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u64)> {
+    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u32)> {
         self.iter().map(|record| record.params()).collect()
     }
 
@@ -439,19 +457,34 @@ impl BuildCollection {
         Ok(mf.records.len())
     }
 
+    pub fn skipm1n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm1n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
+    pub fn skipm2n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
     pub fn protein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein"])?;
-        let mut mf = self.manifest.clone(); // temporary mutable copy
+        let mut mf = self.manifest.clone();
         mf.select(&multiselection)?;
         Ok(mf.records.len())
     }
 
     pub fn anyprotein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-        let mut mf = self.manifest.clone(); // temporary mutable copy
+        let mut mf = self.manifest.clone();
         mf.select(&multiselection)?;
         Ok(mf.records.len())
     }
+
     pub fn parse_ksize(value: &str) -> Result<u32, String> {
         value
             .parse::<u32>()
@@ -484,7 +517,7 @@ impl BuildCollection {
 
     pub fn parse_moltype(item: &str, current: &mut Option<String>) -> Result<String, String> {
         let new_moltype = match item {
-            "protein" | "dna" | "dayhoff" | "hp" => item.to_string(),
+            "protein" | "dna" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => item.to_string(),
             _ => return Err(format!("unknown moltype '{}'", item)),
         };
 
@@ -523,7 +556,7 @@ impl BuildCollection {
         let mut moltype: Option<String> = None;
         let mut track_abundance: Option<bool> = None;
         let mut num: Option<u32> = None;
-        let mut scaled: Option<u64> = None;
+        let mut scaled: Option<u32> = None;
         let mut seed: Option<u32> = None;
 
         for item in p_str.split(',') {
@@ -534,7 +567,7 @@ impl BuildCollection {
                 "abund" | "noabund" => {
                     Self::parse_abundance(item, &mut track_abundance)?;
                 }
-                "protein" | "dna" | "DNA" | "dayhoff" | "hp" => {
+                "protein" | "dna" | "DNA" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => {
                     Self::parse_moltype(item, &mut moltype)?;
                 }
                 _ if item.starts_with("num=") => {
@@ -557,6 +590,8 @@ impl BuildCollection {
             Some("protein") => BuildRecord::default_protein(),
             Some("dayhoff") => BuildRecord::default_dayhoff(),
             Some("hp") => BuildRecord::default_hp(),
+            Some("skipm1n3") => BuildRecord::default_skipm1n3(),
+            Some("skipm2n3") => BuildRecord::default_skipm2n3(),
             _ => BuildRecord::default_dna(), // no moltype --> assume DNA
         };
 
@@ -644,6 +679,8 @@ impl BuildCollection {
             .dna(record.moltype == "DNA")
             .dayhoff(record.moltype == "dayhoff")
             .hp(record.moltype == "hp")
+            .skipm1n3(record.moltype == "skipm1n3")
+            .skipm2n3(record.moltype == "skipm2n3")
             .num_hashes(record.num)
             .track_abundance(record.with_abundance)
             .build();
@@ -732,6 +769,8 @@ impl BuildCollection {
                 }
             } else if (input_moltype == "DNA" || input_moltype == "dna")
                 && rec.moltype() == HashFunctions::Murmur64Dna
+                || rec.moltype() == HashFunctions::Murmur64Skipm2n3
+                || rec.moltype() == HashFunctions::Murmur64Skipm1n3
             {
                 sig.add_sequence(&record.seq(), true)
                     .context("Failed to add sequence")?;

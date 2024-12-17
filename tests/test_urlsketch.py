@@ -636,7 +636,7 @@ def test_urlsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     assert not os.path.exists(output) # for now, orig output file should be empty.
     captured = capfd.readouterr()
     print(captured.err)
-    assert f"Warning: Invalid zip file '{out2}'; skipping." in captured.err
+    assert f"Warning: Failed to load zip file '{out2}'" in captured.err
 
     expected_siginfo = {
         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
