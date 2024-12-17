@@ -148,6 +148,9 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                        help='number of times to retry failed downloads')
         p.add_argument('-n', '--n-simultaneous-downloads', default=3, type=int, choices = [1, 2, 3],
                        help='number of simultaneous downloads (default=3)')
+        group = p.add_mutually_exclusive_group()
+        group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
+        group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
 
 
     def main(self, args):
@@ -179,6 +182,8 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                                                            args.retry_times,
                                                            args.fastas,
                                                            args.keep_fasta,
+                                                           args.genomes_only,
+                                                           args.proteomes_only,
                                                            args.download_only,
                                                            args.batch_size,
                                                            args.n_simultaneous_downloads,

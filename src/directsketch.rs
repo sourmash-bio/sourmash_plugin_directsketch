@@ -540,34 +540,24 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
-                // Wrap the `from_zipfile` call in `catch_unwind` to prevent panic propagation
-                let result = panic::catch_unwind(|| Collection::from_zipfile(&entry_path));
-                match result {
-                    Ok(Ok(collection)) => {
-                        // Successfully loaded the collection, push to `collections`
+                Collection::from_zipfile(&entry_path)
+                    .and_then(|collection| {
                         collections.push(collection);
 
-                        // Extract the batch number (if it exists) and update the highest_batch
+                        // Extract batch number if it exists
                         if let Some(batch_str) = captures.get(1) {
                             if let Ok(batch_num) = batch_str.as_str().parse::<usize>() {
                                 highest_batch = max(highest_batch, batch_num);
                             }
                         }
-                    }
-                    Ok(Err(e)) => {
-                        // Handle the case where `from_zipfile` returned an error
+                        Ok(()) // Return Ok(()) for the closure
+                    })
+                    .unwrap_or_else(|e| {
                         eprintln!(
-                            "Warning: Failed to load zip file '{}'. Error: {:?}",
+                            "Warning: Failed to load zip file '{}'; skipping. Zipfile Error: {:?}",
                             entry_path, e
                         );
-                        continue; // Skip the file and continue
-                    }
-                    Err(_) => {
-                        // The code inside `from_zipfile` panicked
-                        eprintln!("Warning: Invalid zip file '{}'; skipping.", entry_path);
-                        continue; // Skip the file and continue
-                    }
-                }
+                    });
             }
         }
     }
@@ -962,7 +952,7 @@ pub async fn gbsketch(
             }
         };
         // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.dna_size()? == 0 && !keep_fastas {
+        if sig_templates.anydna_size()? == 0 && !keep_fastas {
             eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
             proteomes_only = true;
         }
@@ -1094,6 +1084,8 @@ pub async fn urlsketch(
     retry_times: u32,
     fasta_location: String,
     keep_fastas: bool,
+    genomes_only: bool,
+    proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
@@ -1184,10 +1176,9 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    // todo: add genomes_only / proteomes_only to the input options
     let mut sig_templates = BuildCollection::new();
-    let mut genomes_only = false;
-    let mut proteomes_only = false;
+    let mut genomes_only = genomes_only;
+    let mut proteomes_only = proteomes_only;
 
     if download_only {
         if genomes_only {
@@ -1204,7 +1195,7 @@ pub async fn urlsketch(
             }
         };
         // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.dna_size()? == 0 && !keep_fastas {
+        if sig_templates.anydna_size()? == 0 && !keep_fastas {
             eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
             proteomes_only = true;
         }
@@ -1215,12 +1206,12 @@ pub async fn urlsketch(
         }
         if genomes_only {
             // select only DNA templates
-            let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
+            let multiselection = MultiSelection::from_input_moltype("DNA")?;
             sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
             // select only protein templates
-            let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
+            let multiselection = MultiSelection::from_input_moltype("protein")?;
             sig_templates.select(&multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
