@@ -92,8 +92,15 @@ pub struct AccessionData {
     pub accession: String,
     pub name: String,
     pub moltype: InputMolType,
-    pub url_md5_pairs: Vec<(reqwest::Url, Option<String>)>,
+    pub url_info: Vec<UrlInfo>,
     pub download_filename: Option<String>, // Need to require this if --keep-fastas are used
+}
+
+#[derive(Clone)]
+pub struct UrlInfo {
+    pub url: reqwest::Url,
+    pub md5sum: Option<String>,
+    pub range: Option<(usize, usize)>,
 }
 
 #[derive(Clone)]
@@ -195,6 +202,7 @@ pub fn load_accession_info(
         "md5sum",
         "download_filename",
         "url",
+        "range",
     ];
     if header != expected_header {
         return Err(anyhow!(
@@ -244,34 +252,58 @@ pub fn load_accession_info(
             return Err(anyhow!("No valid URLs found in 'url' field"));
         }
 
-        // Parse MD5 sums and build url_md5_pairs
+        // Parse MD5sums (optional)
         let md5sum_field = record.get(3).unwrap_or("");
-        let url_md5_pairs: Vec<(reqwest::Url, Option<String>)> = {
-            if !md5sum_field.trim().is_empty() {
-                let parsed_md5s: Vec<String> = md5sum_field
-                    .split(';')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-
-                if parsed_md5s.len() != urls.len() {
-                    return Err(anyhow!(
-                    "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
-                    parsed_md5s.len(),
-                    urls.len(),
-                    acc
-                ));
-                }
-
-                // Pair URLs with corresponding MD5 sums
-                urls.into_iter()
-                    .zip(parsed_md5s.into_iter().map(Some))
-                    .collect()
-            } else {
-                // If no MD5 sums are provided, pair URLs with None
-                urls.into_iter().zip(std::iter::repeat(None)).collect()
-            }
+        let md5sums: Vec<Option<String>> = if !md5sum_field.trim().is_empty() {
+            md5sum_field
+                .split(';')
+                .map(|s| Some(s.trim().to_string()))
+                .collect()
+        } else {
+            vec![None; urls.len()]
         };
+
+        if md5sums.len() != urls.len() {
+            return Err(anyhow!(
+                "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
+                md5sums.len(),
+                urls.len(),
+                acc
+            ));
+        }
+
+        // Parse ranges (optional)
+        let range_field = record.get(6).unwrap_or("");
+        let ranges: Vec<Option<(usize, usize)>> = if !range_field.trim().is_empty() {
+            range_field
+                .split(';')
+                .map(|s| {
+                    let s = s.trim();
+                    if s.starts_with('(') && s.ends_with(')') {
+                        let range_str = &s[1..s.len() - 1];
+                        let parts: Vec<&str> = range_str.split(':').collect();
+                        if parts.len() == 2 {
+                            if let (Ok(start), Ok(end)) = (parts[0].parse(), parts[1].parse()) {
+                                if start < end {
+                                    return Some((start, end));
+                                }
+                            }
+                        }
+                    }
+                    None
+                })
+                .collect()
+        } else {
+            vec![None; urls.len()]
+        };
+
+        // Combine URLs, MD5 sums, and ranges into UrlInfo
+        let url_info: Vec<UrlInfo> = urls
+            .into_iter()
+            .zip(md5sums)
+            .zip(ranges)
+            .map(|((url, md5sum), range)| UrlInfo { url, md5sum, range })
+            .collect();
 
         let download_filename = record.get(4).map(|s| s.to_string());
         if keep_fasta && download_filename.is_none() {
@@ -282,7 +314,7 @@ pub fn load_accession_info(
             accession: acc,
             name,
             moltype,
-            url_md5_pairs,
+            url_info,
             download_filename,
         });
     }

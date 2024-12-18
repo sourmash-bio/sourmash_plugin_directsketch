@@ -368,10 +368,16 @@ async fn dl_sketch_assembly_accession(
             // sketch data
             match file_type {
                 GenBankFileType::Genomic => {
-                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone())?;
+                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone(), None)?;
                 }
                 GenBankFileType::Protein => {
-                    sigs.build_sigs_from_data(data, "protein", name.clone(), file_name.clone())?;
+                    sigs.build_sigs_from_data(
+                        data,
+                        "protein",
+                        name.clone(),
+                        file_name.clone(),
+                        None,
+                    )?;
                 }
                 _ => {} // Do nothing for other file types
             };
@@ -404,7 +410,10 @@ async fn dl_sketch_url(
     let filename = download_filename.clone().unwrap_or("".to_string());
     let moltype = accinfo.moltype;
 
-    for (url, expected_md5) in accinfo.url_md5_pairs {
+    for uinfo in accinfo.url_info {
+        let url = uinfo.url;
+        let expected_md5 = uinfo.md5sum;
+        let range = uinfo.range;
         match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
             Ok(data) => {
                 // if keep_fastas, write file to disk
@@ -430,7 +439,13 @@ async fn dl_sketch_url(
 
                     match moltype {
                         InputMolType::Dna => {
-                            sigs.build_sigs_from_data(data, "DNA", name.clone(), filename.clone())?;
+                            sigs.build_sigs_from_data(
+                                data,
+                                "DNA",
+                                name.clone(),
+                                filename.clone(),
+                                range,
+                            )?;
                         }
                         InputMolType::Protein => {
                             sigs.build_sigs_from_data(
@@ -438,6 +453,7 @@ async fn dl_sketch_url(
                                 "protein",
                                 name.clone(),
                                 filename.clone(),
+                                range,
                             )?;
                         }
                     };
@@ -729,7 +745,7 @@ pub fn failures_handle(
 
                 // Attempt to write CSV headers
                 if let Err(e) = writer
-                    .write_all(b"accession,name,moltype,md5sum,download_filename,url\n")
+                    .write_all(b"accession,name,moltype,md5sum,download_filename,url,range\n")
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
@@ -747,13 +763,14 @@ pub fn failures_handle(
                 }) = recv_failed.recv().await
                 {
                     let record = format!(
-                        "{},{},{},{},{},{}\n",
+                        "{},{},{},{},{},{},{}\n",
                         accession,
                         name,
                         moltype,
                         md5sum.unwrap_or("".to_string()),
                         download_filename.unwrap_or("".to_string()),
-                        url.map(|u| u.to_string()).unwrap_or("".to_string())
+                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
+                        "",
                     );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {

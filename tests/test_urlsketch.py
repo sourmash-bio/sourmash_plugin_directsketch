@@ -59,15 +59,16 @@ def test_urlsketch_simple(runtmp):
     assert os.path.exists(failed)
     with open(failed, 'r') as failF:
         header = next(failF).strip()
-        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
         for line in failF:
             print(line)
-            acc, name, moltype, md5sum, download_filename, url = line.strip().split(',')
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
             assert acc == "GCA_000175535.1"
             assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
             assert moltype == "protein"
             assert download_filename == "GCA_000175535.1_protein.faa.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+            assert range == ""
 
 
 def test_urlsketch_save_fastas(runtmp):
@@ -227,7 +228,7 @@ def test_urlsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "moltype", "md5sum", "download_filename", "url"]' in captured.err
+    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "moltype", "md5sum", "download_filename", "url", "range"]' in captured.err
 
 
 def test_urlsketch_bad_acc_fail(runtmp, capfd):
@@ -285,13 +286,14 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     with open(failed, 'r') as failF:
         fail_lines = failF.readlines()
         assert len(fail_lines) == 2
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
-        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
         assert acc == "GCA_000175535.1"
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert range == ""
     assert not runtmp.last_result.out # stdout should be empty
 
     out2 = runtmp.output('failed-retry.zip')
@@ -311,15 +313,16 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     assert os.path.exists(fail2)
     with open(fail2, 'r') as failF:
         header = next(failF).strip()
-        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
         for line in failF:
             print(line)
-            acc, name, moltype, md5sum, download_filename, url = line.strip().split(',')
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
             assert acc == "GCA_000175535.1"
             assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
             assert moltype == "protein"
             assert download_filename == "GCA_000175535.1_protein.faa.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+            assert range == ""
 
 
 def test_zip_file_permissions(runtmp):
@@ -394,7 +397,7 @@ def test_urlsketch_protein_dayhoff_hp(runtmp):
         fail_lines = failF.readlines()
         print(fail_lines)
         assert len(fail_lines) == 1
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
 
 
 def test_urlsketch_md5sum_mismatch_checksum_file(runtmp, capfd):
@@ -472,16 +475,17 @@ def test_urlsketch_md5sum_mismatch_no_checksum_file(runtmp, capfd):
     assert os.path.exists(failed)
     with open(failed, 'r') as failF:
         header = next(failF).strip()
-        assert header == "accession,name,moltype,md5sum,download_filename,url"
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
         for line in failF:
             print(line)
-            acc, name, moltype, md5sum, download_filename, url= line.strip().split(',')
+            acc, name, moltype, md5sum, download_filename, url, range= line.strip().split(',')
             assert acc == "GCA_000175535.1"
             assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
             assert moltype == "DNA"
             assert md5sum == "b1234567"
             assert download_filename == "GCA_000175535.1_genomic.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == ""
 
 
 def test_urlsketch_simple_batched(runtmp, capfd):
@@ -601,14 +605,13 @@ def test_urlsketch_negative_batch_size(runtmp):
 def test_urlsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     # test restart with complete + incomplete zipfile batches
     acc_csv = get_test_data('acc-url.csv')
-    output = runtmp.output('simple.zip')
+    output = runtmp.output('restart.zip')
     failed = runtmp.output('failed.csv')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
-    out1 = runtmp.output('simple.1.zip')
-    out2 = runtmp.output('simple.2.zip')
-    out3 = runtmp.output('simple.3.zip')
-
+    out1 = runtmp.output('restart.1.zip')
+    out2 = runtmp.output('restart.2.zip')
+    out3 = runtmp.output('restart.3.zip')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
