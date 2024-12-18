@@ -85,15 +85,15 @@ impl GenBankFileType {
         }
     }
 }
+
 #[allow(dead_code)]
 #[derive(Clone)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
     pub moltype: InputMolType,
-    pub url: reqwest::Url,
-    pub expected_md5sum: Option<String>,
-    pub download_filename: Option<String>, // need to require this if --keep-fastas are used
+    pub url_md5_pairs: Vec<(reqwest::Url, Option<String>)>,
+    pub download_filename: Option<String>, // Need to require this if --keep-fastas are used
 }
 
 #[derive(Clone)]
@@ -227,36 +227,62 @@ pub fn load_accession_info(
             .ok_or_else(|| anyhow!("Missing 'moltype' field"))?
             .parse::<InputMolType>()
             .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
-        let expected_md5sum = record.get(3).map(|s| s.to_string());
+
+        // Parse URLs
+        let url_field = record
+            .get(5)
+            .ok_or_else(|| anyhow!("Missing 'url' field"))?;
+
+        let urls: Vec<reqwest::Url> = url_field
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .filter_map(|s| reqwest::Url::parse(s).ok())
+            .collect();
+
+        if urls.is_empty() {
+            return Err(anyhow!("No valid URLs found in 'url' field"));
+        }
+
+        // Parse MD5 sums and build url_md5_pairs
+        let md5sum_field = record.get(3).unwrap_or("");
+        let url_md5_pairs: Vec<(reqwest::Url, Option<String>)> = {
+            if !md5sum_field.trim().is_empty() {
+                let parsed_md5s: Vec<String> = md5sum_field
+                    .split(';')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+
+                if parsed_md5s.len() != urls.len() {
+                    return Err(anyhow!(
+                    "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
+                    parsed_md5s.len(),
+                    urls.len(),
+                    acc
+                ));
+                }
+
+                // Pair URLs with corresponding MD5 sums
+                urls.into_iter()
+                    .zip(parsed_md5s.into_iter().map(Some))
+                    .collect()
+            } else {
+                // If no MD5 sums are provided, pair URLs with None
+                urls.into_iter().zip(std::iter::repeat(None)).collect()
+            }
+        };
+
         let download_filename = record.get(4).map(|s| s.to_string());
         if keep_fasta && download_filename.is_none() {
             return Err(anyhow!("Missing 'download_filename' field"));
-        }
-        let url = record
-            .get(5)
-            .ok_or_else(|| anyhow!("Missing 'url' field"))?
-            .split(',')
-            .filter_map(|s| {
-                if s.starts_with("http://") || s.starts_with("https://") || s.starts_with("ftp://")
-                {
-                    reqwest::Url::parse(s).ok()
-                } else {
-                    None
-                }
-            })
-            .next()
-            .ok_or_else(|| anyhow!("Invalid 'url' value"))?;
-        // count entries with url and md5sum
-        if expected_md5sum.is_some() {
-            md5sum_count += 1;
         }
         // store accession data
         results.push(AccessionData {
             accession: acc,
             name,
             moltype,
-            url,
-            expected_md5sum,
+            url_md5_pairs,
             download_filename,
         });
     }

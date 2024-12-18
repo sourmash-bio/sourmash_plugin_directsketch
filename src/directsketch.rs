@@ -7,7 +7,6 @@ use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
@@ -388,7 +387,7 @@ async fn dl_sketch_url(
     accinfo: AccessionData,
     location: &PathBuf,
     retry: Option<u32>,
-    _keep_fastas: bool,
+    keep_fastas: bool,
     mut sigs: BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
@@ -401,63 +400,85 @@ async fn dl_sketch_url(
 
     let name = accinfo.name;
     let accession = accinfo.accession;
-    let url = accinfo.url;
-    let expected_md5 = accinfo.expected_md5sum;
     let download_filename = accinfo.download_filename;
+    let filename = download_filename.clone().unwrap_or("".to_string());
     let moltype = accinfo.moltype;
 
-    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
-        Ok(data) => {
-            // check keep_fastas instead??
-            if let Some(ref download_filename) = download_filename {
-                let path = location.join(download_filename);
-                fs::write(path, &data).context("Failed to write data to file")?;
-            }
-            if !download_only {
-                let filename = download_filename.clone().unwrap_or("".to_string());
-                // sketch data
+    for (url, expected_md5) in accinfo.url_md5_pairs {
+        match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
+            Ok(data) => {
+                // if keep_fastas, write file to disk
+                if keep_fastas {
+                    // note, if multiple urls are provided, this will append to the same file
+                    if let Some(ref download_filename) = download_filename {
+                        let path = location.join(download_filename);
+                        // Open the file in append mode (or create it if it doesn't exist)
+                        let mut file = tokio::fs::OpenOptions::new()
+                            .create(true) // Create the file if it doesn't exist
+                            .append(true) // Append to the file
+                            .open(&path)
+                            .await
+                            .context("Failed to open file in append mode")?;
+                        file.write_all(&data)
+                            .await
+                            .context("Failed to write data to file")?;
+                        // std::fs::write(&path, &data).context("Failed to write data to file")?;
+                    }
+                }
+                if !download_only {
+                    // sketch data
 
-                match moltype {
-                    InputMolType::Dna => {
-                        sigs.build_sigs_from_data(data, "DNA", name.clone(), filename.clone())?;
-                    }
-                    InputMolType::Protein => {
-                        sigs.build_sigs_from_data(data, "protein", name.clone(), filename.clone())?;
-                    }
-                };
+                    match moltype {
+                        InputMolType::Dna => {
+                            sigs.build_sigs_from_data(data, "DNA", name.clone(), filename.clone())?;
+                        }
+                        InputMolType::Protein => {
+                            sigs.build_sigs_from_data(
+                                data,
+                                "protein",
+                                name.clone(),
+                                filename.clone(),
+                            )?;
+                        }
+                    };
+                }
             }
-        }
-        Err(err) => {
-            let error_message = err.to_string();
-            // did we have a checksum error or a download error?
-            // here --> keep track of accession errors + filetype
-            if error_message.contains("MD5 hash does not match") {
-                let checksum_mismatch: FailedChecksum = FailedChecksum {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    moltype: moltype.to_string(),
-                    md5sum_url: None,
-                    download_filename,
-                    url: Some(url.clone()),
-                    expected_md5sum: expected_md5.clone(),
-                    reason: error_message.clone(),
-                };
-                checksum_failures.push(checksum_mismatch);
-                sigs = empty_coll;
-            } else {
-                let failed_download = FailedDownload {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    moltype: moltype.to_string(),
-                    md5sum: expected_md5.map(|x| x.to_string()),
-                    download_filename,
-                    url: Some(url),
-                };
-                download_failures.push(failed_download);
-                sigs = empty_coll;
+            Err(err) => {
+                let error_message = err.to_string();
+                // did we have a checksum error or a download error?
+                // here --> keep track of accession errors + filetype
+                if error_message.contains("MD5 hash does not match") {
+                    let checksum_mismatch: FailedChecksum = FailedChecksum {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        moltype: moltype.to_string(),
+                        md5sum_url: None,
+                        download_filename: download_filename.clone(),
+                        url: Some(url.clone()),
+                        expected_md5sum: expected_md5.clone(),
+                        reason: error_message.clone(),
+                    };
+                    checksum_failures.push(checksum_mismatch);
+                } else {
+                    let failed_download = FailedDownload {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        moltype: moltype.to_string(),
+                        md5sum: expected_md5.map(|x| x.to_string()),
+                        download_filename,
+                        url: Some(url),
+                    };
+                    download_failures.push(failed_download);
+                    // Clear signatures and return immediately on failure
+                    sigs = empty_coll;
+                    return Ok((sigs, download_failures, checksum_failures));
+                }
             }
         }
     }
+
+    // Update signature info
+    sigs.update_info(name, filename);
 
     Ok((sigs, download_failures, checksum_failures))
 }
