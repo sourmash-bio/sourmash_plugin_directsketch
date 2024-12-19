@@ -765,7 +765,9 @@ impl BuildCollection {
         // Get the full sequence and apply the range if provided
         let full_sequence = record.seq();
         let sequence_to_process = if let Some((start, end)) = range {
-            if start >= end || end > full_sequence.len() {
+            // Adjust for 1-based input: start - 1, end remains unchanged
+            let adjusted_start = start.saturating_sub(1); // Ensure no underflow
+            if adjusted_start >= end || end > full_sequence.len() {
                 return Err(anyhow::anyhow!(
                     "Invalid range: start={}, end={}, sequence length={}",
                     start,
@@ -773,7 +775,7 @@ impl BuildCollection {
                     full_sequence.len()
                 ));
             }
-            &full_sequence[start..end]
+            &full_sequence[adjusted_start..end]
         } else {
             &full_sequence
         };

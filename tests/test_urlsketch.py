@@ -783,3 +783,36 @@ def test_urlsketch_simple_merged(runtmp):
     assert sig.md5sum() == msig.md5sum()
     assert sig.minhash.moltype == msig.minhash.moltype == "DNA"
     assert os.path.exists(failed)
+
+
+def test_urlsketch_with_range(runtmp):
+    acc_csv = get_test_data('acc-url-range.csv')
+    subseqs = get_test_data('subseqs.zip')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+
+    # open subseq sigs
+    ssigidx = sourmash.load_file_as_index(subseqs)
+    ss1 = list(ssigidx.signatures())[0]
+    ss2 = list(ssigidx.signatures())[1]
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 2
+    for sig in sigs:
+        ident = sig.name.split(' ')[0]
+        assert ident in ["GCA_000175535.1_first50kb", "GCA_000175535.1_second50kb"]
+        print(ident)
+        if ident == "GCA_000175535.1_first50kb":
+            assert sig.md5sum() == ss1.md5sum()
+        if ident == "GCA_000175535.1_second50kb":
+            assert sig.md5sum() == ss2.md5sum()
+    assert os.path.exists(failed)
