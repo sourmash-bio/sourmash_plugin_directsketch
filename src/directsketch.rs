@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
+use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::Client;
 use sourmash::collection::Collection;
@@ -387,6 +388,59 @@ async fn dl_sketch_assembly_accession(
     Ok((sigs, download_failures, checksum_failures))
 }
 
+/// Extracts the specified range from sequences in data and writes to the file in FASTA format.
+async fn process_and_write_range(
+    data: &[u8],
+    file: &mut File,
+    range: Option<(usize, usize)>,
+) -> Result<()> {
+    let cursor = std::io::Cursor::new(data);
+    let mut fastx_reader =
+        needletail::parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+
+    while let Some(record) = fastx_reader.next() {
+        let record = record.context("Failed to read record")?;
+        let sequence_to_write = extract_range_from_record(&record, range)
+            .context("Failed to extract range from record")?;
+
+        // Use the `id` and `seq` fields directly to construct the FASTA entry
+        let fasta_entry = format!(
+            ">{}\n{}\n",
+            String::from_utf8_lossy(record.id()),
+            String::from_utf8_lossy(&sequence_to_write)
+        );
+
+        // Write the FASTA entry to the file
+        file.write_all(fasta_entry.as_bytes())
+            .await
+            .context("Failed to write FASTA entry to file")?;
+    }
+
+    Ok(())
+}
+
+/// Extracts a range from a `SequenceRecord`. Returns the specified sequence slice as a `Vec<u8>`.
+fn extract_range_from_record(
+    record: &SequenceRecord,
+    range: Option<(usize, usize)>,
+) -> Result<Vec<u8>> {
+    let full_sequence = record.seq();
+    if let Some((start, end)) = range {
+        let adjusted_start = start.saturating_sub(1); // Adjust for 1-based indexing
+        if adjusted_start >= end || end > full_sequence.len() {
+            return Err(anyhow::anyhow!(
+                "Invalid range: start={}, end={}, sequence length={}",
+                start,
+                end,
+                full_sequence.len()
+            ));
+        }
+        Ok(full_sequence[adjusted_start..end].to_vec())
+    } else {
+        Ok(full_sequence.to_vec())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_url(
     client: &Client,
@@ -428,10 +482,16 @@ async fn dl_sketch_url(
                             .open(&path)
                             .await
                             .context("Failed to open file in append mode")?;
-                        file.write_all(&data)
-                            .await
-                            .context("Failed to write data to file")?;
-                        // std::fs::write(&path, &data).context("Failed to write data to file")?;
+                        if range.is_some() {
+                            process_and_write_range(&data, &mut file, range)
+                                .await
+                                .context("Failed to process and write range to file")?;
+                        } else {
+                            // Write the entire data if no range is provided
+                            file.write_all(&data)
+                                .await
+                                .context("Failed to write data to file")?;
+                        }
                     }
                 }
                 if !download_only {

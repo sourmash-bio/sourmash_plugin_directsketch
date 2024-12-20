@@ -3,6 +3,8 @@ Tests for urlsketch
 """
 import os
 import pytest
+import gzip
+import screed
 
 import csv
 import sourmash
@@ -802,6 +804,61 @@ def test_urlsketch_with_range(runtmp):
 
     assert os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 2
+    for sig in sigs:
+        ident = sig.name.split(' ')[0]
+        assert ident in ["GCA_000175535.1_first50kb", "GCA_000175535.1_second50kb"]
+        print(ident)
+        if ident == "GCA_000175535.1_first50kb":
+            assert sig.md5sum() == ss1.md5sum()
+        if ident == "GCA_000175535.1_second50kb":
+            assert sig.md5sum() == ss2.md5sum()
+    assert os.path.exists(failed)
+
+
+def test_urlsketch_with_range_keep_fasta(runtmp):
+    acc_csv = get_test_data('acc-url-range.csv')
+    subseqs = get_test_data('subseqs.zip')
+    first50kb = get_test_data('GCA_000175535.1_ASM17553v1_genomic.1-50000.fna.gz')
+    second50kb = get_test_data('GCA_000175535.1_ASM17553v1_genomic.50000-100000.fna.gz')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    # open subseq sigs
+    ssigidx = sourmash.load_file_as_index(subseqs)
+    ss1 = list(ssigidx.signatures())[0]
+    ss2 = list(ssigidx.signatures())[1]
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--fastas', out_dir,
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    # check fasta files are present
+    fa_files = os.listdir(out_dir)
+    print(fa_files)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic_first50kb.urlsketch.fna.gz', 'GCA_000175535.1_genomic_second50kb.urlsketch.fna.gz'])
+
+     # Compare the contents of the generated FASTA files to the expected ones
+    for generated_file, expected_file in [
+        ('GCA_000175535.1_genomic_first50kb.urlsketch.fna.gz', first50kb),
+        ('GCA_000175535.1_genomic_second50kb.urlsketch.fna.gz', second50kb)
+    ]:
+        generated_path = os.path.join(out_dir, generated_file)
+
+        # Read the records from both files using screed
+        gen_records = set((record.name, record.sequence) for record in screed.open(generated_path))
+        exp_records = set((record.name, record.sequence) for record in screed.open(expected_file))
+
+        # Assert that the records are identical
+        assert gen_records == exp_records
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
