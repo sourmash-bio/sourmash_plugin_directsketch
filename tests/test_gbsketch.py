@@ -65,13 +65,14 @@ def test_gbsketch_simple(runtmp, capfd):
         fail_lines = failF.readlines()
         print(fail_lines)
         assert len(fail_lines) == 2
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
-        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
         assert acc == "GCA_000175535.1"
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert range == ""
 
 
 def test_gbsketch_simple_url(runtmp):
@@ -276,21 +277,12 @@ def test_gbsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
 def test_gbsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
-    output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     out_dir = runtmp.output('out_fastas')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
-
-
-    sig1 = get_test_data('GCA_000175535.1.sig.gz')
-    sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
                     '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
@@ -301,6 +293,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     fa_files = os.listdir(out_dir)
     assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_protein.faa.gz', 'GCA_000961135.2_genomic.fna.gz'])
     captured = capfd.readouterr()
+    print(captured)
     assert "Failed to send signatures: channel closed" not in captured.err
 
 
@@ -570,13 +563,14 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         fail_lines = failF.readlines()
         print(fail_lines)
         assert len(fail_lines) == 2
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
-        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
         assert acc == "GCA_000175535.1"
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert range == ""
 
 
 def test_gbsketch_simple_batched_single(runtmp, capfd):
@@ -643,7 +637,6 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
@@ -791,7 +784,7 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     assert not os.path.exists(output)  # for now, orig output file should be empty.
     captured = capfd.readouterr()
     print(captured.err)
-    assert f"Warning: Invalid zip file '{out2}'; skipping." in captured.err
+    assert f"Warning: Failed to load zip file '{out2}'" in captured.err
 
     # we created this one with sig cat
     idx = sourmash.load_file_as_index(out1)
@@ -889,3 +882,94 @@ def test_gbsketch_overwrite(runtmp, capfd):
     for sig in sigs:
         all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_skipmer(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "skipm2n3,k=21,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
+
+        # read the file with python and check sigs
+    import zipfile, gzip, json
+
+    with zipfile.ZipFile(output, "r") as zf:
+        # Check the manifest exists
+        assert "SOURMASH-MANIFEST.csv" in zf.namelist()
+
+        expected_signatures = [
+            {
+                "name": "GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454",
+                "ksize": 21,
+                "scaled": 1000,
+                "moltype": "skipm2n3",
+                "md5sum": "5745400ada0c3a27ddf1e8d5d1a46b7a",
+            },
+            {
+                "name": "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14",
+                "ksize": 21,
+                "scaled": 1000,
+                "moltype": "skipm2n3",
+                "md5sum": "2e37ca0bb9228bc3f5e1337e8535ab26",
+            },
+        ]
+        expected_signatures_dict = {exp["md5sum"]: exp for exp in expected_signatures}
+
+        # Read and parse the manifest
+        with zf.open("SOURMASH-MANIFEST.csv") as manifest_file:
+            manifest_data = manifest_file.read().decode("utf-8").splitlines()
+            manifest_data = [line for line in manifest_data if not line.startswith("#")]
+            manifest_reader = csv.DictReader(manifest_data)
+
+            for row in manifest_reader:
+                if row["moltype"] == "skipm2n3":
+                    print("Manifest Row:", row)
+
+                    # Validate row fields
+                    md5sum = row["md5"]
+                    assert (
+                        md5sum in expected_signatures_dict
+                    ), f"Unexpected md5sum: {md5sum}"
+                    expected = expected_signatures_dict[md5sum]
+                    assert (
+                        row["name"] == expected["name"]
+                    ), f"Name mismatch: {row['name']}"
+                    assert (
+                        int(row["ksize"]) == expected["ksize"]
+                    ), f"Ksize mismatch: {row['ksize']}"
+                    assert (
+                        row["moltype"] == expected["moltype"]
+                    ), f"Moltype mismatch: {row['moltype']}"
+
+                    sig_path = row["internal_location"]
+                    assert sig_path.startswith("signatures/")
+
+                    # Extract and read the signature file
+                    with zf.open(sig_path) as sig_gz:
+                        with gzip.open(sig_gz, "rt") as sig_file:
+                            sig_contents = json.load(sig_file)
+                            print("Signature Contents:", sig_contents)
+
+                            # Validate signature contents
+                            sig_data = sig_contents[0]
+                            print(sig_data)
+                            siginfo = sig_data["signatures"][0]
+                            assert (
+                                siginfo["md5sum"] == md5sum
+                            ), f"MD5 mismatch: {siginfo['md5sum']}"
+                            assert (
+                                siginfo["ksize"] == expected["ksize"]
+                            ), f"Ksize mismatch: {siginfo['ksize']}"
+                            assert (
+                                siginfo["molecule"] == expected["moltype"]
+                            ), f"Moltype mismatch: {siginfo['molecule']}"

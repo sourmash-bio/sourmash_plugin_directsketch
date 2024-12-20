@@ -32,14 +32,29 @@ pub struct MultiSelection {
 }
 
 impl MultiSelection {
-    /// Create a `MultiSelection` from a single `Selection`
-    pub fn new(selection: Selection) -> Self {
-        MultiSelection {
-            selections: vec![selection],
-        }
+    pub fn from_moltypes(moltypes: Vec<&str>) -> Result<Self, SourmashError> {
+        let selections: Result<Vec<Selection>, SourmashError> = moltypes
+            .into_iter()
+            .map(|moltype_str| {
+                let moltype = HashFunctions::try_from(moltype_str)?;
+                let mut new_selection = Selection::default(); // Create a default Selection
+                new_selection.set_moltype(moltype); // Set the moltype
+                Ok(new_selection)
+            })
+            .collect();
+
+        Ok(MultiSelection {
+            selections: selections?,
+        })
     }
 
-    pub fn from_moltypes(moltypes: Vec<&str>) -> Result<Self, SourmashError> {
+    pub fn from_input_moltype(input_moltype: &str) -> Result<Self, SourmashError> {
+        // currently we don't allow translation. Will need to change this when we do.
+        // is there a better way to do this?
+        let mut moltypes = vec!["DNA", "skipm1n3", "skipm2n3"];
+        if input_moltype == "protein" {
+            moltypes = vec!["protein", "dayhoff", "hp"];
+        }
         let selections: Result<Vec<Selection>, SourmashError> = moltypes
             .into_iter()
             .map(|moltype_str| {
@@ -57,9 +72,7 @@ impl MultiSelection {
 }
 
 pub trait MultiSelect {
-    fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError>
-    where
-        Self: Sized;
+    fn select(&mut self, multi_selection: &MultiSelection) -> Result<(), SourmashError>;
 }
 
 #[derive(Debug, Clone, Getters, Setters, Serialize)]
@@ -84,7 +97,7 @@ pub struct BuildRecord {
     num: u32,
 
     #[getset(get = "pub")]
-    scaled: u64,
+    scaled: u32,
 
     #[getset(get = "pub", set = "pub")]
     n_hashes: Option<usize>,
@@ -122,10 +135,10 @@ where
     }
 }
 
-impl Default for BuildRecord {
-    fn default() -> Self {
-        // Default BuildRecord is DNA default
-        BuildRecord {
+impl BuildRecord {
+    // no general default, but we have defaults for each moltype
+    pub fn default_dna() -> Self {
+        Self {
             internal_location: None,
             md5: None,
             md5short: None,
@@ -142,21 +155,13 @@ impl Default for BuildRecord {
             sequence_added: false,
         }
     }
-}
-
-impl BuildRecord {
-    pub fn default_dna() -> Self {
-        Self {
-            ..Default::default()
-        }
-    }
 
     pub fn default_protein() -> Self {
         Self {
             moltype: "protein".to_string(),
             ksize: 10,
             scaled: 200,
-            ..Default::default()
+            ..Self::default_dna()
         }
     }
 
@@ -165,7 +170,7 @@ impl BuildRecord {
             moltype: "dayhoff".to_string(),
             ksize: 10,
             scaled: 200,
-            ..Default::default()
+            ..Self::default_dna()
         }
     }
 
@@ -174,7 +179,25 @@ impl BuildRecord {
             moltype: "hp".to_string(),
             ksize: 10,
             scaled: 200,
-            ..Default::default()
+            ..Self::default_dna()
+        }
+    }
+
+    pub fn default_skipm1n3() -> Self {
+        Self {
+            moltype: "skipm1n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
+        }
+    }
+
+    pub fn default_skipm2n3() -> Self {
+        Self {
+            moltype: "skipm2n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
         }
     }
 
@@ -189,7 +212,7 @@ impl BuildRecord {
             num: *record.num(),
             scaled: *record.scaled(),
             with_abundance: record.with_abundance(),
-            ..Default::default() // ignore remaining fields
+            ..Self::default_dna() // ignore remaining fields
         }
     }
 
@@ -210,7 +233,7 @@ impl BuildRecord {
 
         if let Some(scaled) = selection.scaled() {
             // num sigs have self.scaled = 0, don't include them
-            valid = valid && self.scaled != 0 && self.scaled <= scaled as u64;
+            valid = valid && self.scaled != 0 && self.scaled <= scaled;
         }
 
         if let Some(num) = selection.num() {
@@ -218,6 +241,16 @@ impl BuildRecord {
         }
 
         valid
+    }
+
+    pub fn params(&self) -> (u32, String, bool, u32, u32) {
+        (
+            self.ksize,
+            self.moltype.clone(),
+            self.with_abundance,
+            self.num,
+            self.scaled,
+        )
     }
 }
 
@@ -272,6 +305,10 @@ impl BuildManifest {
         self.records.clear();
     }
 
+    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u32)> {
+        self.iter().map(|record| record.params()).collect()
+    }
+
     pub fn filter_manifest(&self, other: &BuildManifest) -> Self {
         // Create a HashSet of references to the `BuildRecord`s in `other`
         let pairs: HashSet<_> = other.records.iter().collect();
@@ -307,7 +344,10 @@ impl BuildManifest {
         let mut csv_writer = csv::Writer::from_writer(wtr);
 
         for record in &self.records {
-            csv_writer.serialize(record)?; // Serialize each BuildRecord
+            // don't write empty records (empty template sigs aren't written from BuildCollection)
+            if record.sequence_added {
+                csv_writer.serialize(record)?; // Serialize each BuildRecord
+            }
         }
 
         csv_writer.flush()?; // Ensure all data is written
@@ -344,18 +384,15 @@ impl BuildManifest {
 }
 
 impl MultiSelect for BuildManifest {
-    fn select(self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
-        let rows = self.records.iter().filter(|row| {
-            // for each row, check if it matches any of the Selection structs in MultiSelection
+    fn select(&mut self, multi_selection: &MultiSelection) -> Result<(), SourmashError> {
+        // Retain only the records that match any selection
+        self.records.retain(|record| {
             multi_selection
                 .selections
                 .iter()
-                .any(|selection| row.matches_selection(selection))
+                .any(|selection| record.matches_selection(selection))
         });
-
-        Ok(BuildManifest {
-            records: rows.cloned().collect(),
-        })
+        Ok(())
     }
 }
 
@@ -415,23 +452,44 @@ impl BuildCollection {
 
     pub fn dna_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
-        let selected_manifest = self.manifest.clone().select(&multiselection)?;
+        let mut mf = self.manifest.clone(); // temporary mutable copy
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
 
-        Ok(selected_manifest.records.len())
+    pub fn skipm1n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm1n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
+    pub fn skipm2n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
+    pub fn anydna_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["DNA", "skipm1n3", "skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
     }
 
     pub fn protein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein"])?;
-        let selected_manifest = self.manifest.clone().select(&multiselection)?;
-
-        Ok(selected_manifest.records.len())
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
     }
 
     pub fn anyprotein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-        let selected_manifest = self.manifest.clone().select(&multiselection)?;
-
-        Ok(selected_manifest.records.len())
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
     }
 
     pub fn parse_ksize(value: &str) -> Result<u32, String> {
@@ -466,7 +524,7 @@ impl BuildCollection {
 
     pub fn parse_moltype(item: &str, current: &mut Option<String>) -> Result<String, String> {
         let new_moltype = match item {
-            "protein" | "dna" | "dayhoff" | "hp" => item.to_string(),
+            "protein" | "dna" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => item.to_string(),
             _ => return Err(format!("unknown moltype '{}'", item)),
         };
 
@@ -505,7 +563,7 @@ impl BuildCollection {
         let mut moltype: Option<String> = None;
         let mut track_abundance: Option<bool> = None;
         let mut num: Option<u32> = None;
-        let mut scaled: Option<u64> = None;
+        let mut scaled: Option<u32> = None;
         let mut seed: Option<u32> = None;
 
         for item in p_str.split(',') {
@@ -516,7 +574,7 @@ impl BuildCollection {
                 "abund" | "noabund" => {
                     Self::parse_abundance(item, &mut track_abundance)?;
                 }
-                "protein" | "dna" | "DNA" | "dayhoff" | "hp" => {
+                "protein" | "dna" | "DNA" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => {
                     Self::parse_moltype(item, &mut moltype)?;
                 }
                 _ if item.starts_with("num=") => {
@@ -539,6 +597,8 @@ impl BuildCollection {
             Some("protein") => BuildRecord::default_protein(),
             Some("dayhoff") => BuildRecord::default_dayhoff(),
             Some("hp") => BuildRecord::default_hp(),
+            Some("skipm1n3") => BuildRecord::default_skipm1n3(),
+            Some("skipm2n3") => BuildRecord::default_skipm2n3(),
             _ => BuildRecord::default_dna(), // no moltype --> assume DNA
         };
 
@@ -591,7 +651,6 @@ impl BuildCollection {
                 // Check if the record is already in the set.
                 if seen_records.insert(record.clone()) {
                     // Add the record and its associated signature to the collection.
-                    // coll.add_template_sig_from_record(&record, &record.moltype);
                     coll.add_template_sig_from_record(&record);
                 }
             }
@@ -626,6 +685,8 @@ impl BuildCollection {
             .dna(record.moltype == "DNA")
             .dayhoff(record.moltype == "dayhoff")
             .hp(record.moltype == "hp")
+            .skipm1n3(record.moltype == "skipm1n3")
+            .skipm2n3(record.moltype == "skipm2n3")
             .num_hashes(record.num)
             .track_abundance(record.with_abundance)
             .build();
@@ -663,26 +724,6 @@ impl BuildCollection {
         });
     }
 
-    // filter template signatures that had no sequence added
-    // suggested use right before writing signatures
-    pub fn filter_empty(&mut self) {
-        let mut sig_index = 0;
-
-        self.manifest.records.retain(|record| {
-            // Keep only records where `sequence_added` is `true`.
-            let keep = record.sequence_added;
-
-            if !keep {
-                // Remove the corresponding signature at the same index if the record is not kept.
-                self.sigs.remove(sig_index);
-            } else {
-                sig_index += 1; // Only increment if we keep the record and signature.
-            }
-
-            keep
-        });
-    }
-
     pub fn filter(&mut self, params_set: &HashSet<u64>) {
         let mut index = 0;
         while index < self.manifest.records.len() {
@@ -715,12 +756,63 @@ impl BuildCollection {
         self.manifest.records.iter_mut().zip(self.sigs.iter_mut())
     }
 
+    fn build_sigs_from_record(
+        &mut self,
+        input_moltype: &str,
+        record: &SequenceRecord,
+        range: Option<(usize, usize)>,
+    ) -> Result<()> {
+        // Get the full sequence and apply the range if provided
+        let full_sequence = record.seq();
+        let sequence_to_process = if let Some((start, end)) = range {
+            // Adjust for 1-based input: start - 1, end remains unchanged
+            let adjusted_start = start.saturating_sub(1); // Ensure no underflow
+            if adjusted_start >= end || end > full_sequence.len() {
+                return Err(anyhow::anyhow!(
+                    "Invalid range: start={}, end={}, sequence length={}",
+                    start,
+                    end,
+                    full_sequence.len()
+                ));
+            }
+            &full_sequence[adjusted_start..end]
+        } else {
+            &full_sequence
+        };
+        // add seq to sigs
+        self.iter_mut().try_for_each(|(rec, sig)| {
+            if input_moltype == "protein"
+                && (rec.moltype() == HashFunctions::Murmur64Protein
+                    || rec.moltype() == HashFunctions::Murmur64Dayhoff
+                    || rec.moltype() == HashFunctions::Murmur64Hp)
+            {
+                sig.add_protein(sequence_to_process)
+                    .context("Failed to add protein")?;
+                if !rec.sequence_added {
+                    rec.sequence_added = true;
+                }
+            } else if (input_moltype == "DNA" || input_moltype == "dna")
+                && (rec.moltype() == HashFunctions::Murmur64Dna
+                    || rec.moltype() == HashFunctions::Murmur64Skipm2n3
+                    || rec.moltype() == HashFunctions::Murmur64Skipm1n3)
+            {
+                sig.add_sequence(sequence_to_process, true)
+                    .context("Failed to add sequence")?;
+                if !rec.sequence_added {
+                    rec.sequence_added = true;
+                }
+            }
+            Ok(())
+        })
+    }
+
     pub fn build_sigs_from_data(
         &mut self,
         data: Vec<u8>,
         input_moltype: &str,
         name: String,
         filename: String,
+        range: Option<(usize, usize)>,
     ) -> Result<()> {
         let cursor = Cursor::new(data);
         let mut fastx_reader =
@@ -729,24 +821,7 @@ impl BuildCollection {
         // Iterate over FASTA records and add sequences/proteins to sigs
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
-            self.iter_mut().for_each(|(rec, sig)| {
-                if input_moltype == "protein"
-                    && (rec.moltype == "protein" || rec.moltype == "dayhoff" || rec.moltype == "hp")
-                {
-                    sig.add_protein(&record.seq())
-                        .expect("Failed to add protein");
-                    if !rec.sequence_added {
-                        rec.sequence_added = true
-                    }
-                } else if input_moltype == "DNA" && rec.moltype == "DNA" {
-                    sig.add_sequence(&record.seq(), true)
-                        .expect("Failed to add sequence");
-                    // if not force, panics with 'N' in dna sequence
-                    if !rec.sequence_added {
-                        rec.sequence_added = true
-                    }
-                }
-            });
+            self.build_sigs_from_record(input_moltype, &record, range)?;
         }
 
         // After processing sequences, update sig, record information
@@ -755,42 +830,38 @@ impl BuildCollection {
         Ok(())
     }
 
-    pub fn build_sigs_from_file(
+    pub fn build_sigs_from_file_or_stdin(
         &mut self,
-        input_moltype: &str, // (protein/dna); todo - use hashfns?
+        input_moltype: &str, // "protein" or "DNA"
         name: String,
         filename: String,
-    ) -> Result<()> {
-        let mut fastx_reader = parse_fastx_file(&filename)?;
-        // Iterate over FASTA records and add sequences/proteins to sigs
-        while let Some(record) = fastx_reader.next() {
-            let record = record.context("Failed to read record")?;
-            self.iter_mut().for_each(|(rec, sig)| {
-                if input_moltype == "protein"
-                    && (rec.moltype() == HashFunctions::Murmur64Protein
-                        || rec.moltype() == HashFunctions::Murmur64Dayhoff
-                        || rec.moltype() == HashFunctions::Murmur64Hp)
-                {
-                    sig.add_protein(&record.seq())
-                        .expect("Failed to add protein");
-                    if !rec.sequence_added {
-                        rec.sequence_added = true
-                    }
-                } else {
-                    sig.add_sequence(&record.seq(), true)
-                        .expect("Failed to add sequence");
-                    // if not force, panics with 'N' in dna sequence
-                    if !rec.sequence_added {
-                        rec.sequence_added = true
-                    }
-                }
-            });
+        range: Option<(usize, usize)>,
+    ) -> Result<u64> {
+        // Create a FASTX reader from the file or stdin
+        let mut fastx_reader = if filename == "-" {
+            let stdin = std::io::stdin();
+            parse_fastx_reader(stdin).context("Failed to parse FASTA/FASTQ data from stdin")?
+        } else {
+            parse_fastx_file(&filename).context("Failed to open file for FASTA/FASTQ data")?
+        };
+
+        // Counter for the number of records processed
+        let mut record_count: u64 = 0;
+
+        // Parse records and add sequences to signatures
+        while let Some(record_result) = fastx_reader.next() {
+            let record = record_result.context("Failed to read a record from input")?;
+
+            self.build_sigs_from_record(input_moltype, &record, range)?;
+
+            record_count += 1;
         }
 
-        // After processing sequences, update sig, record information
+        // Update signature and record metadata
         self.update_info(name, filename);
 
-        Ok(())
+        // Return the count of records parsed
+        Ok(record_count)
     }
 
     pub fn build_singleton_sigs(
@@ -798,31 +869,13 @@ impl BuildCollection {
         record: SequenceRecord,
         input_moltype: &str, // (protein/dna); todo - use hashfns?
         filename: String,
+        range: Option<(usize, usize)>,
     ) -> Result<()> {
-        self.iter_mut().for_each(|(rec, sig)| {
-            if input_moltype == "protein"
-                && (rec.moltype() == HashFunctions::Murmur64Protein
-                    || rec.moltype() == HashFunctions::Murmur64Dayhoff
-                    || rec.moltype() == HashFunctions::Murmur64Hp)
-            {
-                sig.add_protein(&record.seq())
-                    .expect("Failed to add protein");
-                if !rec.sequence_added {
-                    rec.sequence_added = true
-                }
-            } else {
-                sig.add_sequence(&record.seq(), true)
-                    .expect("Failed to add sequence");
-                // if not force, panics with 'N' in dna sequence
-                if !rec.sequence_added {
-                    rec.sequence_added = true
-                }
-            }
-        });
+        self.build_sigs_from_record(input_moltype, &record, range)?;
+        // After processing sequences, update sig, record information
         let record_name = std::str::from_utf8(record.id())
             .expect("could not get record id")
             .to_string();
-        // After processing sequences, update sig, record information
         self.update_info(record_name, filename);
 
         Ok(())
@@ -849,7 +902,6 @@ impl BuildCollection {
         }
     }
 
-    // to do -- use filter_empty to ensure we're not writing empty template sigs??
     pub async fn async_write_sigs_to_zip(
         &mut self, // need mutable to update records
         zip_writer: &mut ZipFileWriter<Compat<File>>,
@@ -857,6 +909,10 @@ impl BuildCollection {
     ) -> Result<()> {
         // iterate over both records and signatures
         for (record, sig) in self.iter_mut() {
+            // skip any empty sig templates (no sequence added)
+            if !record.sequence_added {
+                continue;
+            }
             let md5sum_str = sig.md5sum();
             let count = md5sum_occurrences.entry(md5sum_str.clone()).or_insert(0);
             *count += 1;
@@ -917,57 +973,25 @@ impl<'a> IntoIterator for &'a mut BuildCollection {
 }
 
 impl MultiSelect for BuildCollection {
-    // to do --> think through the best/most efficient way to do this
     // in sourmash core, we don't need to select sigs themselves. Is this due to the way that Idx/Storage work?
-    fn select(mut self, multi_selection: &MultiSelection) -> Result<Self, SourmashError> {
-        // Collect indices while retaining matching records
-        let mut selected_indices = Vec::new();
-        let mut current_index = 0;
-
+    fn select(&mut self, multi_selection: &MultiSelection) -> Result<(), SourmashError> {
+        // Retain records and sigs in place
+        let mut i = 0;
         self.manifest.records.retain(|record| {
             let keep = multi_selection
                 .selections
                 .iter()
                 .any(|selection| record.matches_selection(selection));
 
-            if keep {
-                selected_indices.push(current_index); // Collect the index of the retained record
+            if !keep {
+                self.sigs.remove(i); // Remove corresponding signature
+            } else {
+                i += 1;
             }
-
-            current_index += 1; // Move to the next index
-            keep // Retain the record if it matches the selection
-        });
-
-        // Retain corresponding signatures using the collected indices
-        let mut sig_index = 0;
-        self.sigs.retain(|_sig| {
-            let keep = selected_indices.contains(&sig_index);
-            sig_index += 1;
             keep
         });
 
-        Ok(self)
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct MultiBuildCollection {
-    pub collections: Vec<BuildCollection>,
-}
-
-impl MultiBuildCollection {
-    pub fn new() -> Self {
-        MultiBuildCollection {
-            collections: Vec::new(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.collections.is_empty()
-    }
-
-    pub fn add_collection(&mut self, collection: &mut BuildCollection) {
-        self.collections.push(collection.clone())
+        Ok(())
     }
 }
 
@@ -1025,19 +1049,19 @@ mod tests {
                 ksize: 31,
                 moltype: "DNA".to_string(),
                 with_abundance: true,
-                ..Default::default()
+                ..BuildRecord::default_dna()
             },
             BuildRecord {
                 ksize: 21,
                 moltype: "DNA".to_string(),
                 with_abundance: true,
-                ..Default::default()
+                ..BuildRecord::default_dna()
             },
             BuildRecord {
                 ksize: 51,
                 moltype: "DNA".to_string(),
                 with_abundance: true,
-                ..Default::default()
+                ..BuildRecord::default_dna()
             },
             BuildRecord::default_protein(),
         ];
@@ -1228,14 +1252,14 @@ mod tests {
             ksize: 21,
             moltype: "DNA".to_string(),
             scaled: 1000,
-            ..Default::default()
+            ..BuildRecord::default_dna()
         };
         let rec3 = BuildRecord {
             ksize: 31,
             moltype: "DNA".to_string(),
             scaled: 1000,
             with_abundance: true,
-            ..Default::default()
+            ..BuildRecord::default_dna()
         };
 
         let bmanifest = BuildManifest {
@@ -1272,7 +1296,7 @@ mod tests {
             moltype: "DNA".to_string(),
             scaled: 1000,
             with_abundance: true,
-            ..Default::default()
+            ..BuildRecord::default_dna()
         };
 
         // Add the DNA record to the collection with a matching moltype.
@@ -1294,7 +1318,7 @@ mod tests {
             moltype: "protein".to_string(),
             scaled: 200,
             with_abundance: false,
-            ..Default::default()
+            ..BuildRecord::default_dna()
         };
 
         // Add the protein record to the collection with a matching moltype.
@@ -1316,16 +1340,8 @@ mod tests {
             moltype: "dayhoff".to_string(),
             scaled: 200,
             with_abundance: true,
-            ..Default::default()
+            ..BuildRecord::default_dna()
         };
-
-        // Attempt to add the non-matching record with "DNA" as input moltype.
-        // this is because we currently don't allow translation
-        // build_collection.add_template_sig_from_record(&non_matching_record, "DNA");
-
-        // Verify that the non-matching record was not added.
-        // assert_eq!(build_collection.manifest.records.len(), 2);
-        // assert_eq!(build_collection.sigs.len(), 2);
 
         // Add the same non-matching record with a matching input moltype.
         build_collection.add_template_sig_from_record(&non_matching_record);
@@ -1338,63 +1354,5 @@ mod tests {
         assert_eq!(added_dayhoff_record.moltype, "dayhoff");
         assert_eq!(added_dayhoff_record.ksize, 10);
         assert_eq!(added_dayhoff_record.with_abundance, true);
-    }
-
-    #[test]
-    fn test_filter_empty() {
-        // Create a parameter string that generates BuildRecords with different `sequence_added` values.
-        let params_str = "k=31,abund,dna_k=21,protein_k=10,abund";
-
-        // Use `from_param_str` to build a `BuildCollection`.
-        let mut build_collection = BuildCollection::from_param_str(params_str)
-            .expect("Failed to build BuildCollection from params_str");
-
-        // Manually set `sequence_added` for each record to simulate different conditions.
-        build_collection.manifest.records[0].sequence_added = true; // Keep this record.
-        build_collection.manifest.records[1].sequence_added = false; // This record should be removed.
-        build_collection.manifest.records[2].sequence_added = true; // Keep this record.
-
-        // Check initial sizes before filtering.
-        assert_eq!(
-            build_collection.manifest.records.len(),
-            3,
-            "Expected 3 records before filtering, but found {}",
-            build_collection.manifest.records.len()
-        );
-        assert_eq!(
-            build_collection.sigs.len(),
-            3,
-            "Expected 3 signatures before filtering, but found {}",
-            build_collection.sigs.len()
-        );
-
-        // Apply the `filter_empty` method.
-        build_collection.filter_empty();
-
-        // After filtering, only the records with `sequence_added == true` should remain.
-        assert_eq!(
-            build_collection.manifest.records.len(),
-            2,
-            "Expected 2 records after filtering, but found {}",
-            build_collection.manifest.records.len()
-        );
-
-        // Check that the signatures also match the remaining records.
-        assert_eq!(
-            build_collection.sigs.len(),
-            2,
-            "Expected 2 signatures after filtering, but found {}",
-            build_collection.sigs.len()
-        );
-
-        // Verify that the remaining records have `sequence_added == true`.
-        assert!(
-            build_collection
-                .manifest
-                .records
-                .iter()
-                .all(|rec| rec.sequence_added),
-            "All remaining records should have `sequence_added == true`"
-        );
     }
 }
