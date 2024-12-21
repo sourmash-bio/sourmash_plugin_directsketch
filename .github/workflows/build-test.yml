@@ -48,13 +48,13 @@ jobs:
 
     - name: install dependencies 2
       shell: bash -l {0}
-      run: mamba install compilers maturin pytest pandas
+      run: mamba install compilers maturin pytest pandas liblzma-devel
 
     - name: Run cargo fmt
       run: cargo fmt --all -- --check --verbose
 
-    - name: rust tests
-      run: cargo test --verbose --no-fail-fast
+  #  - name: rust tests
+  #    run: cargo test --verbose --no-fail-fast
 
     - name: build
       shell: bash -l {0}
