@@ -97,7 +97,7 @@ pub struct BuildRecord {
     num: u32,
 
     #[getset(get = "pub")]
-    scaled: u64,
+    scaled: u32,
 
     #[getset(get = "pub", set = "pub")]
     n_hashes: Option<usize>,
@@ -215,7 +215,7 @@ impl BuildRecord {
 
         if let Some(scaled) = selection.scaled() {
             // num sigs have self.scaled = 0, don't include them
-            valid = valid && self.scaled != 0 && self.scaled <= scaled as u64;
+            valid = valid && self.scaled != 0 && self.scaled <= scaled as u32;
         }
 
         if let Some(num) = selection.num() {
@@ -523,7 +523,7 @@ impl BuildCollection {
         let mut moltype: Option<String> = None;
         let mut track_abundance: Option<bool> = None;
         let mut num: Option<u32> = None;
-        let mut scaled: Option<u64> = None;
+        let mut scaled: Option<u32> = None;
         let mut seed: Option<u32> = None;
 
         for item in p_str.split(',') {
