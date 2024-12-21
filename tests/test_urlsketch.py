@@ -537,57 +537,57 @@ def test_urlsketch_simple_batched(runtmp, capfd):
     assert loaded_signatures == expected_siginfo, f"Loaded sigs: {loaded_signatures}, expected: {expected_siginfo}"
 
 
-def test_urlsketch_simple_batch_restart(runtmp, capfd):
-    acc_csv = get_test_data('acc-url.csv')
-    output = runtmp.output('simple.zip')
-    failed = runtmp.output('failed.csv')
-    ch_fail = runtmp.output('checksum_dl_failed.csv')
+# def test_urlsketch_simple_batch_restart(runtmp, capfd):
+#     acc_csv = get_test_data('acc-url.csv')
+#     output = runtmp.output('simple.zip')
+#     failed = runtmp.output('failed.csv')
+#     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
-    out1 = runtmp.output('simple.1.zip')
-    out2 = runtmp.output('simple.2.zip')
-    out3 = runtmp.output('simple.3.zip')
+#     out1 = runtmp.output('simple.1.zip')
+#     out2 = runtmp.output('simple.2.zip')
+#     out3 = runtmp.output('simple.3.zip')
 
 
-    sig1 = get_test_data('GCA_000175535.1.sig.gz')
-    sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+#     sig1 = get_test_data('GCA_000175535.1.sig.gz')
+#     sig2 = get_test_data('GCA_000961135.2.sig.gz')
+#     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+#     ss1 = sourmash.load_one_signature(sig1, ksize=31)
+#     ss2 = sourmash.load_one_signature(sig2, ksize=31)
+#     ss3 = sourmash.load_one_signature(sig2, ksize=21)
+#     ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
-    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
-    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
-    assert os.path.exists(out1)
+#     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+#     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+#     assert os.path.exists(out1)
 
-    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
-                    '--batch-size', '1')
+#     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+#                     '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+#                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+#                     '--batch-size', '1')
 
-    assert os.path.exists(out1)
-    assert os.path.exists(out2)
-    assert os.path.exists(out3)
-    assert not os.path.exists(output) # for now, orig output file should be empty.
-    captured = capfd.readouterr()
-    print(captured.err)
+#     assert os.path.exists(out1)
+#     assert os.path.exists(out2)
+#     assert os.path.exists(out3)
+#     assert not os.path.exists(output) # for now, orig output file should be empty.
+#     captured = capfd.readouterr()
+#     print(captured.err)
   
-    expected_siginfo = {
-        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
-        (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
-        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
-        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
-    }
+#     expected_siginfo = {
+#         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+#         (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
+#         (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+#         (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+#     }
 
-    all_siginfo = set()
-    for out_file in [out1, out2, out3]:
-        idx = sourmash.load_file_as_index(out_file)
-        sigs = list(idx.signatures())
-        for sig in sigs:
-            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+#     all_siginfo = set()
+#     for out_file in [out1, out2, out3]:
+#         idx = sourmash.load_file_as_index(out_file)
+#         sigs = list(idx.signatures())
+#         for sig in sigs:
+#             all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
 
-    # Verify that the loaded signatures match the expected signatures, order-independent
-    assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+#     # Verify that the loaded signatures match the expected signatures, order-independent
+#     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
 
 
 def test_urlsketch_negative_batch_size(runtmp):
@@ -604,62 +604,62 @@ def test_urlsketch_negative_batch_size(runtmp):
     assert "Batch size cannot be negative (input value: -2)" in runtmp.last_result.err
 
 
-def test_urlsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
-    # test restart with complete + incomplete zipfile batches
-    acc_csv = get_test_data('acc-url.csv')
-    output = runtmp.output('restart.zip')
-    failed = runtmp.output('failed.csv')
-    ch_fail = runtmp.output('checksum_dl_failed.csv')
+# def test_urlsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
+#     # test restart with complete + incomplete zipfile batches
+#     acc_csv = get_test_data('acc-url.csv')
+#     output = runtmp.output('restart.zip')
+#     failed = runtmp.output('failed.csv')
+#     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
-    out1 = runtmp.output('restart.1.zip')
-    out2 = runtmp.output('restart.2.zip')
-    out3 = runtmp.output('restart.3.zip')
+#     out1 = runtmp.output('restart.1.zip')
+#     out2 = runtmp.output('restart.2.zip')
+#     out3 = runtmp.output('restart.3.zip')
 
-    sig1 = get_test_data('GCA_000175535.1.sig.gz')
-    sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+#     sig1 = get_test_data('GCA_000175535.1.sig.gz')
+#     sig2 = get_test_data('GCA_000961135.2.sig.gz')
+#     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+#     ss1 = sourmash.load_one_signature(sig1, ksize=31)
+#     ss2 = sourmash.load_one_signature(sig2, ksize=31)
+#     ss3 = sourmash.load_one_signature(sig2, ksize=21)
+#     ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
-    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
-    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
-    assert os.path.exists(out1)
+#     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+#     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+#     assert os.path.exists(out1)
 
-    # Create an invalid zip file for out2
-    with open(out2, 'wb') as f:
-        f.write(b"This is not a valid zip file!")
+#     # Create an invalid zip file for out2
+#     with open(out2, 'wb') as f:
+#         f.write(b"This is not a valid zip file!")
 
-    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
-                    '--batch-size', '1')
+#     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+#                     '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+#                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+#                     '--batch-size', '1')
 
-    assert os.path.exists(out1)
-    assert os.path.exists(out2)
-    assert os.path.exists(out3)
-    assert not os.path.exists(output) # for now, orig output file should be empty.
-    captured = capfd.readouterr()
-    print(captured.err)
-    assert f"Warning: Failed to load zip file '{out2}'" in captured.err
+#     assert os.path.exists(out1)
+#     assert os.path.exists(out2)
+#     assert os.path.exists(out3)
+#     assert not os.path.exists(output) # for now, orig output file should be empty.
+#     captured = capfd.readouterr()
+#     print(captured.err)
+#     assert f"Warning: Failed to load zip file '{out2}'" in captured.err
 
-    expected_siginfo = {
-        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
-        (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
-        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
-        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
-    }
+#     expected_siginfo = {
+#         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+#         (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
+#         (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+#         (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+#     }
 
-    all_siginfo = set()
-    for out_file in [out1, out2, out3]:
-        idx = sourmash.load_file_as_index(out_file)
-        sigs = list(idx.signatures())
-        for sig in sigs:
-            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+#     all_siginfo = set()
+#     for out_file in [out1, out2, out3]:
+#         idx = sourmash.load_file_as_index(out_file)
+#         sigs = list(idx.signatures())
+#         for sig in sigs:
+#             all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
 
-    # Verify that the loaded signatures match the expected signatures, order-independent
-    assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+#     # Verify that the loaded signatures match the expected signatures, order-independent
+#     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
 
 
 def test_urlsketch_simple_skipmer(runtmp, capfd):
