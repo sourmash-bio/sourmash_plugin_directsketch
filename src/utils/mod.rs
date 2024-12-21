@@ -272,6 +272,11 @@ pub fn load_accession_info(
             ));
         }
 
+        // Check if there are any MD5 sums in this row
+        if md5sums.iter().any(|md5| md5.is_some()) {
+            md5sum_count += 1;
+        }
+
         // Parse ranges (optional)
         let range_field = record.get(6).unwrap_or("");
         let ranges: Vec<Option<(usize, usize)>> = if !range_field.trim().is_empty() {

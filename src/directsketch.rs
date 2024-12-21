@@ -638,7 +638,7 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
                 Collection::from_zipfile(&entry_path)
-                    .and_then(|collection| {
+                    .map(|collection| {
                         collections.push(collection);
 
                         // Extract batch number if it exists
@@ -647,7 +647,6 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
                                 highest_batch = max(highest_batch, batch_num);
                             }
                         }
-                        Ok(()) // Return Ok(()) for the closure
                     })
                     .unwrap_or_else(|e| {
                         eprintln!(
