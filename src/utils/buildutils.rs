@@ -225,7 +225,7 @@ impl BuildRecord {
         valid
     }
 
-    pub fn params(&self) -> (u32, String, bool, u32, u64) {
+    pub fn params(&self) -> (u32, String, bool, u32, u32) {
         (
             self.ksize,
             self.moltype.clone(),
@@ -287,7 +287,7 @@ impl BuildManifest {
         self.records.clear();
     }
 
-    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u64)> {
+    pub fn summarize_params(&self) -> HashSet<(u32, String, bool, u32, u32)> {
         self.iter().map(|record| record.params()).collect()
     }
 
