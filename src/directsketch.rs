@@ -541,8 +541,9 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
                 Collection::from_zipfile(&entry_path)
-                    .and_then(|collection| {
+                    .map(|collection| {
                         collections.push(collection);
+                        eprintln!("loaded existing collection from {}", &entry_path);
 
                         // Extract batch number if it exists
                         if let Some(batch_str) = captures.get(1) {
@@ -550,7 +551,6 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
                                 highest_batch = max(highest_batch, batch_num);
                             }
                         }
-                        Ok(()) // Return Ok(()) for the closure
                     })
                     .unwrap_or_else(|e| {
                         eprintln!(
@@ -1179,6 +1179,8 @@ pub async fn urlsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
+    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
+    let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
 
     if download_only {
         if genomes_only {
@@ -1206,13 +1208,11 @@ pub async fn urlsketch(
         }
         if genomes_only {
             // select only DNA templates
-            let multiselection = MultiSelection::from_input_moltype("DNA")?;
-            sig_templates.select(&multiselection)?;
+            sig_templates.select(&dna_multiselection)?;
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
             // select only protein templates
-            let multiselection = MultiSelection::from_input_moltype("protein")?;
-            sig_templates.select(&multiselection)?;
+            sig_templates.select(&protein_multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
         if sig_templates.is_empty() && !download_only {
@@ -1233,6 +1233,17 @@ pub async fn urlsketch(
                 // If the key exists, filter template sigs
                 sigs.filter_by_manifest(existing_manifest);
             }
+        }
+
+        // eliminate sigs that won't be added to based on moltype
+        // this assumes no translation --> modify as needed if adding that.
+        if accinfo.moltype == InputMolType::Dna {
+            sigs.select(&dna_multiselection)?;
+        } else {
+            sigs.select(&protein_multiselection)?;
+        }
+        if sigs.is_empty() && !download_only {
+            continue;
         }
 
         let semaphore_clone = Arc::clone(&semaphore);

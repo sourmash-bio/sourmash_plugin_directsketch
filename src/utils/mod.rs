@@ -7,7 +7,7 @@ use std::fmt;
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum InputMolType {
     Dna,
     Protein,
