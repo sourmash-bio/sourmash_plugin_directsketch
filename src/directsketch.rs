@@ -1309,7 +1309,6 @@ pub async fn urlsketch(
             eprintln!("Downloading and sketching genomes only.");
         } else if proteomes_only {
             // select only protein templates
-            let multiselection = MultiSelection::from_input_moltype("protein")?;
             sig_templates.select(&protein_multiselection)?;
             eprintln!("Downloading and sketching proteomes only.");
         }
