@@ -545,9 +545,9 @@ async fn dl_sketch_url(
                         url: Some(url),
                     };
                     download_failures.push(failed_download);
-                    // Clear signatures and return immediately on failure
-                    return Ok((empty_coll, download_failures, checksum_failures));
                 }
+                // Clear signatures and return immediately on failure
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
         }
     }
