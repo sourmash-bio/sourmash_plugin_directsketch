@@ -833,6 +833,51 @@ def test_urlsketch_simple_merged_keep_fasta(runtmp):
     assert sig.minhash.moltype == msig.minhash.moltype == "DNA"
     assert os.path.exists(failed)
 
+
+def test_urlsketch_simple_merged_keep_fasta_path_in_filename(runtmp):
+    acc_csv = get_test_data('acc-merged.csv')
+    mod_csv = get_test_data('acc-merged-filepath.csv')
+    output = runtmp.output('merged.zip')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    # open acc-merged.csv and prepend "/unavailable-path/subdir/" to the "download_filename" column
+    with open(acc_csv, 'r') as infile, open(mod_csv, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            row['download_filename'] = f"unavailable-path/subdir/{row['download_filename']}"
+            writer.writerow(row)
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    merged_sig = runtmp.output("sigmerge.zip")
+
+    # create merged signature
+    runtmp.sourmash("sig", "merge", "-k", "31", sig1, sig2, "--set-name", "both name", '-o', merged_sig)
+    msigidx = sourmash.load_file_as_index(merged_sig)
+    msig = list(msigidx.signatures())[0]
+    print(msig.name)
+
+    runtmp.sourmash('scripts', 'urlsketch', mod_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--fastas', out_dir,
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    # check fasta files are present
+    fa_files = []
+    for root, dirs, files in os.walk(out_dir):
+        for file in files:
+            if file.endswith('fna.gz'):
+                fa_files.append(os.path.relpath(os.path.join(root, file), out_dir))
+    print(fa_files)
+    assert fa_files == ['unavailable-path/subdir/both.urlsketch.fna.gz']
+
+
 def test_urlsketch_with_range(runtmp):
     acc_csv = get_test_data('acc-url-range.csv')
     subseqs = get_test_data('subseqs.zip')

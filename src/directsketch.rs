@@ -475,6 +475,15 @@ async fn dl_sketch_url(
                     // note, if multiple urls are provided, this will append to the same file
                     if let Some(ref download_filename) = download_filename {
                         let path = location.join(download_filename);
+                        // create subdirectories if needed
+                        if let Some(parent) = path.parent() {
+                            create_dir_all(parent).with_context(|| {
+                                format!(
+                                    "Failed to create directories for download filename path {}",
+                                    &path
+                                )
+                            })?;
+                        }
                         // Open the file in append mode (or create it if it doesn't exist)
                         let mut file = tokio::fs::OpenOptions::new()
                             .create(true) // Create the file if it doesn't exist
