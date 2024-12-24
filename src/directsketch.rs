@@ -1,13 +1,13 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
+use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::Client;
 use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
@@ -369,10 +369,16 @@ async fn dl_sketch_assembly_accession(
             // sketch data
             match file_type {
                 GenBankFileType::Genomic => {
-                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone())?;
+                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone(), None)?;
                 }
                 GenBankFileType::Protein => {
-                    sigs.build_sigs_from_data(data, "protein", name.clone(), file_name.clone())?;
+                    sigs.build_sigs_from_data(
+                        data,
+                        "protein",
+                        name.clone(),
+                        file_name.clone(),
+                        None,
+                    )?;
                 }
                 _ => {} // Do nothing for other file types
             };
@@ -382,13 +388,66 @@ async fn dl_sketch_assembly_accession(
     Ok((sigs, download_failures, checksum_failures))
 }
 
+/// Extracts the specified range from sequences in data and writes to the file in FASTA format.
+async fn process_and_write_range(
+    data: &[u8],
+    file: &mut File,
+    range: Option<(usize, usize)>,
+) -> Result<()> {
+    let cursor = std::io::Cursor::new(data);
+    let mut fastx_reader =
+        needletail::parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
+
+    while let Some(record) = fastx_reader.next() {
+        let record = record.context("Failed to read record")?;
+        let sequence_to_write = extract_range_from_record(&record, range)
+            .context("Failed to extract range from record")?;
+
+        // Use the `id` and `seq` fields directly to construct the FASTA entry
+        let fasta_entry = format!(
+            ">{}\n{}\n",
+            String::from_utf8_lossy(record.id()),
+            String::from_utf8_lossy(&sequence_to_write)
+        );
+
+        // Write the FASTA entry to the file
+        file.write_all(fasta_entry.as_bytes())
+            .await
+            .context("Failed to write FASTA entry to file")?;
+    }
+
+    Ok(())
+}
+
+/// Extracts a range from a `SequenceRecord`. Returns the specified sequence slice as a `Vec<u8>`.
+fn extract_range_from_record(
+    record: &SequenceRecord,
+    range: Option<(usize, usize)>,
+) -> Result<Vec<u8>> {
+    let full_sequence = record.seq();
+    if let Some((start, end)) = range {
+        let adjusted_start = start.saturating_sub(1); // Adjust for 1-based indexing
+        if adjusted_start >= end || end > full_sequence.len() {
+            return Err(anyhow::anyhow!(
+                "Invalid range: start={}, end={}, sequence length={}",
+                start,
+                end,
+                full_sequence.len()
+            ));
+        }
+        Ok(full_sequence[adjusted_start..end].to_vec())
+    } else {
+        Ok(full_sequence.to_vec())
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_url(
     client: &Client,
     accinfo: AccessionData,
     location: &PathBuf,
     retry: Option<u32>,
-    _keep_fastas: bool,
+    keep_fastas: bool,
     mut sigs: BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
@@ -401,63 +460,109 @@ async fn dl_sketch_url(
 
     let name = accinfo.name;
     let accession = accinfo.accession;
-    let url = accinfo.url;
-    let expected_md5 = accinfo.expected_md5sum;
     let download_filename = accinfo.download_filename;
+    let filename = download_filename.clone().unwrap_or("".to_string());
     let moltype = accinfo.moltype;
 
-    match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
-        Ok(data) => {
-            // check keep_fastas instead??
-            if let Some(ref download_filename) = download_filename {
-                let path = location.join(download_filename);
-                fs::write(path, &data).context("Failed to write data to file")?;
-            }
-            if !download_only {
-                let filename = download_filename.clone().unwrap_or("".to_string());
-                // sketch data
+    for uinfo in accinfo.url_info {
+        let url = uinfo.url;
+        let expected_md5 = uinfo.md5sum;
+        let range = uinfo.range;
+        match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
+            Ok(data) => {
+                // if keep_fastas, write file to disk
+                if keep_fastas {
+                    // note, if multiple urls are provided, this will append to the same file
+                    if let Some(ref download_filename) = download_filename {
+                        let path = location.join(download_filename);
+                        // create subdirectories if needed
+                        if let Some(parent) = path.parent() {
+                            create_dir_all(parent).with_context(|| {
+                                format!(
+                                    "Failed to create directories for download filename path {}",
+                                    &path
+                                )
+                            })?;
+                        }
+                        // Open the file in append mode (or create it if it doesn't exist)
+                        let mut file = tokio::fs::OpenOptions::new()
+                            .create(true) // Create the file if it doesn't exist
+                            .append(true) // Append to the file
+                            .open(&path)
+                            .await
+                            .context("Failed to open file in append mode")?;
+                        if range.is_some() {
+                            process_and_write_range(&data, &mut file, range)
+                                .await
+                                .context("Failed to process and write range to file")?;
+                        } else {
+                            // Write the entire data if no range is provided
+                            file.write_all(&data)
+                                .await
+                                .context("Failed to write data to file")?;
+                        }
+                    }
+                }
+                if !download_only {
+                    // sketch data
 
-                match moltype {
-                    InputMolType::Dna => {
-                        sigs.build_sigs_from_data(data, "DNA", name.clone(), filename.clone())?;
-                    }
-                    InputMolType::Protein => {
-                        sigs.build_sigs_from_data(data, "protein", name.clone(), filename.clone())?;
-                    }
-                };
+                    match moltype {
+                        InputMolType::Dna => {
+                            sigs.build_sigs_from_data(
+                                data,
+                                "DNA",
+                                name.clone(),
+                                filename.clone(),
+                                range,
+                            )?;
+                        }
+                        InputMolType::Protein => {
+                            sigs.build_sigs_from_data(
+                                data,
+                                "protein",
+                                name.clone(),
+                                filename.clone(),
+                                range,
+                            )?;
+                        }
+                    };
+                }
             }
-        }
-        Err(err) => {
-            let error_message = err.to_string();
-            // did we have a checksum error or a download error?
-            // here --> keep track of accession errors + filetype
-            if error_message.contains("MD5 hash does not match") {
-                let checksum_mismatch: FailedChecksum = FailedChecksum {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    moltype: moltype.to_string(),
-                    md5sum_url: None,
-                    download_filename,
-                    url: Some(url.clone()),
-                    expected_md5sum: expected_md5.clone(),
-                    reason: error_message.clone(),
-                };
-                checksum_failures.push(checksum_mismatch);
-                sigs = empty_coll;
-            } else {
-                let failed_download = FailedDownload {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    moltype: moltype.to_string(),
-                    md5sum: expected_md5.map(|x| x.to_string()),
-                    download_filename,
-                    url: Some(url),
-                };
-                download_failures.push(failed_download);
-                sigs = empty_coll;
+            Err(err) => {
+                let error_message = err.to_string();
+                // did we have a checksum error or a download error?
+                // here --> keep track of accession errors + filetype
+                if error_message.contains("MD5 hash does not match") {
+                    let checksum_mismatch: FailedChecksum = FailedChecksum {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        moltype: moltype.to_string(),
+                        md5sum_url: None,
+                        download_filename: download_filename.clone(),
+                        url: Some(url.clone()),
+                        expected_md5sum: expected_md5.clone(),
+                        reason: error_message.clone(),
+                    };
+                    checksum_failures.push(checksum_mismatch);
+                } else {
+                    let failed_download = FailedDownload {
+                        accession: accession.clone(),
+                        name: name.clone(),
+                        moltype: moltype.to_string(),
+                        md5sum: expected_md5.map(|x| x.to_string()),
+                        download_filename,
+                        url: Some(url),
+                    };
+                    download_failures.push(failed_download);
+                }
+                // Clear signatures and return immediately on failure
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
         }
     }
+
+    // Update signature info
+    sigs.update_info(name, filename);
 
     Ok((sigs, download_failures, checksum_failures))
 }
@@ -708,7 +813,7 @@ pub fn failures_handle(
 
                 // Attempt to write CSV headers
                 if let Err(e) = writer
-                    .write_all(b"accession,name,moltype,md5sum,download_filename,url\n")
+                    .write_all(b"accession,name,moltype,md5sum,download_filename,url,range\n")
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
@@ -726,13 +831,14 @@ pub fn failures_handle(
                 }) = recv_failed.recv().await
                 {
                     let record = format!(
-                        "{},{},{},{},{},{}\n",
+                        "{},{},{},{},{},{},{}\n",
                         accession,
                         name,
                         moltype,
                         md5sum.unwrap_or("".to_string()),
                         download_filename.unwrap_or("".to_string()),
-                        url.map(|u| u.to_string()).unwrap_or("".to_string())
+                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
+                        "",
                     );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {
@@ -1179,7 +1285,7 @@ pub async fn urlsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
-    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
+    let dna_multiselection = MultiSelection::from_input_moltype("DNA")?;
     let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
 
     if download_only {
@@ -1233,6 +1339,16 @@ pub async fn urlsketch(
                 // If the key exists, filter template sigs
                 sigs.filter_by_manifest(existing_manifest);
             }
+        }
+        // eliminate sigs that won't be added to based on moltype
+        // this assumes no translation --> modify as needed if adding that.
+        if accinfo.moltype == InputMolType::Dna {
+            sigs.select(&dna_multiselection)?;
+        } else {
+            sigs.select(&protein_multiselection)?;
+        }
+        if sigs.is_empty() && !download_only {
+            continue;
         }
 
         // eliminate sigs that won't be added to based on moltype

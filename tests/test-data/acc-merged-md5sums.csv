@@ -1,0 +1,3 @@
+accession,name,moltype,md5sum,download_filename,url,range
+both,both name,dna,47b9fb20c51f0552b87db5d44d5d4566;a1a8f1c6dc56999c73fe298871c963d1,both.urlsketch.fna.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz; https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz,
+
