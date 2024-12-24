@@ -4,6 +4,7 @@ Tests for urlsketch
 import os
 import pytest
 
+import csv
 import sourmash
 import sourmash_tst_utils as utils
 from sourmash_tst_utils import SourmashCommandFailed
@@ -654,3 +655,94 @@ def test_urlsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
 
     # Verify that the loaded signatures match the expected signatures, order-independent
     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+
+
+def test_urlsketch_simple_skipmer(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "skipm2n3,k=21,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
+
+        # read the file with python and check sigs
+    import zipfile, gzip, json
+
+    with zipfile.ZipFile(output, "r") as zf:
+        # Check the manifest exists
+        assert "SOURMASH-MANIFEST.csv" in zf.namelist()
+
+        expected_signatures = [
+            {
+                "name": "GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454",
+                "ksize": 21,
+                "scaled": 1000,
+                "moltype": "skipm2n3",
+                "md5sum": "5745400ada0c3a27ddf1e8d5d1a46b7a",
+            },
+            {
+                "name": "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14",
+                "ksize": 21,
+                "scaled": 1000,
+                "moltype": "skipm2n3",
+                "md5sum": "2e37ca0bb9228bc3f5e1337e8535ab26",
+            },
+        ]
+        expected_signatures_dict = {exp["md5sum"]: exp for exp in expected_signatures}
+
+        # Read and parse the manifest
+        with zf.open("SOURMASH-MANIFEST.csv") as manifest_file:
+            manifest_data = manifest_file.read().decode("utf-8").splitlines()
+            manifest_data = [line for line in manifest_data if not line.startswith("#")]
+            manifest_reader = csv.DictReader(manifest_data)
+
+            for row in manifest_reader:
+                if row["moltype"] == "skipm2n3":
+                    print("Manifest Row:", row)
+
+                    # Validate row fields
+                    md5sum = row["md5"]
+                    assert (
+                        md5sum in expected_signatures_dict
+                    ), f"Unexpected md5sum: {md5sum}"
+                    expected = expected_signatures_dict[md5sum]
+                    assert (
+                        row["name"] == expected["name"]
+                    ), f"Name mismatch: {row['name']}"
+                    assert (
+                        int(row["ksize"]) == expected["ksize"]
+                    ), f"Ksize mismatch: {row['ksize']}"
+                    assert (
+                        row["moltype"] == expected["moltype"]
+                    ), f"Moltype mismatch: {row['moltype']}"
+
+                    sig_path = row["internal_location"]
+                    assert sig_path.startswith("signatures/")
+
+                    # Extract and read the signature file
+                    with zf.open(sig_path) as sig_gz:
+                        with gzip.open(sig_gz, "rt") as sig_file:
+                            sig_contents = json.load(sig_file)
+                            print("Signature Contents:", sig_contents)
+
+                            # Validate signature contents
+                            sig_data = sig_contents[0]
+                            print(sig_data)
+                            siginfo = sig_data["signatures"][0]
+                            assert (
+                                siginfo["md5sum"] == md5sum
+                            ), f"MD5 mismatch: {siginfo['md5sum']}"
+                            assert (
+                                siginfo["ksize"] == expected["ksize"]
+                            ), f"Ksize mismatch: {siginfo['ksize']}"
+                            assert (
+                                siginfo["molecule"] == expected["moltype"]
+                            ), f"Moltype mismatch: {siginfo['molecule']}"

@@ -215,6 +215,8 @@ options:
                         number of times to retry failed downloads
   -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
                         number of simultaneous downloads (default=3)
+  -g, --genomes-only    just download and sketch genome (DNA) files
+  -m, --proteomes-only  just download and sketch proteome (protein) files
 ```
 
 ## Code of Conduct
