@@ -1342,6 +1342,17 @@ pub async fn urlsketch(
             continue;
         }
 
+        // eliminate sigs that won't be added to based on moltype
+        // this assumes no translation --> modify as needed if adding that.
+        if accinfo.moltype == InputMolType::Dna {
+            sigs.select(&dna_multiselection)?;
+        } else {
+            sigs.select(&protein_multiselection)?;
+        }
+        if sigs.is_empty() && !download_only {
+            continue;
+        }
+
         let semaphore_clone = Arc::clone(&semaphore);
         let client_clone = Arc::clone(&client);
         let send_sigs = send_sigs.clone();

@@ -146,6 +146,8 @@ options:
                         number of cores to use (default is all available)
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         number of times to retry failed downloads
+  -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
+                        number of accessions to download simultaneously (default=1)
   -g, --genomes-only    just download and sketch genome (DNA) files
   -m, --proteomes-only  just download and sketch proteome (protein) files
 ```
@@ -211,6 +213,8 @@ options:
                         number of cores to use (default is all available)
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         number of times to retry failed downloads
+  -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
+                        number of simultaneous downloads (default=3)
 ```
 
 ## Code of Conduct

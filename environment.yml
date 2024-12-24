@@ -6,7 +6,7 @@ channels:
 dependencies:
   - sourmash>=4.8,<5
   - pip
-  - rust=1.75
+  - rust==1.75
   - maturin>=1,<2
   - pytest
   - pandas
