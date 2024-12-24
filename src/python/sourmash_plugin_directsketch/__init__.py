@@ -65,6 +65,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
+        p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3],
+                       help='number of accessions to download simultaneously (default=1)')
         group = p.add_mutually_exclusive_group()
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
         group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
@@ -104,6 +106,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.proteomes_only,
                                                            args.download_only,
                                                            args.batch_size,
+                                                           args.n_simultaneous_downloads,
                                                            args.output)
         
         if status == 0:
@@ -126,7 +129,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument('-o', '--output', default=None,
                        help='output zip file for the signatures')
         p.add_argument('--batch-size', type=non_negative_int, default = 0,
-                       help='Write smaller zipfiles, each containing sigs associated with this number of accessions. \
+                       help='Write smaller zipfiles, each containing sigs associated with this number of urls. \
                             This allows urlsketch to recover after unexpected failures, rather than needing to \
                             restart sketching from scratch. Default: write all sigs to single zipfile.')
         p.add_argument('-f', '--fastas',
@@ -143,6 +146,8 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
+        p.add_argument('-n', '--n-simultaneous-downloads', default=3, type=int, choices = [1, 2, 3],
+                       help='number of simultaneous downloads (default=3)')
 
 
     def main(self, args):
@@ -176,6 +181,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                                                            args.keep_fasta,
                                                            args.download_only,
                                                            args.batch_size,
+                                                           args.n_simultaneous_downloads,
                                                            args.output,
                                                            args.checksum_fail)
         

@@ -22,9 +22,7 @@ use crate::utils::{
     InputMolType, MultiCollection,
 };
 
-use crate::utils::buildutils::{
-    BuildCollection, BuildManifest, MultiBuildCollection, MultiSelect, MultiSelection,
-};
+use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
 use reqwest::Url;
 
 async fn find_genome_directory(
@@ -237,17 +235,14 @@ async fn dl_sketch_assembly_accession(
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
-    sigs: &mut BuildCollection,
+    mut sigs: BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
-) -> Result<(
-    MultiBuildCollection,
-    Vec<FailedDownload>,
-    Vec<FailedChecksum>,
-)> {
+) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+    // todo -- move default retry to main function
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut built_sigs = MultiBuildCollection::new();
+    let empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
@@ -283,7 +278,7 @@ async fn dl_sketch_assembly_accession(
                     download_failures.push(failed_download_protein);
                 }
 
-                return Ok((built_sigs, download_failures, checksum_failures));
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
         };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
@@ -322,7 +317,7 @@ async fn dl_sketch_assembly_accession(
                 checksum_failures.push(failed_checksum_download);
             }
             // return early from function b/c we can't check any checksums
-            return Ok((built_sigs, download_failures, checksum_failures));
+            return Ok((empty_coll, download_failures, checksum_failures));
         }
     };
 
@@ -383,16 +378,8 @@ async fn dl_sketch_assembly_accession(
             };
         }
     }
-    if !download_only {
-        // remove any template sigs that were not populated
-        sigs.filter_empty();
-        // to do: can we use sigs directly rather than adding to a multibuildcollection, now?
-        if !sigs.is_empty() {
-            built_sigs.add_collection(sigs);
-        }
-    }
 
-    Ok((built_sigs, download_failures, checksum_failures))
+    Ok((sigs, download_failures, checksum_failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -402,17 +389,13 @@ async fn dl_sketch_url(
     location: &PathBuf,
     retry: Option<u32>,
     _keep_fastas: bool,
-    sigs: &mut BuildCollection,
+    mut sigs: BuildCollection,
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
-) -> Result<(
-    MultiBuildCollection,
-    Vec<FailedDownload>,
-    Vec<FailedChecksum>,
-)> {
+) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
-    let mut built_sigs = MultiBuildCollection::new();
+    let empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
@@ -442,12 +425,6 @@ async fn dl_sketch_url(
                         sigs.build_sigs_from_data(data, "protein", name.clone(), filename.clone())?;
                     }
                 };
-                // remove any template sigs that were not populated
-                sigs.filter_empty();
-                // to do: can we use sigs directly rather than adding to a collection, now?
-                if !sigs.is_empty() {
-                    built_sigs.add_collection(sigs);
-                }
             }
         }
         Err(err) => {
@@ -466,6 +443,7 @@ async fn dl_sketch_url(
                     reason: error_message.clone(),
                 };
                 checksum_failures.push(checksum_mismatch);
+                sigs = empty_coll;
             } else {
                 let failed_download = FailedDownload {
                     accession: accession.clone(),
@@ -476,11 +454,12 @@ async fn dl_sketch_url(
                     url: Some(url),
                 };
                 download_failures.push(failed_download);
+                sigs = empty_coll;
             }
         }
     }
 
-    Ok((built_sigs, download_failures, checksum_failures))
+    Ok((sigs, download_failures, checksum_failures))
 }
 
 fn get_current_directory() -> Result<PathBuf> {
@@ -561,34 +540,24 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
-                // Wrap the `from_zipfile` call in `catch_unwind` to prevent panic propagation
-                let result = panic::catch_unwind(|| Collection::from_zipfile(&entry_path));
-                match result {
-                    Ok(Ok(collection)) => {
-                        // Successfully loaded the collection, push to `collections`
+                Collection::from_zipfile(&entry_path)
+                    .map(|collection| {
                         collections.push(collection);
+                        eprintln!("loaded existing collection from {}", &entry_path);
 
-                        // Extract the batch number (if it exists) and update the highest_batch
+                        // Extract batch number if it exists
                         if let Some(batch_str) = captures.get(1) {
                             if let Ok(batch_num) = batch_str.as_str().parse::<usize>() {
                                 highest_batch = max(highest_batch, batch_num);
                             }
                         }
-                    }
-                    Ok(Err(e)) => {
-                        // Handle the case where `from_zipfile` returned an error
+                    })
+                    .unwrap_or_else(|e| {
                         eprintln!(
-                            "Warning: Failed to load zip file '{}'. Error: {:?}",
+                            "Warning: Failed to load zip file '{}'; skipping. Zipfile Error: {:?}",
                             entry_path, e
                         );
-                        continue; // Skip the file and continue
-                    }
-                    Err(_) => {
-                        // The code inside `from_zipfile` panicked
-                        eprintln!("Warning: Invalid zip file '{}'; skipping.", entry_path);
-                        continue; // Skip the file and continue
-                    }
-                }
+                    });
             }
         }
     }
@@ -622,7 +591,7 @@ async fn create_or_get_zip_file(
 }
 
 pub fn zipwriter_handle(
-    mut recv_sigs: tokio::sync::mpsc::Receiver<MultiBuildCollection>,
+    mut recv_sigs: tokio::sync::mpsc::Receiver<BuildCollection>,
     output_sigs: Option<String>,
     batch_size: usize,      // Tunable batch size
     mut batch_index: usize, // starting batch index
@@ -632,13 +601,13 @@ pub fn zipwriter_handle(
         let mut md5sum_occurrences = HashMap::new();
         let mut zip_manifest = BuildManifest::new();
         let mut wrote_sigs = false;
-        let mut file_count = 0; // Count of files in the current batch
+        let mut acc_count = 0; // count the number of accessions (or urls, in urlsketch)
         let mut zip_writer = None;
 
         if let Some(outpath) = output_sigs {
             let outpath: PathBuf = outpath.into();
 
-            while let Some(mut multibuildcoll) = recv_sigs.recv().await {
+            while let Some(mut buildcoll) = recv_sigs.recv().await {
                 if zip_writer.is_none() {
                     // create zip file if needed
                     zip_writer =
@@ -653,29 +622,28 @@ pub fn zipwriter_handle(
 
                 if let Some(zip_writer) = zip_writer.as_mut() {
                     // write all sigs from sigcoll. Note that this method updates each record's internal location
-                    for sigcoll in &mut multibuildcoll.collections {
-                        match sigcoll
-                            .async_write_sigs_to_zip(zip_writer, &mut md5sum_occurrences)
-                            .await
-                        {
-                            Ok(_) => {
-                                file_count += sigcoll.size();
-                                wrote_sigs = true;
-                            }
-                            Err(e) => {
-                                let error = e.context("Error processing signature");
-                                if error_sender.send(error).await.is_err() {
-                                    return;
-                                }
+                    match buildcoll
+                        .async_write_sigs_to_zip(zip_writer, &mut md5sum_occurrences)
+                        .await
+                    {
+                        Ok(_) => {
+                            wrote_sigs = true;
+                        }
+                        Err(e) => {
+                            let error = e.context("Error processing signature");
+                            if error_sender.send(error).await.is_err() {
+                                return;
                             }
                         }
-                        // Add all records from sigcoll manifest
-                        zip_manifest.extend_from_manifest(&sigcoll.manifest);
                     }
+                    // Add all records from buildcoll manifest
+                    zip_manifest.extend_from_manifest(&buildcoll.manifest);
+                    // each buildcoll has accession
+                    acc_count += 1;
                 }
 
                 // if batch size is non-zero and is reached, close the current zip
-                if batch_size > 0 && file_count >= batch_size {
+                if batch_size > 0 && acc_count >= batch_size {
                     eprintln!("writing batch {}", batch_index);
                     if let Some(mut zip_writer) = zip_writer.take() {
                         if let Err(e) = zip_manifest
@@ -692,13 +660,13 @@ pub fn zipwriter_handle(
                     }
                     // Start a new batch
                     batch_index += 1;
-                    file_count = 0;
+                    acc_count = 0;
                     zip_manifest.clear();
                     zip_writer = None; // reset zip_writer so a new zip will be created when needed
                 }
             }
 
-            if file_count > 0 {
+            if acc_count > 0 {
                 // write the final manifest
                 if let Some(mut zip_writer) = zip_writer.take() {
                     if let Err(e) = zip_manifest
@@ -884,12 +852,14 @@ pub async fn gbsketch(
     proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
+    n_permits: usize,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
     let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
     let mut filter = false;
+    // if writing sigs, prepare output and look for existing sig batches
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
         let outpath = PathBuf::from(output_sigs);
@@ -922,7 +892,7 @@ pub async fn gbsketch(
         create_dir_all(&download_path)?;
     }
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
@@ -954,7 +924,7 @@ pub async fn gbsketch(
     handles.push(checksum_failures_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
+    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
@@ -963,52 +933,49 @@ pub async fn gbsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-    let mut sig_templates = match sig_template_result {
-        Ok(sig_templates) => sig_templates,
-        Err(e) => {
-            bail!("Failed to parse params string: {}", e);
-        }
-    };
-
+    let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
 
-    // Check if we have dna signature templates and not keep_fastas
-    if sig_templates.dna_size()? == 0 && !keep_fastas {
-        eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
-        proteomes_only = true;
-    }
-    // Check if we have protein signature templates not keep_fastas
-    if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
-        eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
-        genomes_only = true;
-    }
-    if genomes_only {
-        // select only DNA templates
-        let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
-        sig_templates = sig_templates.select(&multiselection)?;
-
-        if !download_only {
-            eprintln!("Downloading and sketching genomes only.");
-        } else {
+    if download_only {
+        if genomes_only {
             eprintln!("Downloading genomes only.");
-        }
-    } else if proteomes_only {
-        // select only protein templates
-        let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-        sig_templates = sig_templates.select(&multiselection)?;
-        if !download_only {
-            eprintln!("Downloading and sketching proteomes only.");
-        } else {
+        } else if proteomes_only {
             eprintln!("Downloading proteomes only.");
         }
+    } else {
+        let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
+        sig_templates = match sig_template_result {
+            Ok(sig_templates) => sig_templates,
+            Err(e) => {
+                bail!("Failed to parse params string: {}", e);
+            }
+        };
+        // Check if we have dna signature templates and not keep_fastas
+        if sig_templates.dna_size()? == 0 && !keep_fastas {
+            eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
+            proteomes_only = true;
+        }
+        // Check if we have protein signature templates not keep_fastas
+        if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
+            eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
+            genomes_only = true;
+        }
+        if genomes_only {
+            // select only templates built from DNA input
+            let multiselection = MultiSelection::from_input_moltype("DNA")?;
+            sig_templates.select(&multiselection)?;
+            eprintln!("Downloading and sketching genomes only.");
+        } else if proteomes_only {
+            // select only templates built from protein input
+            let multiselection = MultiSelection::from_input_moltype("protein")?;
+            sig_templates.select(&multiselection)?;
+            eprintln!("Downloading and sketching proteomes only.");
+        }
+        if sig_templates.is_empty() && !download_only {
+            bail!("No signatures to build.")
+        }
     }
-
-    if sig_templates.is_empty() && !download_only {
-        bail!("No signatures to build.")
-    }
-
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
@@ -1053,7 +1020,7 @@ pub async fn gbsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                &mut sigs,
+                sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,
@@ -1119,6 +1086,7 @@ pub async fn urlsketch(
     keep_fastas: bool,
     download_only: bool,
     batch_size: u32,
+    n_permits: usize,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1159,7 +1127,7 @@ pub async fn urlsketch(
     }
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<MultiBuildCollection>(4);
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
@@ -1197,7 +1165,7 @@ pub async fn urlsketch(
     handles.push(error_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(3)); // Limiting concurrent downloads
+    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
@@ -1206,50 +1174,49 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-    let mut sig_templates = match sig_template_result {
-        Ok(sig_templates) => sig_templates,
-        Err(e) => {
-            bail!("Failed to parse params string: {}", e);
-        }
-    };
-
+    // todo: add genomes_only / proteomes_only to the input options
+    let mut sig_templates = BuildCollection::new();
     let mut genomes_only = false;
     let mut proteomes_only = false;
+    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
+    let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
 
-    // Check if we have dna signature templates and not keep_fastas
-    if sig_templates.dna_size()? == 0 && !keep_fastas {
-        eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
-        proteomes_only = true;
-    }
-    // Check if we have protein signature templates not keep_fastas
-    if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
-        eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
-        genomes_only = true;
-    }
-    if genomes_only {
-        // select only DNA templates
-        let multiselection = MultiSelection::from_moltypes(vec!["dna"])?;
-        sig_templates = sig_templates.select(&multiselection)?;
-
-        if !download_only {
-            eprintln!("Downloading and sketching genomes only.");
-        } else {
+    if download_only {
+        if genomes_only {
             eprintln!("Downloading genomes only.");
-        }
-    } else if proteomes_only {
-        // select only protein templates
-        let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-        sig_templates = sig_templates.select(&multiselection)?;
-        if !download_only {
-            eprintln!("Downloading and sketching proteomes only.");
-        } else {
+        } else if proteomes_only {
             eprintln!("Downloading proteomes only.");
         }
-    }
-
-    if sig_templates.is_empty() && !download_only {
-        bail!("No signatures to build.")
+    } else {
+        let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
+        sig_templates = match sig_template_result {
+            Ok(sig_templates) => sig_templates,
+            Err(e) => {
+                bail!("Failed to parse params string: {}", e);
+            }
+        };
+        // Check if we have dna signature templates and not keep_fastas
+        if sig_templates.dna_size()? == 0 && !keep_fastas {
+            eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
+            proteomes_only = true;
+        }
+        // Check if we have protein signature templates not keep_fastas
+        if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
+            eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
+            genomes_only = true;
+        }
+        if genomes_only {
+            // select only DNA templates
+            sig_templates.select(&dna_multiselection)?;
+            eprintln!("Downloading and sketching genomes only.");
+        } else if proteomes_only {
+            // select only protein templates
+            sig_templates.select(&protein_multiselection)?;
+            eprintln!("Downloading and sketching proteomes only.");
+        }
+        if sig_templates.is_empty() && !download_only {
+            bail!("No signatures to build.")
+        }
     }
 
     // report every 1 percent (or every 1, whichever is larger)
@@ -1265,6 +1232,17 @@ pub async fn urlsketch(
                 // If the key exists, filter template sigs
                 sigs.filter_by_manifest(existing_manifest);
             }
+        }
+
+        // eliminate sigs that won't be added to based on moltype
+        // this assumes no translation --> modify as needed if adding that.
+        if accinfo.moltype == InputMolType::Dna {
+            sigs.select(&dna_multiselection)?;
+        } else {
+            sigs.select(&protein_multiselection)?;
+        }
+        if sigs.is_empty() && !download_only {
+            continue;
         }
 
         let semaphore_clone = Arc::clone(&semaphore);
@@ -1294,7 +1272,7 @@ pub async fn urlsketch(
                 &download_path_clone,
                 Some(retry_times),
                 keep_fastas,
-                &mut sigs,
+                sigs,
                 genomes_only,
                 proteomes_only,
                 download_only,
