@@ -782,7 +782,7 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     assert not os.path.exists(output)  # for now, orig output file should be empty.
     captured = capfd.readouterr()
     print(captured.err)
-    assert f"Warning: Invalid zip file '{out2}'; skipping." in captured.err
+    assert f"Warning: Failed to load zip file '{out2}'; skipping." in captured.err
 
     # we created this one with sig cat
     idx = sourmash.load_file_as_index(out1)
