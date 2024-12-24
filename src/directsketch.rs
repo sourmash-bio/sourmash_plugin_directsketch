@@ -278,7 +278,7 @@ async fn dl_sketch_assembly_accession(
                     download_failures.push(failed_download_protein);
                 }
 
-            return Ok((empty_coll, download_failures, checksum_failures));
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
         };
     let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
@@ -545,8 +545,8 @@ async fn dl_sketch_url(
                         url: Some(url),
                     };
                     download_failures.push(failed_download);
-                // Clear signatures and return immediately on failure
-                return Ok((empty_coll, download_failures, checksum_failures));
+                    // Clear signatures and return immediately on failure
+                    return Ok((empty_coll, download_failures, checksum_failures));
                 }
             }
         }
@@ -1340,7 +1340,7 @@ pub async fn urlsketch(
             sigs.select(&protein_multiselection)?;
         }
         if sigs.is_empty() && !download_only {
-            continue
+            continue;
         }
 
         let semaphore_clone = Arc::clone(&semaphore);
