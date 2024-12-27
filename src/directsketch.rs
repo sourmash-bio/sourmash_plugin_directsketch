@@ -1285,7 +1285,7 @@ pub async fn urlsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
-    let dna_multiselection = MultiSelection::from_input_moltype("DNA")?;
+    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
     let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
 
     if download_only {

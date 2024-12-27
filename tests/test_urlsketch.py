@@ -997,3 +997,4 @@ def test_urlsketch_with_range_keep_fasta(runtmp):
         if ident == "GCA_000175535.1_second50kb":
             assert sig.md5sum() == ss2.md5sum()
     assert os.path.exists(failed)
+    
