@@ -2,13 +2,12 @@ use anyhow::{anyhow, Result};
 use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
-// use std::collections::HashSet;
 use std::fmt;
 
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub enum InputMolType {
     Dna,
     Protein,
