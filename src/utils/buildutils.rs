@@ -491,7 +491,6 @@ impl BuildCollection {
         mf.select(&multiselection)?;
         Ok(mf.records.len())
     }
-
     pub fn parse_ksize(value: &str) -> Result<u32, String> {
         value
             .parse::<u32>()
