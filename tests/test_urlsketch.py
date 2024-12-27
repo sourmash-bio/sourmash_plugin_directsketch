@@ -911,6 +911,49 @@ def test_urlsketch_simple_merged_keep_fasta_path_in_filename(runtmp):
     assert fa_files == ['unavailable-path/subdir/both.urlsketch.fna.gz']
 
 
+def test_urlsketch_simple_merged_incorrect_md5sum(runtmp):
+    acc_csv = get_test_data('acc-merged-md5sums.csv')
+    mod_csv = runtmp.output('acc-merged_incorrect_md5.csv')
+    output = runtmp.output('merged.zip')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    # open file and write incorrect md5sum
+    with open(acc_csv, 'r') as infile, open(mod_csv, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            row['md5sum'] = row['md5sum'][2:] # take off first digit from first md5sum
+            print(row)
+            writer.writerow(row)
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', mod_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--fastas', out_dir,
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert not os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    # check failure file
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert download_filename == "both.urlsketch.fna.gz"
+            # to do --> md5sum, url shoudl both be ';'-sep, same as in input file
+#            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+#            assert range == ""
+
+
 def test_urlsketch_with_range(runtmp):
     acc_csv = get_test_data('acc-url-range.csv')
     subseqs = get_test_data('subseqs.zip')
