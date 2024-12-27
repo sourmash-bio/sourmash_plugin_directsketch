@@ -51,7 +51,7 @@ impl MultiSelection {
     pub fn from_input_moltype(input_moltype: &str) -> Result<Self, SourmashError> {
         // currently we don't allow translation. Will need to change this when we do.
         // is there a better way to do this?
-        let mut moltypes = vec!["DNA"];
+        let mut moltypes = vec!["DNA", "skipm1n3", "skipm2n3"];
         if input_moltype == "protein" {
             moltypes = vec!["protein", "dayhoff", "hp"];
         }
@@ -183,6 +183,24 @@ impl BuildRecord {
         }
     }
 
+    pub fn default_skipm1n3() -> Self {
+        Self {
+            moltype: "skipm1n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
+        }
+    }
+
+    pub fn default_skipm2n3() -> Self {
+        Self {
+            moltype: "skipm2n3".to_string(),
+            ksize: 21,
+            scaled: 1000,
+            ..Self::default_dna()
+        }
+    }
+
     pub fn moltype(&self) -> HashFunctions {
         self.moltype.as_str().try_into().unwrap()
     }
@@ -215,7 +233,7 @@ impl BuildRecord {
 
         if let Some(scaled) = selection.scaled() {
             // num sigs have self.scaled = 0, don't include them
-            valid = valid && self.scaled != 0 && self.scaled <= scaled as u32;
+            valid = valid && self.scaled != 0 && self.scaled <= scaled;
         }
 
         if let Some(num) = selection.num() {
@@ -439,16 +457,37 @@ impl BuildCollection {
         Ok(mf.records.len())
     }
 
+    pub fn skipm1n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm1n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
+    pub fn skipm2n3_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
+    pub fn anydna_size(&self) -> Result<usize, SourmashError> {
+        let multiselection = MultiSelection::from_moltypes(vec!["DNA", "skipm1n3", "skipm2n3"])?;
+        let mut mf = self.manifest.clone();
+        mf.select(&multiselection)?;
+        Ok(mf.records.len())
+    }
+
     pub fn protein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein"])?;
-        let mut mf = self.manifest.clone(); // temporary mutable copy
+        let mut mf = self.manifest.clone();
         mf.select(&multiselection)?;
         Ok(mf.records.len())
     }
 
     pub fn anyprotein_size(&self) -> Result<usize, SourmashError> {
         let multiselection = MultiSelection::from_moltypes(vec!["protein", "dayhoff", "hp"])?;
-        let mut mf = self.manifest.clone(); // temporary mutable copy
+        let mut mf = self.manifest.clone();
         mf.select(&multiselection)?;
         Ok(mf.records.len())
     }
@@ -484,7 +523,7 @@ impl BuildCollection {
 
     pub fn parse_moltype(item: &str, current: &mut Option<String>) -> Result<String, String> {
         let new_moltype = match item {
-            "protein" | "dna" | "dayhoff" | "hp" => item.to_string(),
+            "protein" | "dna" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => item.to_string(),
             _ => return Err(format!("unknown moltype '{}'", item)),
         };
 
@@ -534,7 +573,7 @@ impl BuildCollection {
                 "abund" | "noabund" => {
                     Self::parse_abundance(item, &mut track_abundance)?;
                 }
-                "protein" | "dna" | "DNA" | "dayhoff" | "hp" => {
+                "protein" | "dna" | "DNA" | "dayhoff" | "hp" | "skipm1n3" | "skipm2n3" => {
                     Self::parse_moltype(item, &mut moltype)?;
                 }
                 _ if item.starts_with("num=") => {
@@ -557,6 +596,8 @@ impl BuildCollection {
             Some("protein") => BuildRecord::default_protein(),
             Some("dayhoff") => BuildRecord::default_dayhoff(),
             Some("hp") => BuildRecord::default_hp(),
+            Some("skipm1n3") => BuildRecord::default_skipm1n3(),
+            Some("skipm2n3") => BuildRecord::default_skipm2n3(),
             _ => BuildRecord::default_dna(), // no moltype --> assume DNA
         };
 
@@ -609,7 +650,6 @@ impl BuildCollection {
                 // Check if the record is already in the set.
                 if seen_records.insert(record.clone()) {
                     // Add the record and its associated signature to the collection.
-                    // coll.add_template_sig_from_record(&record, &record.moltype);
                     coll.add_template_sig_from_record(&record);
                 }
             }
@@ -644,6 +684,8 @@ impl BuildCollection {
             .dna(record.moltype == "DNA")
             .dayhoff(record.moltype == "dayhoff")
             .hp(record.moltype == "hp")
+            .skipm1n3(record.moltype == "skipm1n3")
+            .skipm2n3(record.moltype == "skipm2n3")
             .num_hashes(record.num)
             .track_abundance(record.with_abundance)
             .build();
@@ -718,7 +760,6 @@ impl BuildCollection {
         input_moltype: &str,
         record: &SequenceRecord,
     ) -> Result<()> {
-        // Optionally use `par_iter_mut` for parallel execution
         self.iter_mut().try_for_each(|(rec, sig)| {
             if input_moltype == "protein"
                 && (rec.moltype() == HashFunctions::Murmur64Protein
@@ -731,7 +772,9 @@ impl BuildCollection {
                     rec.sequence_added = true;
                 }
             } else if (input_moltype == "DNA" || input_moltype == "dna")
-                && rec.moltype() == HashFunctions::Murmur64Dna
+                && (rec.moltype() == HashFunctions::Murmur64Dna
+                    || rec.moltype() == HashFunctions::Murmur64Skipm2n3
+                    || rec.moltype() == HashFunctions::Murmur64Skipm1n3)
             {
                 sig.add_sequence(&record.seq(), true)
                     .context("Failed to add sequence")?;
