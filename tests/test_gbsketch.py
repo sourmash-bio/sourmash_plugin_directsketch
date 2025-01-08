@@ -6,6 +6,7 @@ import csv
 import pytest
 
 import sourmash
+from sourmash import sourmash_args
 import sourmash_tst_utils as utils
 from sourmash_tst_utils import SourmashCommandFailed
 
@@ -72,6 +73,48 @@ def test_gbsketch_simple(runtmp, capfd):
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+
+
+def test_gbsketch_manifest(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
+
+    idx = sourmash.load_file_as_index(output)
+    manifest = sourmash_args.get_manifest(idx)
+    assert len(manifest) == 3
+    assert manifest._md5_set == set([ss1.md5sum(), ss2.md5sum(), ss3.md5sum()])
+    for row in manifest.rows:
+        print(row)
+        if 'GCA_000175535.1' in row["name"]:
+             assert row["md5"] == ss1.md5sum()
+             assert row["n_hashes"] == 1047
+        if "GCA_000961135.2" in row["name"]:
+             if row["moltype"] == 'DNA':
+                 assert row["md5"] == ss2.md5sum()
+                 assert row["n_hashes"] == 1776
+             else:
+                 assert row["md5"] == ss3.md5sum()
+                 assert row["n_hashes"] == 2596
 
 
 def test_gbsketch_simple_url(runtmp):
@@ -898,7 +941,7 @@ def test_gbsketch_simple_skipmer(runtmp, capfd):
     print(captured.err)
     print(f"looking for path: {output}")
 
-        # read the file with python and check sigs
+    # read the file with python and check sigs
     import zipfile, gzip, json
 
     with zipfile.ZipFile(output, "r") as zf:
