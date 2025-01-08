@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
+use camino::Utf8Path;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
@@ -10,7 +11,7 @@ use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::fs::File;
+use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
 use tokio_util::compat::Compat;
@@ -441,6 +442,39 @@ fn extract_range_from_record(
     }
 }
 
+/// Opens a file for writing, creating necessary directories and truncating it if it exists.
+/// Returns an `Option<File>` if a filename is provided, or `None` if the filename is `None`.
+async fn open_file_for_writing(
+    location: &Utf8Path,
+    filename: Option<&String>,
+) -> Result<Option<File>> {
+    if let Some(download_filename) = filename {
+        let path = location.join(download_filename);
+
+        // Create subdirectories if needed
+        if let Some(parent) = path.parent() {
+            create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create directories for download filename path {}",
+                    &path
+                )
+            })?;
+        }
+
+        // Open the file in write mode (truncate if it exists)
+        let file = OpenOptions::new()
+            .create(true) // Create the file if it doesn't exist
+            .write(true) // Enable write mode
+            .truncate(true) // Clear existing content
+            .open(&path)
+            .await
+            .with_context(|| format!("Failed to open file at {}", path))?;
+        Ok(Some(file))
+    } else {
+        Ok(None)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_url(
     client: &Client,
@@ -464,45 +498,33 @@ async fn dl_sketch_url(
     let filename = download_filename.clone().unwrap_or("".to_string());
     let moltype = accinfo.moltype;
 
+    let mut file: Option<File> = if keep_fastas {
+        open_file_for_writing(&location, download_filename.as_ref()).await?
+    } else {
+        None
+    };
+
     for uinfo in accinfo.url_info {
         let url = uinfo.url;
         let expected_md5 = uinfo.md5sum;
         let range = uinfo.range;
         match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
             Ok(data) => {
-                // if keep_fastas, write file to disk
-                if keep_fastas {
-                    // note, if multiple urls are provided, this will append to the same file
-                    if let Some(ref download_filename) = download_filename {
-                        let path = location.join(download_filename);
-                        // create subdirectories if needed
-                        if let Some(parent) = path.parent() {
-                            create_dir_all(parent).with_context(|| {
-                                format!(
-                                    "Failed to create directories for download filename path {}",
-                                    &path
-                                )
-                            })?;
-                        }
-                        // Open the file in append mode (or create it if it doesn't exist)
-                        let mut file = tokio::fs::OpenOptions::new()
-                            .create(true) // Create the file if it doesn't exist
-                            .append(true) // Append to the file
-                            .open(&path)
+                // Write to file if keep_fastas is true and a file is open
+                // note, if multiple urls are provided, this will append to the same file
+                if let Some(file) = file.as_mut() {
+                    if range.is_some() {
+                        process_and_write_range(&data, file, range)
                             .await
-                            .context("Failed to open file in append mode")?;
-                        if range.is_some() {
-                            process_and_write_range(&data, &mut file, range)
-                                .await
-                                .context("Failed to process and write range to file")?;
-                        } else {
-                            // Write the entire data if no range is provided
-                            file.write_all(&data)
-                                .await
-                                .context("Failed to write data to file")?;
-                        }
+                            .context("Failed to process and write range to file")?;
+                    } else {
+                        // Write the entire data if no range is provided
+                        file.write_all(&data)
+                            .await
+                            .context("Failed to write data to file")?;
                     }
                 }
+
                 if !download_only {
                     // sketch data
 

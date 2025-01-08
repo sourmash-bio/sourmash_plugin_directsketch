@@ -113,6 +113,46 @@ def test_urlsketch_save_fastas(runtmp):
                 assert sig.md5sum() == ss3.md5sum()
 
 
+def test_urlsketch_save_fastas_no_append_across_runs(runtmp):
+    # make sure we overwrite files on subsequent runs (not append to existing)
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    # run once
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    # check out fastas exist
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.urlsketch.fna.gz', 'GCA_000961135.2_protein.urlsketch.faa.gz', 'GCA_000961135.2_genomic.urlsketch.fna.gz'])
+
+    # Get the file size for each file
+    fsizes = set()
+    for fa_file in fa_files:
+        file_path = os.path.join(out_dir, fa_file)
+        file_size = os.path.getsize(file_path)
+        print(f"File: {fa_file}, Size: {file_size} bytes")
+        fsizes.add(file_size)
+
+    # run a second time
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    fa_files2 = os.listdir(out_dir)
+    assert set(fa_files2) == set(['GCA_000175535.1_genomic.urlsketch.fna.gz', 'GCA_000961135.2_protein.urlsketch.faa.gz', 'GCA_000961135.2_genomic.urlsketch.fna.gz'])
+    for fa_file in fa_files2:
+        file_path = os.path.join(out_dir, fa_file)
+        file_size = os.path.getsize(file_path)
+        print(f"File: {fa_file}, Size: {file_size} bytes")
+        assert file_size in fsizes
+
+
 def test_urlsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc-url.csv')
     output = runtmp.output('simple.zip')
@@ -854,6 +894,21 @@ def test_urlsketch_simple_merged_keep_fasta(runtmp):
     fa_files = os.listdir(out_dir)
     print(fa_files)
     assert fa_files == ['both.urlsketch.fna.gz']
+
+    # check fasta files have records from both entries
+    n_expected_records = 104
+    n_records = 0
+    # check one record from each
+    expected_names = ["ACUJ01000001.1 Chlamydia muridarum MopnTet14 chromosome, whole genome shotgun sequence",
+                      "JZWS02000016.1 MAG: Candidatus Aramenus sulfurataquae isolate AZ1-454 NODE_87_length_15535_cov_30.701232, whole genome shotgun sequence"]
+    rec_names = []
+    with screed.open(os.path.join(out_dir, fa_files[0])) as inF:
+        for rec in inF:
+            n_records +=1
+            rec_names.append(rec.name)
+
+    assert n_records == n_expected_records
+    assert all(n in rec_names for n in expected_names)
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
