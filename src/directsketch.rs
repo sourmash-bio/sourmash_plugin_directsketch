@@ -270,18 +270,6 @@ impl FailedDownload {
             ),
         }
     }
-    /// Convert a `FailedChecksum` into a `FailedDownload`
-    pub fn from_failed_checksum(checksum: FailedChecksum) -> Self {
-        Self {
-            accession: checksum.accession,
-            name: checksum.name,
-            moltype: checksum.moltype,
-            md5sum: checksum.expected_md5sum.map(|md5| vec![md5]), // Wrap MD5 checksum in a Vec
-            download_filename: checksum.download_filename, // Directly assign the download filename
-            url: checksum.url.map(|url| vec![url]),        // Wrap URL in a Vec
-            range: checksum.range.map(|r| vec![r]),        // Wrap range string in a Vec
-        }
-    }
 
     /// Convert a `FailedDownload` to a CSV-formatted string
     pub fn to_csv_record(&self) -> String {
@@ -609,6 +597,7 @@ async fn dl_sketch_url(
     _genomes_only: bool,
     _proteomes_only: bool,
     download_only: bool,
+    write_checksum_fail: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let empty_coll = BuildCollection::new();
@@ -677,7 +666,7 @@ async fn dl_sketch_url(
                 let error_message = err.to_string();
                 // did we have a checksum error or a download error?
                 // here --> keep track of accession errors + filetype
-                if error_message.contains("MD5 hash does not match") {
+                if error_message.contains("MD5 hash does not match") && write_checksum_fail {
                     let checksum_mismatch: FailedChecksum = FailedChecksum {
                         accession: accession.clone(),
                         name: name.clone(),
@@ -1489,6 +1478,7 @@ pub async fn urlsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
+        let write_checksum_fail = write_failed_checksums.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1513,6 +1503,7 @@ pub async fn urlsketch(
                 genomes_only,
                 proteomes_only,
                 download_only,
+                write_checksum_fail,
             )
             .await;
             match result {
@@ -1529,30 +1520,11 @@ pub async fn urlsketch(
                             let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
-                    if write_failed_checksums {
-                        for fail in failed_checksums {
-                            if let Err(e) = checksum_send_failed.send(fail).await {
-                                eprintln!("Failed to send failed checksum info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                    } else {
-                        // if we don't have a failed checksum file, convert to failed downloads + write there
-                        for fail in failed_checksums {
-                            let dl_fail = FailedDownload::from_failed_checksum(fail);
-                            // let dl_fail: FailedDownload = FailedDownload {
-                            //     accession: fail.accession,
-                            //     name: fail.name,
-                            //     moltype: fail.moltype,
-                            //     md5sum: fail.expected_md5sum,
-                            //     download_filename: fail.download_filename,
-                            //     url: fail.url,
-                            //     range: fail.range,
-                            // };
-                            if let Err(e) = send_failed.send(dl_fail).await {
-                                eprintln!("Failed to send failed download info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
+                    // if write_failed_checksums {
+                    for fail in failed_checksums {
+                        if let Err(e) = checksum_send_failed.send(fail).await {
+                            eprintln!("Failed to send failed checksum info: {}", e);
+                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
                         }
                     }
                 }

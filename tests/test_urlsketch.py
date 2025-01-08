@@ -833,6 +833,7 @@ def test_urlsketch_simple_merged(runtmp):
     assert sig.minhash.moltype == msig.minhash.moltype == "DNA"
     assert os.path.exists(failed)
 
+
 def test_urlsketch_simple_merged_with_md5sums(runtmp):
     acc_csv = get_test_data('acc-merged-md5sums.csv')
     output = runtmp.output('merged.zip')
