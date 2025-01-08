@@ -616,6 +616,8 @@ async fn dl_sketch_url(
         None
     };
 
+    // are we merging files?
+    let merged_sample: bool = accinfo.url_info.len() > 1;
     for uinfo in &accinfo.url_info {
         let url = &uinfo.url;
         let expected_md5 = &uinfo.md5sum;
@@ -679,6 +681,13 @@ async fn dl_sketch_url(
                         range: None,
                     };
                     checksum_failures.push(checksum_mismatch);
+                    // if this is a merged sample, the checksum failure is only for one part of it.
+                    // also write a download failure, which is the full entry.
+                    // The checksum failures file is mostly for debugging, while the failure csv
+                    // can be used to re-run urlsketch.
+                    if merged_sample {
+                        download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                    }
                 } else {
                     download_failures.push(FailedDownload::from_accession_data(&accinfo));
                 }

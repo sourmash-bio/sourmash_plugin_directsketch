@@ -967,11 +967,12 @@ def test_urlsketch_simple_merged_keep_fasta_path_in_filename(runtmp):
     assert fa_files == ['unavailable-path/subdir/both.urlsketch.fna.gz']
 
 
-def test_urlsketch_simple_merged_incorrect_md5sum(runtmp):
+def test_urlsketch_simple_merged_incorrect_md5sum_checksum_failure(runtmp):
     acc_csv = get_test_data('acc-merged-md5sums.csv')
     mod_csv = runtmp.output('acc-merged_incorrect_md5.csv')
     output = runtmp.output('merged.zip')
     failed = runtmp.output('failed.csv')
+    ch_failed = runtmp.output('ch-failed.csv')
     out_dir = runtmp.output('out_fastas')
 
     # open file and write incorrect md5sum
@@ -988,26 +989,41 @@ def test_urlsketch_simple_merged_incorrect_md5sum(runtmp):
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', mod_csv, '-o', output,
                     '--failed', failed, '-r', '1', '--keep-fasta',
-                    '--fastas', out_dir,
+                    '--fastas', out_dir, '--checksum-fail', ch_failed,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert not os.path.exists(output)
     assert not runtmp.last_result.out # stdout should be empty
     # check failure file
-    assert os.path.exists(failed)
-    with open(failed, 'r') as failF:
+    assert os.path.exists(ch_failed)
+    with open(ch_failed, 'r') as failF:
         header = next(failF).strip()
-        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        print(header)
+        assert header == "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason"
         for line in failF:
+            print(line)
+            acc, name, moltype, md5sum_url, download_filename, url, expected_md5sum, reason = line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert expected_md5sum == "b9fb20c51f0552b87db5d44d5d4566"
+            assert reason == "MD5 hash does not match. Expected: 'b9fb20c51f0552b87db5d44d5d4566'; Found: '47b9fb20c51f0552b87db5d44d5d4566'"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz"
+    with open(failed, 'r') as fails:
+        header = next(fails).strip()
+        print(header)
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in fails:
             print(line)
             acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
             assert acc == "both"
             assert name == "both name"
             assert moltype == "DNA"
+            assert md5sum == "b9fb20c51f0552b87db5d44d5d4566;a1a8f1c6dc56999c73fe298871c963d1"
             assert download_filename == "both.urlsketch.fna.gz"
-            # to do --> md5sum, url shoudl both be ';'-sep, same as in input file
-#            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
-#            assert range == ""
+            assert url ==  "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == ""
 
 
 def test_urlsketch_with_range(runtmp):
@@ -1017,9 +1033,10 @@ def test_urlsketch_with_range(runtmp):
     failed = runtmp.output('failed.csv')
 
     # open subseq sigs
-    ssigidx = sourmash.load_file_as_index(subseqs)
-    ss1 = list(ssigidx.signatures())[0]
-    ss2 = list(ssigidx.signatures())[1]
+    idx = sourmash.load_file_as_index(subseqs)
+    siglist = list(idx.signatures())
+    ss1 = siglist[0]
+    ss2 = siglist[1]
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1',
