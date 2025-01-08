@@ -1,6 +1,5 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
-use camino::Utf8Path;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
@@ -209,13 +208,131 @@ async fn download_with_retry(
     }))
 }
 
+#[derive(Clone)]
 pub struct FailedDownload {
     accession: String,
     name: String,
     moltype: String,
-    md5sum: Option<String>,
+    md5sum: Option<Vec<String>>,
     download_filename: Option<String>,
-    url: Option<Url>,
+    url: Option<Vec<Url>>,
+    range: Option<Vec<String>>,
+}
+
+impl FailedDownload {
+    /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
+    pub fn from_gbassembly(
+        accession: String,
+        name: String,
+        moltype: String,
+        md5sum: Option<String>,            // Single MD5 checksum
+        download_filename: Option<String>, // Download filename
+        url: Option<reqwest::Url>,         // URL for the file
+        range: Option<(usize, usize)>,     // Optional range for the download
+    ) -> Self {
+        Self {
+            accession,
+            name,
+            moltype,
+            md5sum: md5sum.map(|checksum| vec![checksum]), // Wrap MD5 checksum in a Vec
+            download_filename,
+            url: url.map(|url| vec![url]), // Wrap URL in a Vec if it exists
+            range: range.map(|(start, end)| vec![format!("{}:{}", start, end)]), // Convert range to Vec<String>
+        }
+    }
+    /// Build a `FailedDownload` from `AccessionData`
+    pub fn from_accession_data(acc_data: &AccessionData) -> Self {
+        Self {
+            accession: acc_data.accession.clone(),
+            name: acc_data.name.clone(),
+            moltype: acc_data.moltype.to_string(),
+            md5sum: Some(
+                acc_data
+                    .url_info
+                    .iter()
+                    .filter_map(|info| info.md5sum.clone())
+                    .collect(),
+            ),
+            download_filename: acc_data.download_filename.clone(),
+            url: Some(
+                acc_data
+                    .url_info
+                    .iter()
+                    .map(|info| info.url.clone())
+                    .collect(),
+            ),
+            range: Some(
+                acc_data
+                    .url_info
+                    .iter()
+                    .filter_map(|info| info.range.map(|(start, end)| format!("{}:{}", start, end)))
+                    .collect(),
+            ),
+        }
+    }
+    /// Convert a `FailedChecksum` into a `FailedDownload`
+    pub fn from_failed_checksum(checksum: FailedChecksum) -> Self {
+        Self {
+            accession: checksum.accession,
+            name: checksum.name,
+            moltype: checksum.moltype,
+            md5sum: checksum.expected_md5sum.map(|md5| vec![md5]), // Wrap MD5 checksum in a Vec
+            download_filename: checksum.download_filename, // Directly assign the download filename
+            url: checksum.url.map(|url| vec![url]),        // Wrap URL in a Vec
+            range: checksum.range.map(|r| vec![r]),        // Wrap range string in a Vec
+        }
+    }
+
+    /// Convert a `FailedDownload` to a CSV-formatted string
+    pub fn to_csv_record(&self) -> String {
+        let md5sum_str = self
+            .md5sum
+            .as_ref()
+            .map(|v| v.join(";"))
+            .unwrap_or_else(|| "".to_string());
+
+        let url_str = self
+            .url
+            .as_ref()
+            .map(|v| {
+                v.iter()
+                    .map(|u| u.to_string())
+                    .collect::<Vec<_>>()
+                    .join(";")
+            })
+            .unwrap_or_else(|| "".to_string());
+
+        let range_str = self
+            .range
+            .as_ref()
+            .map(|v| v.join(";"))
+            .unwrap_or_else(|| "".to_string());
+
+        format!(
+            "{},{},{},{},{},{},{}\n",
+            self.accession,
+            self.name,
+            self.moltype,
+            md5sum_str,
+            self.download_filename
+                .clone()
+                .unwrap_or_else(|| "".to_string()),
+            url_str,
+            range_str,
+        )
+    }
+
+    pub fn csv_header() -> &'static str {
+        "accession,name,moltype,md5sum,download_filename,url,range\n"
+    }
+
+    /// Write a `FailedDownload` to a CSV writer
+    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), std::io::Error> {
+        writer.write_all(self.to_csv_record().as_bytes()).await
+    }
 }
 
 pub struct FailedChecksum {
@@ -227,6 +344,7 @@ pub struct FailedChecksum {
     url: Option<Url>,
     expected_md5sum: Option<String>,
     reason: String,
+    range: Option<String>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -247,36 +365,38 @@ async fn dl_sketch_assembly_accession(
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
-    let name = accinfo.name;
-    let accession = accinfo.accession;
+    let name = accinfo.name.clone();
+    let accession = accinfo.accession.clone();
 
     // keep track of any accessions for which we fail to find URLs
     let (base_url, full_name) =
-        match fetch_genbank_filename(client, accession.as_str(), accinfo.url).await {
+        match fetch_genbank_filename(client, accession.as_str(), accinfo.url.clone()).await {
             Ok(result) => result,
             Err(_err) => {
                 // Add accession to failed downloads with each moltype
                 if !proteomes_only {
-                    let failed_download_dna = FailedDownload {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: "dna".to_string(),
-                        md5sum: None,
-                        download_filename: None,
-                        url: None,
-                    };
+                    let failed_download_dna = FailedDownload::from_gbassembly(
+                        accession.clone(),
+                        name.clone(),
+                        "dna".to_string(),
+                        None, // No MD5 checksum
+                        None, // No Download filename
+                        None, // URL of the file
+                        None, // No range in this case
+                    );
                     download_failures.push(failed_download_dna);
                 }
                 if !genomes_only {
-                    let failed_download_protein = FailedDownload {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: "protein".to_string(),
-                        md5sum: None,
-                        download_filename: None,
-                        url: None,
-                    };
-                    download_failures.push(failed_download_protein);
+                    let failed_download_protein = FailedDownload::from_gbassembly(
+                        accession.clone(),
+                        name.clone(),
+                        "protein".to_string(),
+                        None, // No MD5 checksum
+                        None, // No Download filename
+                        None, // URL of the file
+                        None, // No range in this case
+                    );
+                    download_failures.push(failed_download_protein)
                 }
 
                 return Ok((empty_coll, download_failures, checksum_failures));
@@ -314,6 +434,7 @@ async fn dl_sketch_assembly_accession(
                     url: Some(url),
                     expected_md5sum: None,
                     reason: error_message.clone(), // write full error message
+                    range: None,
                 };
                 checksum_failures.push(failed_checksum_download);
             }
@@ -345,17 +466,19 @@ async fn dl_sketch_assembly_accession(
                             url: Some(url.clone()),
                             expected_md5sum: expected_md5.cloned(),
                             reason: error_message.clone(),
+                            range: None,
                         };
                         checksum_failures.push(checksum_mismatch);
                     } else {
-                        let failed_download = FailedDownload {
-                            accession: accession.clone(),
-                            name: name.clone(),
-                            moltype: file_type.moltype(),
-                            md5sum: expected_md5.map(|x| x.to_string()),
-                            download_filename: Some(file_name),
-                            url: Some(url),
-                        };
+                        let failed_download = FailedDownload::from_gbassembly(
+                            accession.clone(),
+                            name.clone(),
+                            file_type.moltype(),
+                            expected_md5.map(|x| x.to_string()), // single MD5 checksum
+                            Some(file_name),                     // intended download filename
+                            Some(url),                           // URL of the file
+                            None,                                // No range
+                        );
                         download_failures.push(failed_download);
                     }
                     continue;
@@ -445,7 +568,7 @@ fn extract_range_from_record(
 /// Opens a file for writing, creating necessary directories and truncating it if it exists.
 /// Returns an `Option<File>` if a filename is provided, or `None` if the filename is `None`.
 async fn open_file_for_writing(
-    location: &Utf8Path,
+    location: &PathBuf,
     filename: Option<&String>,
 ) -> Result<Option<File>> {
     if let Some(download_filename) = filename {
@@ -492,11 +615,11 @@ async fn dl_sketch_url(
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
-    let name = accinfo.name;
-    let accession = accinfo.accession;
-    let download_filename = accinfo.download_filename;
+    let name = accinfo.name.clone();
+    let accession = accinfo.accession.clone();
+    let download_filename = &accinfo.download_filename;
     let filename = download_filename.clone().unwrap_or("".to_string());
-    let moltype = accinfo.moltype;
+    let moltype = &accinfo.moltype;
 
     let mut file: Option<File> = if keep_fastas {
         open_file_for_writing(&location, download_filename.as_ref()).await?
@@ -504,9 +627,9 @@ async fn dl_sketch_url(
         None
     };
 
-    for uinfo in accinfo.url_info {
-        let url = uinfo.url;
-        let expected_md5 = uinfo.md5sum;
+    for uinfo in &accinfo.url_info {
+        let url = &uinfo.url;
+        let expected_md5 = &uinfo.md5sum;
         let range = uinfo.range;
         match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
             Ok(data) => {
@@ -564,18 +687,11 @@ async fn dl_sketch_url(
                         url: Some(url.clone()),
                         expected_md5sum: expected_md5.clone(),
                         reason: error_message.clone(),
+                        range: None,
                     };
                     checksum_failures.push(checksum_mismatch);
                 } else {
-                    let failed_download = FailedDownload {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: moltype.to_string(),
-                        md5sum: expected_md5.map(|x| x.to_string()),
-                        download_filename,
-                        url: Some(url),
-                    };
-                    download_failures.push(failed_download);
+                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
                 }
                 // Clear signatures and return immediately on failure
                 return Ok((empty_coll, download_failures, checksum_failures));
@@ -833,44 +949,25 @@ pub fn failures_handle(
             Ok(file) => {
                 let mut writer = BufWriter::new(file);
 
-                // Attempt to write CSV headers
+                // Write CSV header
                 if let Err(e) = writer
-                    .write_all(b"accession,name,moltype,md5sum,download_filename,url,range\n")
+                    .write_all(FailedDownload::csv_header().as_bytes())
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
                     let _ = error_sender.send(error).await;
-                    return; // Exit the task early after reporting the error
+                    return;
                 }
-
-                while let Some(FailedDownload {
-                    accession,
-                    name,
-                    md5sum,
-                    download_filename,
-                    url,
-                    moltype,
-                }) = recv_failed.recv().await
-                {
-                    let record = format!(
-                        "{},{},{},{},{},{},{}\n",
-                        accession,
-                        name,
-                        moltype,
-                        md5sum.unwrap_or("".to_string()),
-                        download_filename.unwrap_or("".to_string()),
-                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
-                        "",
-                    );
-                    // Attempt to write each record
-                    if let Err(e) = writer.write_all(record.as_bytes()).await {
+                while let Some(failed_download) = recv_failed.recv().await {
+                    // Write the FailedDownload to the CSV writer
+                    if let Err(e) = failed_download.to_writer(&mut writer).await {
                         let error = Error::new(e).context("Failed to write record");
                         let _ = error_sender.send(error).await;
-                        continue; // Optionally continue to try to write next records
+                        continue;
                     }
                 }
 
-                // Attempt to flush the writer
+                // Flush the writer
                 if let Err(e) = writer.flush().await {
                     let error = Error::new(e).context("Failed to flush writer");
                     let _ = error_sender.send(error).await;
@@ -914,6 +1011,7 @@ pub fn checksum_failures_handle(
                     url,
                     expected_md5sum,
                     reason,
+                    range,
                 }) = recv_failed.recv().await
                 {
                     let record = format!(
@@ -1441,14 +1539,16 @@ pub async fn urlsketch(
                     } else {
                         // if we don't have a failed checksum file, convert to failed downloads + write there
                         for fail in failed_checksums {
-                            let dl_fail: FailedDownload = FailedDownload {
-                                accession: fail.accession,
-                                name: fail.name,
-                                moltype: fail.moltype,
-                                md5sum: fail.expected_md5sum,
-                                download_filename: fail.download_filename,
-                                url: fail.url,
-                            };
+                            let dl_fail = FailedDownload::from_failed_checksum(fail);
+                            // let dl_fail: FailedDownload = FailedDownload {
+                            //     accession: fail.accession,
+                            //     name: fail.name,
+                            //     moltype: fail.moltype,
+                            //     md5sum: fail.expected_md5sum,
+                            //     download_filename: fail.download_filename,
+                            //     url: fail.url,
+                            //     range: fail.range,
+                            // };
                             if let Err(e) = send_failed.send(dl_fail).await {
                                 eprintln!("Failed to send failed download info: {}", e);
                                 let _ = send_errors.send(e.into()).await; // Send the error through the channel
