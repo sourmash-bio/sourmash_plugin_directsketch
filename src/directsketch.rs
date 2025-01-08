@@ -237,7 +237,7 @@ impl FailedDownload {
             md5sum: md5sum.map(|checksum| vec![checksum]), // Wrap MD5 checksum in a Vec
             download_filename,
             url: url.map(|url| vec![url]), // Wrap URL in a Vec if it exists
-            range: range.map(|(start, end)| vec![format!("{}:{}", start, end)]), // Convert range to Vec<String>
+            range: range.map(|(start, end)| vec![format!("{}-{}", start, end)]), // Convert range to Vec<String>
         }
     }
     /// Build a `FailedDownload` from `AccessionData`

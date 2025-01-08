@@ -283,15 +283,12 @@ pub fn load_accession_info(
             range_field
                 .split(';')
                 .map(|s| {
-                    let s = s.trim();
-                    if s.starts_with('(') && s.ends_with(')') {
-                        let range_str = &s[1..s.len() - 1];
-                        let parts: Vec<&str> = range_str.split(':').collect();
-                        if parts.len() == 2 {
-                            if let (Ok(start), Ok(end)) = (parts[0].parse(), parts[1].parse()) {
-                                if start < end {
-                                    return Some((start, end));
-                                }
+                    let s = s.trim(); // trim whitespace
+                    let parts: Vec<&str> = s.split('-').collect();
+                    if parts.len() == 2 {
+                        if let (Ok(start), Ok(end)) = (parts[0].parse(), parts[1].parse()) {
+                            if start < end {
+                                return Some((start, end));
                             }
                         }
                     }

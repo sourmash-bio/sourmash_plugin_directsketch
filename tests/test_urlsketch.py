@@ -1070,9 +1070,10 @@ def test_urlsketch_with_range_keep_fasta(runtmp):
     out_dir = runtmp.output('out_fastas')
 
     # open subseq sigs
-    ssigidx = sourmash.load_file_as_index(subseqs)
-    ss1 = list(ssigidx.signatures())[0]
-    ss2 = list(ssigidx.signatures())[1]
+    idx = sourmash.load_file_as_index(subseqs)
+    siglist = list(idx.signatures())
+    ss1 = siglist[0]
+    ss2 = siglist[1]
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '1', '--keep-fasta',
