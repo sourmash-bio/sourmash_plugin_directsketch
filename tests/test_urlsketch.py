@@ -1206,3 +1206,210 @@ def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
     assert "Error: Invalid range format: -1-10000000" in captured.err
+
+
+def test_urlsketch_merged_ranged(runtmp):
+    acc_csv = get_test_data('acc-merged-md5sums.csv')
+    acc_mod = runtmp.output('acc-merged-md5sums-ranges.csv')
+    subseqs = get_test_data('subseqs.zip')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+    sketch_out = runtmp.output('sketch-subseqs.zip')
+    merged_out = runtmp.output('merged-subseqs.zip')
+    f1 = get_test_data("GCA_000175535.1_ASM17553v1_genomic.1-50000.fna.gz")
+    f2 = get_test_data("GCA_000175535.1_ASM17553v1_genomic.50000-100000.fna.gz")
+
+    # Modify the acc_csv file to add range values
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            row['url'] = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            row['md5sum'] = "a1a8f1c6dc56999c73fe298871c963d1;a1a8f1c6dc56999c73fe298871c963d1"
+            row['range'] = '1-50000;50000-100000'
+            writer.writerow(row)
+            print(row)
+
+    # sketch subseq files
+    runtmp.sourmash('sketch', "dna", f1, f2, '--name',
+                    'both name', '-o', sketch_out,
+                    '-p', "dna,k=31,scaled=100")
+
+    idx = sourmash.load_file_as_index(sketch_out)
+    sigs1 = list(idx.signatures())
+    assert len(sigs1) == 1
+    sketchsig = sigs1[0]
+
+    # merge subset sketches
+    runtmp.sourmash('sig', "merge", subseqs,'--set-name',
+                    'both name', '-o', merged_out)
+    idx = sourmash.load_file_as_index(merged_out)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 1
+    mergesig = sigs[0]
+
+    # # run urlsketch
+    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 1
+    sig = sigs[0]
+    assert sig.name == "both name"
+    print(sig.md5sum())
+    assert sig.md5sum() == sketchsig.md5sum() == mergesig.md5sum() == "5feeed4c8a75c8b3fe67af1270fa92c4"
+
+
+def test_urlsketch_merged_ranged_md5sum_fail_no_checksum_file(runtmp):
+    acc_csv = get_test_data('acc-merged-md5sums.csv')
+    acc_mod = runtmp.output('acc-merged-md5sums-ranges.csv')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+
+    # Modify the acc_csv file to add range values
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            row['url'] = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            row['md5sum'] = "a1a8f1c6dc56999c73fe298871c963d1;b2" # second md5sum is incorrect
+            row['range'] = '1-50000;50000-100000'
+            writer.writerow(row)
+            print(row)
+
+    # # run urlsketch
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert not os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;b2"
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == "1:50000;50000:100000"
+
+
+def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
+    acc_csv = get_test_data('acc-merged-md5sums.csv')
+    acc_mod = runtmp.output('acc-merged-md5sums-ranges.csv')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('ch_failed.csv')
+
+    # Modify the acc_csv file to add range values
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            row['url'] = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            row['md5sum'] = "a1a8f1c6dc56999c73fe298871c963d1;b2" # second md5sum is incorrect
+            row['range'] = '1-50000;50000-100000'
+            writer.writerow(row)
+            print(row)
+
+    # # run urlsketch
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert not os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    # since this is a merged dataset, we write both checksum fail and regular fail.
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;b2"
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == "1:50000;50000:100000"
+
+    assert os.path.exists(ch_fail)
+    with open(ch_fail, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum_url, download_filename, url, expected_md5, reason= line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert md5sum_url == ""
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert expected_md5 == "b2"
+            assert reason == "MD5 hash does not match. Expected: 'b2'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
+
+
+def test_urlsketch_merged_ranged_fail(runtmp):
+    acc_csv = get_test_data('acc-merged-md5sums.csv')
+    acc_mod = runtmp.output('acc-merged-md5sums-ranges.csv')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+
+    # Modify the acc_csv file to add range values
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            # first url is incorrect
+            row['url'] = "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            row['md5sum'] = "a1a8f1c6dc56999c73fe298871c963d1;"
+            row['range'] = '1-50000;50000-100000'
+            writer.writerow(row)
+            print(row)
+
+    # # run urlsketch
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert not os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
+            assert acc == "both"
+            assert name == "both name"
+            assert moltype == "DNA"
+            assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;"
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == "1:50000;50000:100000"

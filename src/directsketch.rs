@@ -19,7 +19,7 @@ use pyo3::prelude::*;
 
 use crate::utils::{
     load_accession_info, load_gbassembly_info, AccessionData, GBAssemblyData, GenBankFileType,
-    InputMolType, MultiCollection,
+    InputMolType, MultiCollection, UrlInfo,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -213,10 +213,10 @@ pub struct FailedDownload {
     accession: String,
     name: String,
     moltype: String,
-    md5sum: Option<Vec<String>>,
-    download_filename: Option<String>,
-    url: Option<Vec<Url>>,
-    range: Option<Vec<String>>,
+    md5sum: String,
+    download_filename: String,
+    url: String,
+    range: String,
 }
 
 impl FailedDownload {
@@ -234,79 +234,59 @@ impl FailedDownload {
             accession,
             name,
             moltype,
-            md5sum: md5sum.map(|checksum| vec![checksum]), // Wrap MD5 checksum in a Vec
-            download_filename,
-            url: url.map(|url| vec![url]), // Wrap URL in a Vec if it exists
-            range: range.map(|(start, end)| vec![format!("{}-{}", start, end)]), // Convert range to Vec<String>
+            md5sum: md5sum.unwrap_or_default(),
+            download_filename: download_filename.unwrap_or_default(),
+            url: url.map(|u| u.to_string()).unwrap_or_default(),
+            range: range
+                .map(|(start, end)| format!("{}-{}", start, end))
+                .unwrap_or_default(), // Format range or use ""
         }
     }
+
+    fn parse_to_separated_string<T, F>(url_info: &[UrlInfo], mut extractor: F) -> String
+    where
+        F: FnMut(&UrlInfo) -> Option<T>,
+        T: ToString,
+    {
+        let results: Vec<String> = url_info
+            .iter()
+            .map(|info| extractor(info).map_or("".to_string(), |v| v.to_string())) // Map `None` to empty string
+            .collect();
+
+        if results.iter().all(|entry| entry.is_empty()) {
+            "".to_string() // If all entries are empty, return `""`
+        } else {
+            results.join(";") // Otherwise, join with `;`
+        }
+    }
+
     /// Build a `FailedDownload` from `AccessionData`
     pub fn from_accession_data(acc_data: &AccessionData) -> Self {
         Self {
             accession: acc_data.accession.clone(),
             name: acc_data.name.clone(),
             moltype: acc_data.moltype.to_string(),
-            md5sum: Some(
-                acc_data
-                    .url_info
-                    .iter()
-                    .filter_map(|info| info.md5sum.clone())
-                    .collect(),
-            ),
-            download_filename: acc_data.download_filename.clone(),
-            url: Some(
-                acc_data
-                    .url_info
-                    .iter()
-                    .map(|info| info.url.clone())
-                    .collect(),
-            ),
-            range: Some(
-                acc_data
-                    .url_info
-                    .iter()
-                    .filter_map(|info| info.range.map(|(start, end)| format!("{}:{}", start, end)))
-                    .collect(),
-            ),
+            md5sum: Self::parse_to_separated_string(&acc_data.url_info, |info| info.md5sum.clone()),
+            download_filename: acc_data.download_filename.clone().unwrap_or_default(),
+            url: Self::parse_to_separated_string(&acc_data.url_info, |info| {
+                Some(info.url.to_string())
+            }),
+            range: Self::parse_to_separated_string(&acc_data.url_info, |info| {
+                info.range.map(|(start, end)| format!("{}:{}", start, end))
+            }),
         }
     }
 
-    /// Convert a `FailedDownload` to a CSV-formatted string
     pub fn to_csv_record(&self) -> String {
-        let md5sum_str = self
-            .md5sum
-            .as_ref()
-            .map(|v| v.join(";"))
-            .unwrap_or_else(|| "".to_string());
-
-        let url_str = self
-            .url
-            .as_ref()
-            .map(|v| {
-                v.iter()
-                    .map(|u| u.to_string())
-                    .collect::<Vec<_>>()
-                    .join(";")
-            })
-            .unwrap_or_else(|| "".to_string());
-
-        let range_str = self
-            .range
-            .as_ref()
-            .map(|v| v.join(";"))
-            .unwrap_or_else(|| "".to_string());
-
         format!(
             "{},{},{},{},{},{},{}\n",
             self.accession,
             self.name,
             self.moltype,
-            md5sum_str,
-            self.download_filename
-                .clone()
-                .unwrap_or_else(|| "".to_string()),
-            url_str,
-            range_str,
+            self.md5sum,
+            self.download_filename,
+            self.url,
+            self.range,
         )
     }
 
@@ -341,13 +321,9 @@ impl FailedChecksum {
             .md5sum_url
             .as_ref()
             .map(|u| u.to_string())
-            .unwrap_or_else(|| "".to_string());
+            .unwrap_or_default();
 
-        let url_str = self
-            .url
-            .as_ref()
-            .map(|u| u.to_string())
-            .unwrap_or_else(|| "".to_string());
+        let url_str = self.url.as_ref().map(|u| u.to_string()).unwrap_or_default();
 
         format!(
             "{},{},{},{},{},{},{},{}\n",
@@ -355,13 +331,9 @@ impl FailedChecksum {
             self.name,
             self.moltype,
             md5sum_url_str,
-            self.download_filename
-                .clone()
-                .unwrap_or_else(|| "".to_string()),
+            self.download_filename.clone().unwrap_or_default(),
             url_str,
-            self.expected_md5sum
-                .clone()
-                .unwrap_or_else(|| "".to_string()),
+            self.expected_md5sum.clone().unwrap_or_default(),
             self.reason,
         )
     }
@@ -654,7 +626,7 @@ async fn dl_sketch_url(
     let moltype = &accinfo.moltype;
 
     let mut file: Option<File> = if keep_fastas {
-        open_file_for_writing(&location, download_filename.as_ref()).await?
+        open_file_for_writing(location, download_filename.as_ref()).await?
     } else {
         None
     };
@@ -665,7 +637,7 @@ async fn dl_sketch_url(
         let url = &uinfo.url;
         let expected_md5 = &uinfo.md5sum;
         let range = uinfo.range;
-        match download_with_retry(client, &url, expected_md5.as_deref(), retry_count).await {
+        match download_with_retry(client, url, expected_md5.as_deref(), retry_count).await {
             Ok(data) => {
                 // Write to file if keep_fastas is true and a file is open
                 // note, if multiple urls are provided, this will append to the same file
@@ -1507,7 +1479,7 @@ pub async fn urlsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-        let write_checksum_fail = write_failed_checksums.clone();
+        let write_checksum_fail = write_failed_checksums;
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
