@@ -14,7 +14,7 @@ use sourmash::encodings::{HashFunctions, Idx};
 use sourmash::errors::SourmashError;
 use sourmash::manifest::Record;
 use sourmash::selection::Selection;
-use sourmash::signature::Signature;
+use sourmash::signature::{Signature, SigsTrait};
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Display;
@@ -871,7 +871,9 @@ impl BuildCollection {
                 record.set_filename(Some(filename.clone()));
                 record.set_md5(Some(sig.md5sum()));
                 record.set_md5short(Some(sig.md5sum()[0..8].into()));
-                record.set_n_hashes(Some(sig.size()));
+                record.set_n_hashes(Some(
+                    sig.get_sketch().expect("cannot retrieve sketch").size(),
+                ));
 
                 // note, this needs to be set when writing sigs (not here)
                 // record.set_internal_location("")

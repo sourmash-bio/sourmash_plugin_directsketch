@@ -7,7 +7,6 @@ use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::panic;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
