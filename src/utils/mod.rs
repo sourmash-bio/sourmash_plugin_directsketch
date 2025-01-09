@@ -265,6 +265,9 @@ fn parse_ranges(
         .into_iter()
         .map(|s| {
             let s = s.trim(); // Trim whitespace
+            if s.is_empty() {
+                return Ok(None); // Treat empty range as None
+            }
             let parts: Vec<&str> = s.split('-').collect();
             if parts.len() == 2 {
                 let start = parts[0]
@@ -619,6 +622,15 @@ mod tests {
             result.unwrap_err(),
             "Number of ranges (2) does not match expected number of ranges (3)"
         );
+    }
+
+    #[test]
+    fn test_parse_ranges_with_empty_values() {
+        let range_field = "1-10;;20-30";
+        let expected_num_ranges = 3;
+        let result = parse_ranges(range_field, expected_num_ranges).unwrap();
+
+        assert_eq!(result, vec![Some((1, 10)), None, Some((20, 30))]);
     }
 
     #[test]

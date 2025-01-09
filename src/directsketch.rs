@@ -332,7 +332,52 @@ pub struct FailedChecksum {
     url: Option<Url>,
     expected_md5sum: Option<String>,
     reason: String,
-    range: Option<(usize, usize)>,
+}
+
+impl FailedChecksum {
+    /// Convert a `FailedChecksum` to a CSV-formatted string
+    pub fn to_csv_record(&self) -> String {
+        let md5sum_url_str = self
+            .md5sum_url
+            .as_ref()
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "".to_string());
+
+        let url_str = self
+            .url
+            .as_ref()
+            .map(|u| u.to_string())
+            .unwrap_or_else(|| "".to_string());
+
+        format!(
+            "{},{},{},{},{},{},{},{}\n",
+            self.accession,
+            self.name,
+            self.moltype,
+            md5sum_url_str,
+            self.download_filename
+                .clone()
+                .unwrap_or_else(|| "".to_string()),
+            url_str,
+            self.expected_md5sum
+                .clone()
+                .unwrap_or_else(|| "".to_string()),
+            self.reason,
+        )
+    }
+
+    /// Get the CSV header for a `FailedChecksum`
+    pub fn csv_header() -> &'static str {
+        "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n"
+    }
+
+    /// Write a `FailedChecksum` to a CSV writer
+    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
+        &self,
+        writer: &mut W,
+    ) -> Result<(), std::io::Error> {
+        writer.write_all(self.to_csv_record().as_bytes()).await
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -422,7 +467,6 @@ async fn dl_sketch_assembly_accession(
                     url: Some(url),
                     expected_md5sum: None,
                     reason: error_message.clone(), // write full error message
-                    range: None,
                 };
                 checksum_failures.push(failed_checksum_download);
             }
@@ -454,7 +498,6 @@ async fn dl_sketch_assembly_accession(
                             url: Some(url.clone()),
                             expected_md5sum: expected_md5.cloned(),
                             reason: error_message.clone(),
-                            range: None,
                         };
                         checksum_failures.push(checksum_mismatch);
                     } else {
@@ -678,7 +721,6 @@ async fn dl_sketch_url(
                         url: Some(url.clone()),
                         expected_md5sum: expected_md5.clone(),
                         reason: error_message.clone(),
-                        range,
                     };
                     checksum_failures.push(checksum_mismatch);
                     // if this is a merged sample, the checksum failure is only for one part of it.
@@ -992,43 +1034,20 @@ pub fn checksum_failures_handle(
 
                 // Attempt to write CSV headers
                 if let Err(e) = writer
-                    .write_all(b"accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n")
+                    .write_all(FailedChecksum::csv_header().as_bytes())
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
                     let _ = error_sender.send(error).await;
-                    return; // Exit the task early after reporting the error
+                    return;
                 }
 
-                while let Some(FailedChecksum {
-                    accession,
-                    name,
-                    moltype,
-                    md5sum_url,
-                    download_filename,
-                    url,
-                    expected_md5sum,
-                    reason,
-                    range,
-                }) = recv_failed.recv().await
-                {
-                    let record = format!(
-                        "{},{},{},{},{},{},{},{}\n",
-                        accession,
-                        name,
-                        moltype,
-                        md5sum_url.map(|u| u.to_string()).unwrap_or("".to_string()),
-                        download_filename.unwrap_or("".to_string()),
-                        url.map(|u| u.to_string()).unwrap_or("".to_string()),
-                        expected_md5sum.unwrap_or("".to_string()),
-                        reason,
-                        // range,
-                    );
-                    // Attempt to write each record
-                    if let Err(e) = writer.write_all(record.as_bytes()).await {
+                // Write each failed checksum record
+                while let Some(failed_checksum) = recv_failed.recv().await {
+                    if let Err(e) = failed_checksum.to_writer(&mut writer).await {
                         let error = Error::new(e).context("Failed to write failed checksum record");
                         let _ = error_sender.send(error).await;
-                        continue; // continue to try to write next records
+                        continue;
                     }
                 }
 
