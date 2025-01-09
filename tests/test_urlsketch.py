@@ -1307,7 +1307,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_no_checksum_file(runtmp):
             assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;b2"
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert range == "1:50000;50000:100000"
+            assert range == "1-50000;50000-100000"
 
 
 def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
@@ -1352,7 +1352,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
             assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;b2"
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert range == "1:50000;50000:100000"
+            assert range == "1-50000;50000-100000"
 
     assert os.path.exists(ch_fail)
     with open(ch_fail, 'r') as failF:
@@ -1412,4 +1412,4 @@ def test_urlsketch_merged_ranged_fail(runtmp):
             assert md5sum == "a1a8f1c6dc56999c73fe298871c963d1;"
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert range == "1:50000;50000:100000"
+            assert range == "1-50000;50000-100000"

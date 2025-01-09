@@ -18,8 +18,8 @@ use tokio_util::compat::Compat;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, AccessionData, GBAssemblyData, GenBankFileType,
-    InputMolType, MultiCollection, UrlInfo,
+    load_accession_info, load_gbassembly_info, AccessionData, FailedChecksum, FailedDownload,
+    GBAssemblyData, GenBankFileType, InputMolType, MultiCollection,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -208,150 +208,6 @@ async fn download_with_retry(
     }))
 }
 
-#[derive(Clone)]
-pub struct FailedDownload {
-    accession: String,
-    name: String,
-    moltype: String,
-    md5sum: String,
-    download_filename: String,
-    url: String,
-    range: String,
-}
-
-impl FailedDownload {
-    /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
-    pub fn from_gbassembly(
-        accession: String,
-        name: String,
-        moltype: String,
-        md5sum: Option<String>,            // Single MD5 checksum
-        download_filename: Option<String>, // Download filename
-        url: Option<reqwest::Url>,         // URL for the file
-        range: Option<(usize, usize)>,     // Optional range for the download
-    ) -> Self {
-        Self {
-            accession,
-            name,
-            moltype,
-            md5sum: md5sum.unwrap_or_default(),
-            download_filename: download_filename.unwrap_or_default(),
-            url: url.map(|u| u.to_string()).unwrap_or_default(),
-            range: range
-                .map(|(start, end)| format!("{}-{}", start, end))
-                .unwrap_or_default(), // Format range or use ""
-        }
-    }
-
-    fn parse_to_separated_string<T, F>(url_info: &[UrlInfo], mut extractor: F) -> String
-    where
-        F: FnMut(&UrlInfo) -> Option<T>,
-        T: ToString,
-    {
-        let results: Vec<String> = url_info
-            .iter()
-            .map(|info| extractor(info).map_or("".to_string(), |v| v.to_string())) // Map `None` to empty string
-            .collect();
-
-        if results.iter().all(|entry| entry.is_empty()) {
-            "".to_string() // If all entries are empty, return `""`
-        } else {
-            results.join(";") // Otherwise, join with `;`
-        }
-    }
-
-    /// Build a `FailedDownload` from `AccessionData`
-    pub fn from_accession_data(acc_data: &AccessionData) -> Self {
-        Self {
-            accession: acc_data.accession.clone(),
-            name: acc_data.name.clone(),
-            moltype: acc_data.moltype.to_string(),
-            md5sum: Self::parse_to_separated_string(&acc_data.url_info, |info| info.md5sum.clone()),
-            download_filename: acc_data.download_filename.clone().unwrap_or_default(),
-            url: Self::parse_to_separated_string(&acc_data.url_info, |info| {
-                Some(info.url.to_string())
-            }),
-            range: Self::parse_to_separated_string(&acc_data.url_info, |info| {
-                info.range.map(|(start, end)| format!("{}:{}", start, end))
-            }),
-        }
-    }
-
-    pub fn to_csv_record(&self) -> String {
-        format!(
-            "{},{},{},{},{},{},{}\n",
-            self.accession,
-            self.name,
-            self.moltype,
-            self.md5sum,
-            self.download_filename,
-            self.url,
-            self.range,
-        )
-    }
-
-    pub fn csv_header() -> &'static str {
-        "accession,name,moltype,md5sum,download_filename,url,range\n"
-    }
-
-    /// Write a `FailedDownload` to a CSV writer
-    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), std::io::Error> {
-        writer.write_all(self.to_csv_record().as_bytes()).await
-    }
-}
-
-pub struct FailedChecksum {
-    accession: String,
-    name: String,
-    moltype: String,
-    md5sum_url: Option<Url>,
-    download_filename: Option<String>,
-    url: Option<Url>,
-    expected_md5sum: Option<String>,
-    reason: String,
-}
-
-impl FailedChecksum {
-    /// Convert a `FailedChecksum` to a CSV-formatted string
-    pub fn to_csv_record(&self) -> String {
-        let md5sum_url_str = self
-            .md5sum_url
-            .as_ref()
-            .map(|u| u.to_string())
-            .unwrap_or_default();
-
-        let url_str = self.url.as_ref().map(|u| u.to_string()).unwrap_or_default();
-
-        format!(
-            "{},{},{},{},{},{},{},{}\n",
-            self.accession,
-            self.name,
-            self.moltype,
-            md5sum_url_str,
-            self.download_filename.clone().unwrap_or_default(),
-            url_str,
-            self.expected_md5sum.clone().unwrap_or_default(),
-            self.reason,
-        )
-    }
-
-    /// Get the CSV header for a `FailedChecksum`
-    pub fn csv_header() -> &'static str {
-        "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n"
-    }
-
-    /// Write a `FailedChecksum` to a CSV writer
-    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), std::io::Error> {
-        writer.write_all(self.to_csv_record().as_bytes()).await
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_assembly_accession(
     client: &Client,
@@ -430,16 +286,16 @@ async fn dl_sketch_assembly_accession(
                 // get filename, filetype info to facilitate downstream
                 let url = file_type.url(&base_url, &full_name);
                 let file_name = file_type.filename_to_write(&accession);
-                let failed_checksum_download: FailedChecksum = FailedChecksum {
-                    accession: accession.clone(),
-                    name: name.clone(),
-                    moltype: file_type.moltype(),
-                    md5sum_url: Some(md5sum_url.clone()),
-                    download_filename: Some(file_name),
-                    url: Some(url),
-                    expected_md5sum: None,
-                    reason: error_message.clone(), // write full error message
-                };
+                let failed_checksum_download: FailedChecksum = FailedChecksum::new(
+                    accession.clone(),
+                    name.clone(),
+                    file_type.moltype(),
+                    Some(md5sum_url.clone()),
+                    Some(file_name),
+                    Some(url),
+                    None,
+                    error_message.clone(), // write full error message
+                );
                 checksum_failures.push(failed_checksum_download);
             }
             // return early from function b/c we can't check any checksums
@@ -461,16 +317,16 @@ async fn dl_sketch_assembly_accession(
                     // did we have a checksum error or a download error?
                     // here --> keep track of accession errors + filetype
                     if error_message.contains("MD5 hash does not match") {
-                        let checksum_mismatch: FailedChecksum = FailedChecksum {
-                            accession: accession.clone(),
-                            name: name.clone(),
-                            moltype: file_type.moltype(),
-                            md5sum_url: Some(md5sum_url.clone()),
-                            download_filename: Some(file_name.clone()),
-                            url: Some(url.clone()),
-                            expected_md5sum: expected_md5.cloned(),
-                            reason: error_message.clone(),
-                        };
+                        let checksum_mismatch: FailedChecksum = FailedChecksum::new(
+                            accession.clone(),
+                            name.clone(),
+                            file_type.moltype(),
+                            Some(md5sum_url.clone()),
+                            Some(file_name.clone()),
+                            Some(url.clone()),
+                            expected_md5.cloned(),
+                            error_message.clone(),
+                        );
                         checksum_failures.push(checksum_mismatch);
                     } else {
                         let failed_download = FailedDownload::from_gbassembly(
@@ -684,16 +540,16 @@ async fn dl_sketch_url(
                 // did we have a checksum error or a download error?
                 // here --> keep track of accession errors + filetype
                 if error_message.contains("MD5 hash does not match") && write_checksum_fail {
-                    let checksum_mismatch: FailedChecksum = FailedChecksum {
-                        accession: accession.clone(),
-                        name: name.clone(),
-                        moltype: moltype.to_string(),
-                        md5sum_url: None,
-                        download_filename: download_filename.clone(),
-                        url: Some(url.clone()),
-                        expected_md5sum: expected_md5.clone(),
-                        reason: error_message.clone(),
-                    };
+                    let checksum_mismatch: FailedChecksum = FailedChecksum::new(
+                        accession.clone(),
+                        name.clone(),
+                        moltype.to_string(),
+                        None,
+                        download_filename.clone(),
+                        Some(url.clone()),
+                        expected_md5.clone(),
+                        error_message.clone(),
+                    );
                     checksum_failures.push(checksum_mismatch);
                     // if this is a merged sample, the checksum failure is only for one part of it.
                     // also write a download failure, which is the full entry.
