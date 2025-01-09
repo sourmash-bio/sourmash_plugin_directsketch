@@ -1114,4 +1114,95 @@ def test_urlsketch_with_range_keep_fasta(runtmp):
         if ident == "GCA_000175535.1_second50kb":
             assert sig.md5sum() == ss2.md5sum()
     assert os.path.exists(failed)
-    
+
+
+def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
+    acc_csv = get_test_data('acc-url-range.csv')
+    acc_mod = runtmp.output("acc-url-range-mod.csv")
+    subseqs = get_test_data('subseqs.zip')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+
+    # Modify the range in the acc_csv file
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            if row['accession'] == 'GCA_000175535.1_second50kb':
+                row['range'] = '100000-10000000'
+            writer.writerow(row)
+
+    # open subseq sigs
+    idx = sourmash.load_file_as_index(subseqs)
+    siglist = list(idx.signatures())
+    ss1 = siglist[0]
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    assert os.path.exists(failed)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Error: Invalid range: start=100000, end=10000000, sequence length=1088736" in captured.err
+
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+    for sig in sigs:
+        ident = sig.name.split(' ')[0]
+        assert ident == "GCA_000175535.1_first50kb"
+        assert sig.md5sum() == ss1.md5sum()
+
+    with open(failed, 'r') as failF:
+        header = next(failF).strip()
+        print(header)
+        assert header == "accession,name,moltype,md5sum,download_filename,url,range"
+        for line in failF:
+            print(line)
+            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
+            assert acc == "GCA_000175535.1_second50kb"
+            assert name == "GCA_000175535.1_second50kb"
+            assert moltype == "DNA"
+            assert md5sum == "b9fb20c51f0552b87db5d44d5d4566;a1a8f1c6dc56999c73fe298871c963d1"
+            assert download_filename == "both.urlsketch.fna.gz"
+            assert url ==  "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
+            assert range == ""
+
+
+def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
+    acc_csv = get_test_data('acc-url-range.csv')
+    acc_mod = runtmp.output("acc-url-range-mod.csv")
+    subseqs = get_test_data('subseqs.zip')
+    output = runtmp.output('range.zip')
+    failed = runtmp.output('failed.csv')
+
+    # Modify the range in the acc_csv file
+    with open(acc_csv, 'r') as infile, open(acc_mod, 'w', newline='') as outfile:
+        reader = csv.DictReader(infile)
+        fieldnames = reader.fieldnames
+        writer = csv.DictWriter(outfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in reader:
+            if row['accession'] == 'GCA_000175535.1_second50kb':
+                row['range'] = '-1-10000000'
+            writer.writerow(row)
+
+    # open subseq sigs
+    idx = sourmash.load_file_as_index(subseqs)
+    siglist = list(idx.signatures())
+    ss1 = siglist[0]
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=100")
+
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Error: Invalid range format: -1-10000000" in captured.err

@@ -332,7 +332,7 @@ pub struct FailedChecksum {
     url: Option<Url>,
     expected_md5sum: Option<String>,
     reason: String,
-    range: Option<String>,
+    range: Option<(usize, usize)>,
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -678,7 +678,7 @@ async fn dl_sketch_url(
                         url: Some(url.clone()),
                         expected_md5sum: expected_md5.clone(),
                         reason: error_message.clone(),
-                        range: None,
+                        range,
                     };
                     checksum_failures.push(checksum_mismatch);
                     // if this is a merged sample, the checksum failure is only for one part of it.
@@ -1022,6 +1022,7 @@ pub fn checksum_failures_handle(
                         url.map(|u| u.to_string()).unwrap_or("".to_string()),
                         expected_md5sum.unwrap_or("".to_string()),
                         reason,
+                        // range,
                     );
                     // Attempt to write each record
                     if let Err(e) = writer.write_all(record.as_bytes()).await {

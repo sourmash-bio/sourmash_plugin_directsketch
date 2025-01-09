@@ -181,6 +181,113 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     Ok((results, row_count))
 }
 
+fn parse_urls(url_field: Option<&str>) -> Result<Vec<reqwest::Url>, anyhow::Error> {
+    let url_field = url_field.ok_or_else(|| anyhow!("Missing 'url' field"))?;
+
+    let mut urls = Vec::new();
+
+    for s in url_field.split(';').map(|s| s.trim()) {
+        if s.is_empty() {
+            return Err(anyhow!("Empty URL entry found in 'url' field"));
+        }
+
+        let parsed_url =
+            reqwest::Url::parse(s).map_err(|e| anyhow!("Invalid URL '{}': {}", s, e))?;
+        urls.push(parsed_url);
+    }
+
+    if urls.is_empty() {
+        return Err(anyhow!("No valid URLs found in 'url' field"));
+    }
+
+    Ok(urls)
+}
+
+fn parse_md5sums(
+    md5sum_field: &str,
+    expected_num_urls: usize,
+    accession: &str,
+) -> Result<(Vec<Option<String>>, usize), anyhow::Error> {
+    if md5sum_field.trim().is_empty() {
+        // Return a vector of None for each expected URL and a count of 0
+        return Ok((vec![None; expected_num_urls], 0));
+    }
+
+    let md5sums: Vec<Option<String>> = md5sum_field
+        .split(';')
+        .map(|s| {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed.to_string())
+            }
+        })
+        .collect();
+
+    // Validate the number of MD5 sums matches the expected number of URLs
+    if md5sums.len() != expected_num_urls {
+        return Err(anyhow::anyhow!(
+            "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
+            md5sums.len(),
+            expected_num_urls,
+            accession
+        ));
+    }
+
+    // Count the number of non-None MD5 sums
+    let count = md5sums.iter().filter(|md5| md5.is_some()).count();
+
+    Ok((md5sums, count))
+}
+
+fn parse_ranges(
+    range_field: &str,
+    expected_num_ranges: usize,
+) -> Result<Vec<Option<(usize, usize)>>, String> {
+    if range_field.trim().is_empty() {
+        // Return a vector of None for each expected range
+        return Ok(vec![None; expected_num_ranges]);
+    }
+
+    let ranges: Vec<&str> = range_field.split(';').collect();
+
+    // Check if the number of ranges matches expected_num_ranges
+    if ranges.len() != expected_num_ranges {
+        return Err(format!(
+            "Number of ranges ({}) does not match expected number of ranges ({})",
+            ranges.len(),
+            expected_num_ranges
+        ));
+    }
+
+    ranges
+        .into_iter()
+        .map(|s| {
+            let s = s.trim(); // Trim whitespace
+            let parts: Vec<&str> = s.split('-').collect();
+            if parts.len() == 2 {
+                let start = parts[0]
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid start value in range: {}", s))?;
+                let end = parts[1]
+                    .parse::<usize>()
+                    .map_err(|_| format!("Invalid end value in range: {}", s))?;
+                if start < end {
+                    Ok(Some((start, end))) // Return Some for valid ranges
+                } else {
+                    Err(format!(
+                        "Start value must be less than end value in range: {}",
+                        s
+                    ))
+                }
+            } else {
+                Err(format!("Invalid range format: {}", s))
+            }
+        })
+        .collect()
+}
+
 pub fn load_accession_info(
     input_csv: String,
     keep_fasta: bool,
@@ -237,67 +344,26 @@ pub fn load_accession_info(
             .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
 
         // Parse URLs
-        let url_field = record
-            .get(5)
-            .ok_or_else(|| anyhow!("Missing 'url' field"))?;
-
-        let urls: Vec<reqwest::Url> = url_field
-            .split(';')
-            .map(|s| s.trim())
-            .filter(|s| !s.is_empty())
-            .filter_map(|s| reqwest::Url::parse(s).ok())
-            .collect();
-
-        if urls.is_empty() {
-            return Err(anyhow!("No valid URLs found in 'url' field"));
-        }
-
-        // Parse MD5sums (optional)
-        let md5sum_field = record.get(3).unwrap_or("");
-        let md5sums: Vec<Option<String>> = if !md5sum_field.trim().is_empty() {
-            md5sum_field
-                .split(';')
-                .map(|s| Some(s.trim().to_string()))
-                .collect()
-        } else {
-            vec![None; urls.len()]
+        let url_result = parse_urls(record.get(5));
+        let urls = match url_result {
+            Ok(urls) => {
+                if urls.is_empty() {
+                    return Err(anyhow!("No valid URLs found in 'url' field"));
+                }
+                urls
+            }
+            Err(e) => return Err(e), // Propagate the error if parsing fails
         };
 
-        if md5sums.len() != urls.len() {
-            return Err(anyhow!(
-                "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
-                md5sums.len(),
-                urls.len(),
-                acc
-            ));
-        }
-
-        // Check if there are any MD5 sums in this row
-        if md5sums.iter().any(|md5| md5.is_some()) {
-            md5sum_count += 1;
-        }
+        // Parse MD5sums (optional)
+        let (md5sums, md5sum_count_in_row) =
+            parse_md5sums(record.get(3).unwrap_or(""), urls.len(), &acc)?;
+        // Update the overall MD5 sum count
+        md5sum_count += md5sum_count_in_row;
 
         // Parse ranges (optional)
         let range_field = record.get(6).unwrap_or("");
-        let ranges: Vec<Option<(usize, usize)>> = if !range_field.trim().is_empty() {
-            range_field
-                .split(';')
-                .map(|s| {
-                    let s = s.trim(); // trim whitespace
-                    let parts: Vec<&str> = s.split('-').collect();
-                    if parts.len() == 2 {
-                        if let (Ok(start), Ok(end)) = (parts[0].parse(), parts[1].parse()) {
-                            if start < end {
-                                return Some((start, end));
-                            }
-                        }
-                    }
-                    None
-                })
-                .collect()
-        } else {
-            vec![None; urls.len()]
-        };
+        let ranges = parse_ranges(range_field, urls.len()).map_err(|e| anyhow!("{}", e))?;
 
         // Combine URLs, MD5 sums, and ranges into UrlInfo
         let url_info: Vec<UrlInfo> = urls
@@ -370,5 +436,286 @@ impl MultiCollection {
         }
 
         records_map
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::Url;
+
+    #[test]
+    fn test_parse_urls_valid_urls() {
+        let url_field = Some("http://example.com; https://example.org");
+        let result = parse_urls(url_field).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Url::parse("http://example.com").unwrap(),
+                Url::parse("https://example.org").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_urls_with_whitespace() {
+        let url_field = Some("   http://example.com   ;   https://example.org   ");
+        let result = parse_urls(url_field).unwrap();
+
+        assert_eq!(
+            result,
+            vec![
+                Url::parse("http://example.com").unwrap(),
+                Url::parse("https://example.org").unwrap()
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_urls_with_empty_entries() {
+        let url_field = Some("http://example.com;;https://example.org");
+        let result = parse_urls(url_field);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Empty URL entry found in 'url' field"
+        );
+    }
+
+    #[test]
+    fn test_parse_urls_invalid_url() {
+        let url_field = Some("http://example.com; invalid-url; https://example.org");
+        let result = parse_urls(url_field);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Invalid URL 'invalid-url': relative URL without a base"
+        );
+    }
+
+    #[test]
+    fn test_parse_urls_empty_field() {
+        let url_field = Some("");
+        let result = parse_urls(url_field);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Empty URL entry found in 'url' field"
+        );
+    }
+
+    #[test]
+    fn test_parse_urls_missing_field() {
+        let url_field = None;
+        let result = parse_urls(url_field);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err().to_string(), "Missing 'url' field");
+    }
+
+    #[test]
+    fn test_parse_urls_all_invalid() {
+        let url_field = Some("invalid-url; still-not-a-url");
+        let result = parse_urls(url_field);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Invalid URL 'invalid-url': relative URL without a base"
+        );
+    }
+
+    #[test]
+    fn test_parse_ranges_valid() {
+        let range_field = "1-10;20-30;40-50";
+        let expected_num_ranges = 3;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap(),
+            vec![Some((1, 10)), Some((20, 30)), Some((40, 50))]
+        );
+    }
+
+    #[test]
+    fn test_parse_ranges_empty_field() {
+        let range_field = "   ";
+        let expected_num_ranges = 3;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), vec![None, None, None]);
+    }
+
+    #[test]
+    fn test_parse_ranges_neg_start() {
+        let range_field = "1-10;-20-30";
+        let expected_num_ranges = 2;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid range format: -20-30");
+    }
+
+    #[test]
+    fn test_parse_ranges_invalid_start() {
+        let range_field = "1-10;bar-30";
+        let expected_num_ranges = 2;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid start value in range: bar-30");
+    }
+
+    #[test]
+    fn test_parse_ranges_invalid_end() {
+        let range_field = "1-10;20-bar";
+        let expected_num_ranges = 2;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err());
+        assert_eq!(result.unwrap_err(), "Invalid end value in range: 20-bar");
+    }
+
+    #[test]
+    fn test_parse_ranges_start_not_less_than_end() {
+        let range_field = "30-10";
+        let expected_num_ranges = 1;
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err(),
+            "Start value must be less than end value in range: 30-10"
+        );
+    }
+
+    #[test]
+    fn test_parse_ranges_extra_ranges() {
+        let range_field = "1-10;20-30;40-50";
+        let expected_num_ranges = 5; // Expecting more ranges than provided
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err()); // Now expecting an error
+        assert_eq!(
+            result.unwrap_err(),
+            "Number of ranges (3) does not match expected number of ranges (5)"
+        );
+    }
+
+    #[test]
+    fn test_parse_ranges_fewer_ranges() {
+        let range_field = "1-10;20-30";
+        let expected_num_ranges = 3; // Expecting more ranges than provided
+        let result = parse_ranges(range_field, expected_num_ranges);
+
+        assert!(result.is_err()); // Now expecting an error
+        assert_eq!(
+            result.unwrap_err(),
+            "Number of ranges (2) does not match expected number of ranges (3)"
+        );
+    }
+
+    #[test]
+    fn test_parse_md5sums_valid() {
+        let md5sum_field = "abcd1234;efgh5678;ijkl9012";
+        let expected_num_urls = 3;
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession).unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![
+                    Some("abcd1234".to_string()),
+                    Some("efgh5678".to_string()),
+                    Some("ijkl9012".to_string())
+                ],
+                3
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_md5sums_empty_field() {
+        let md5sum_field = "";
+        let expected_num_urls = 2;
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession).unwrap();
+        assert_eq!(result, (vec![None, None], 0));
+    }
+
+    #[test]
+    fn test_parse_md5sums_mismatched_count_more_md5s() {
+        let md5sum_field = "abcd1234;efgh5678;ijkl9012";
+        let expected_num_urls = 2; // Fewer URLs than MD5 sums
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Number of MD5 sums (3) does not match the number of URLs (2) for accession 'ACC123'"
+        );
+    }
+
+    #[test]
+    fn test_parse_md5sums_mismatched_count_fewer_md5s() {
+        let md5sum_field = "abcd1234;efgh5678";
+        let expected_num_urls = 3; // More URLs than MD5 sums
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession);
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "Number of MD5 sums (2) does not match the number of URLs (3) for accession 'ACC123'"
+        );
+    }
+
+    #[test]
+    fn test_parse_md5sums_with_whitespace() {
+        let md5sum_field = "  abcd1234  ; efgh5678 ;  ijkl9012 ";
+        let expected_num_urls = 3;
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession).unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![
+                    Some("abcd1234".to_string()),
+                    Some("efgh5678".to_string()),
+                    Some("ijkl9012".to_string())
+                ],
+                3
+            )
+        );
+    }
+
+    #[test]
+    fn test_parse_md5sums_some_empty_entries() {
+        let md5sum_field = "abcd1234;;ijkl9012";
+        let expected_num_urls = 3;
+        let accession = "ACC123";
+
+        let result = parse_md5sums(md5sum_field, expected_num_urls, accession).unwrap();
+        assert_eq!(
+            result,
+            (
+                vec![
+                    Some("abcd1234".to_string()),
+                    None, // Empty MD5 sum
+                    Some("ijkl9012".to_string())
+                ],
+                2 // Only count non-empty Some values
+            )
+        );
     }
 }
