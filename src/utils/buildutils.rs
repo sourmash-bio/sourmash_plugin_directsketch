@@ -759,14 +759,33 @@ impl BuildCollection {
         &mut self,
         input_moltype: &str,
         record: &SequenceRecord,
+        range: Option<(usize, usize)>,
     ) -> Result<()> {
+        // Get the full sequence and apply the range if provided
+        let full_sequence = record.seq();
+        let sequence_to_process = if let Some((start, end)) = range {
+            // Adjust for 1-based input: start - 1, end remains unchanged
+            let adjusted_start = start.saturating_sub(1); // Ensure no underflow
+            if adjusted_start >= end || end > full_sequence.len() {
+                return Err(anyhow::anyhow!(
+                    "Invalid range: start={}, end={}, sequence length={}",
+                    start,
+                    end,
+                    full_sequence.len()
+                ));
+            }
+            &full_sequence[adjusted_start..end]
+        } else {
+            &full_sequence
+        };
+        // add seq to sigs
         self.iter_mut().try_for_each(|(rec, sig)| {
             if input_moltype == "protein"
                 && (rec.moltype() == HashFunctions::Murmur64Protein
                     || rec.moltype() == HashFunctions::Murmur64Dayhoff
                     || rec.moltype() == HashFunctions::Murmur64Hp)
             {
-                sig.add_protein(&record.seq())
+                sig.add_protein(sequence_to_process)
                     .context("Failed to add protein")?;
                 if !rec.sequence_added {
                     rec.sequence_added = true;
@@ -776,7 +795,7 @@ impl BuildCollection {
                     || rec.moltype() == HashFunctions::Murmur64Skipm2n3
                     || rec.moltype() == HashFunctions::Murmur64Skipm1n3)
             {
-                sig.add_sequence(&record.seq(), true)
+                sig.add_sequence(sequence_to_process, true)
                     .context("Failed to add sequence")?;
                 if !rec.sequence_added {
                     rec.sequence_added = true;
@@ -792,6 +811,7 @@ impl BuildCollection {
         input_moltype: &str,
         name: String,
         filename: String,
+        range: Option<(usize, usize)>,
     ) -> Result<()> {
         let cursor = Cursor::new(data);
         let mut fastx_reader =
@@ -800,7 +820,7 @@ impl BuildCollection {
         // Iterate over FASTA records and add sequences/proteins to sigs
         while let Some(record) = fastx_reader.next() {
             let record = record.context("Failed to read record")?;
-            self.build_sigs_from_record(input_moltype, &record)?;
+            self.build_sigs_from_record(input_moltype, &record, range)?;
         }
 
         // After processing sequences, update sig, record information
@@ -814,6 +834,7 @@ impl BuildCollection {
         input_moltype: &str, // "protein" or "DNA"
         name: String,
         filename: String,
+        range: Option<(usize, usize)>,
     ) -> Result<u64> {
         // Create a FASTX reader from the file or stdin
         let mut fastx_reader = if filename == "-" {
@@ -830,7 +851,7 @@ impl BuildCollection {
         while let Some(record_result) = fastx_reader.next() {
             let record = record_result.context("Failed to read a record from input")?;
 
-            self.build_sigs_from_record(input_moltype, &record)?;
+            self.build_sigs_from_record(input_moltype, &record, range)?;
 
             record_count += 1;
         }
@@ -847,8 +868,9 @@ impl BuildCollection {
         record: SequenceRecord,
         input_moltype: &str, // (protein/dna); todo - use hashfns?
         filename: String,
+        range: Option<(usize, usize)>,
     ) -> Result<()> {
-        self.build_sigs_from_record(input_moltype, &record)?;
+        self.build_sigs_from_record(input_moltype, &record, range)?;
         // After processing sequences, update sig, record information
         let record_name = std::str::from_utf8(record.id())
             .expect("could not get record id")

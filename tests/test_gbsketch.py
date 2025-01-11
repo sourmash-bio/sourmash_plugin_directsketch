@@ -66,13 +66,14 @@ def test_gbsketch_simple(runtmp, capfd):
         fail_lines = failF.readlines()
         print(fail_lines)
         assert len(fail_lines) == 2
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
-        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
         assert acc == "GCA_000175535.1"
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert range == ""
 
 
 def test_gbsketch_manifest(runtmp, capfd):
@@ -605,13 +606,14 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         fail_lines = failF.readlines()
         print(fail_lines)
         assert len(fail_lines) == 2
-        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url\n"
-        acc, name, moltype, md5sum, download_filename, url = fail_lines[1].strip().split(',')
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
         assert acc == "GCA_000175535.1"
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
         assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert range == ""
 
 
 def test_gbsketch_simple_batched_single(runtmp, capfd):

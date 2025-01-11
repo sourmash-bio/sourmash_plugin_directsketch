@@ -153,29 +153,34 @@ options:
 ```
 
 ## `urlsketch`
-download and sketch directly from a url
+download and sketch directly from URL(s)
+
 ### Create an input file
 
 First, create a file, e.g. `acc-url.csv` with identifiers, sketch names, and other required info.
 ```
-accession,name,moltype,md5sum,download_filename,url
-GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454,dna,47b9fb20c51f0552b87db5d44d5d4566,GCA_000961135.2_genomic.urlsketch.fna.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz
-GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454,protein,fb7920fb8f3cf5d6ab9b6b754a5976a4,GCA_000961135.2_protein.urlsketch.faa.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_protein.faa.gz
-GCA_000175535.1,GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14,dna,a1a8f1c6dc56999c73fe298871c963d1,GCA_000175535.1_genomic.urlsketch.fna.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz
+accession,name,moltype,md5sum,download_filename,url,range
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454,dna,47b9fb20c51f0552b87db5d44d5d4566,GCA_000961135.2_genomic.urlsketch.fna.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz,
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454,protein,fb7920fb8f3cf5d6ab9b6b754a5976a4,GCA_000961135.2_protein.urlsketch.faa.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_protein.faa.gz,
+GCA_000175535.1,GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14,dna,a1a8f1c6dc56999c73fe298871c963d1,GCA_000175535.1_genomic.urlsketch.fna.gz,https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz,
 ```
 > Six columns must be present:
 > - `accession` - an accession or unique identifier. Ideally no spaces.
 > - `name` - full name for the sketch.
 > - `moltype` - is the file 'dna' or 'protein'?
-> - `md5sum` - expected md5sum (optional, will be checked after download if provided)
+> - `md5sum` - expected md5sum(s). Optional, will be checked after download if provided.
 > - `download_filename` - filename for FASTA download. Required if `--keep-fastas`, but useful for signatures, too (saved in sig data).
-> - `url` - direct link for the file
+> - `url` - direct link(s) for the file(s)
+> - `range` - if desired, include base pair range(s), e.g 500-10000. This range will be selected from the record(s) and sketched (and/or saved to the download_filename). If there are multiple records in a FASTA file, the range will be applied to each record.
+
+#### Note: Merging Files into the same signature
+As of v0.5.0, `urlsketch` allows specification of multiple URLs to be downloaded and sketched into a single signature. If providing multiple URLs for a single accession/name, you must either provide no `md5sum` or `range`, or the number of entries in these columns must match the number of URLs. In each case, separate the entries with ';' -- e.g. "abc;def" for two md5sums.
 
 ### Run:
 
-To run the test accession file at `tests/test-data/acc-url.csv`, run:
+To run after creating file above:
 ```
-sourmash scripts urlsketch tests/test-data/acc-url.csv -o test-urlsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
+sourmash scripts urlsketch acc-url.csv -o test-urlsketch.zip -f out_fastas -k --failed test.failed.csv -p dna,k=21,k=31,scaled=1000,abund -p protein,k=10,scaled=100,abund -r 1
 ```
 
 Full Usage:
