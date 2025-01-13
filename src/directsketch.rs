@@ -755,7 +755,6 @@ pub fn zipwriter_handle(
 
                 // if batch size is non-zero and is reached, close the current zip
                 if batch_size > 0 && acc_count >= batch_size {
-                    eprintln!("writing batch {}", batch_index);
                     if let Some(mut zip_writer) = zip_writer.take() {
                         if let Err(e) = zip_manifest
                             .async_write_manifest_to_zip(&mut zip_writer)
@@ -769,6 +768,7 @@ pub fn zipwriter_handle(
                             return;
                         }
                     }
+                    eprintln!("finished batch {}", batch_index);
                     // Start a new batch
                     batch_index += 1;
                     acc_count = 0;

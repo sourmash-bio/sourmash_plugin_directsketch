@@ -601,6 +601,14 @@ def test_urlsketch_simple_batched(runtmp, capfd):
     assert not os.path.exists(output) # for now, orig output file should be empty.
     captured = capfd.readouterr()
     print(captured.err)
+    assert "finished batch 1" in captured.err
+    assert "finished batch 2" in captured.err
+    assert "finished batch 3" in captured.err
+    print(captured.out)
+    print(runtmp.last_result.err)
+    batch_base = output.split('.zip')[0]
+    print(batch_base)
+    assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
 
     expected_siginfo = {
             (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
