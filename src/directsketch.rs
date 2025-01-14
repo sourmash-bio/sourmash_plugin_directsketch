@@ -5,16 +5,19 @@ use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::{header::HeaderMap, Client};
+// use reqwest::blocking::Client;
 use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
+use std::io::{BufRead, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::Semaphore;
 use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
+use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
 
@@ -106,25 +109,27 @@ async fn fetch_genbank_filename(
     Ok((url, name))
 }
 
-// async fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
-//     let mut checksums = HashMap::new();
+fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+    let mut checksums = HashMap::new();
 
-//     // Iterate over each line in the checksum file
-//     for line in content.lines() {
-//         let parts: Vec<&str> = line.splitn(2, ' ').collect();
-//         if parts.len() == 2 {
-//             // Trim the filename to remove any leading " ./" if present
-//             let filename = parts[1].trim_start_matches(" ./"); // remove any ' ', '.', '/' from front
-//             checksums.insert(filename.to_string(), parts[0].to_string());
-//         } else {
-//             return Err(anyhow!(
-//                 "Invalid checksum file'",
-//             ));
-//         }
-//     }
+    // Convert content to a UTF-8 string
+    let content_str =
+        std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
 
-//     Ok(checksums)
-// }
+    // Iterate over each line in the checksum file
+    for line in content_str.lines() {
+        let parts: Vec<&str> = line.splitn(2, ' ').collect();
+        if parts.len() == 2 {
+            // Trim the filename to remove any leading " ./" if present
+            let filename = parts[1].trim_start(); // remove any ' ', '.', '/' from front
+            checksums.insert(filename.to_string(), parts[0].to_string());
+        } else {
+            return Err(anyhow!("Invalid checksum file'",));
+        }
+    }
+
+    Ok(checksums)
+}
 
 async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {
     let response = client
@@ -227,6 +232,52 @@ async fn download_with_retry(
             retry_count
         )
     }))
+}
+
+async fn process_zip_async_to_sync(response: reqwest::Response) -> Result<()> {
+    // Download the ZIP file asynchronously
+    let bytes = response
+        .bytes()
+        .await
+        .context("Failed to read response bytes")?;
+    let cursor = std::io::Cursor::new(bytes);
+
+    // Switch to synchronous ZIP processing
+    process_zip_sync(cursor)
+}
+
+fn process_zip_sync<R: std::io::Read + std::io::Seek>(reader: R) -> Result<()> {
+    // Create a synchronous ZIP archive reader
+    let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
+
+    // Iterate through the entries in the ZIP archive
+    for i in 0..zip.len() {
+        let mut file = zip
+            .by_index(i)
+            .context("Failed to access file in ZIP archive")?;
+        let file_name = file.name().to_string();
+        eprintln!("Found file: {}", file_name);
+
+        if file_name.ends_with("md5sum.txt") {
+            println!("Processing md5sum.txt");
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            let checksumD = parse_md5sum_txt(&content)?;
+            println!("Checksums: {:?}", checksumD);
+        } else if file_name.ends_with("genomic.fna") {
+            println!("Processing genomic file");
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+        } else if file_name.ends_with("protein.faa") {
+            println!("Processing protein file");
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)?;
+        }
+    }
+
+    Ok(())
 }
 
 async fn process_zip(response: reqwest::Response) -> Result<()> {
@@ -361,6 +412,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     // To do --> move this outside
     let mut params = HashMap::new();
     params.insert("api_key", "ACB");
+    params.insert("include_annotation_type", "GENOME_FASTA,PROT_FASTA");
     let mut headers = HeaderMap::new();
 
     // what files do we want to get the info for?
@@ -382,7 +434,8 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         Ok(resp) => resp,
         Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
     };
-    let processed = process_zip(response).await?;
+    // let processed = process_zip(response).await?;
+    let processed = process_zip_async_to_sync(response).await?;
     Ok((sigs, download_failures, checksum_failures))
 }
 
