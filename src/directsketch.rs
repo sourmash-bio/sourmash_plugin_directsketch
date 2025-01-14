@@ -1,9 +1,10 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
+use async_zip::base::read::stream::ZipFileReader;
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, Client};
 use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -11,9 +12,9 @@ use std::fs::{self, create_dir_all};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
 use tokio::sync::Semaphore;
-use tokio_util::compat::Compat;
+use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
 
 use pyo3::prelude::*;
 
@@ -104,6 +105,26 @@ async fn fetch_genbank_filename(
 
     Ok((url, name))
 }
+
+// async fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+//     let mut checksums = HashMap::new();
+
+//     // Iterate over each line in the checksum file
+//     for line in content.lines() {
+//         let parts: Vec<&str> = line.splitn(2, ' ').collect();
+//         if parts.len() == 2 {
+//             // Trim the filename to remove any leading " ./" if present
+//             let filename = parts[1].trim_start_matches(" ./"); // remove any ' ', '.', '/' from front
+//             checksums.insert(filename.to_string(), parts[0].to_string());
+//         } else {
+//             return Err(anyhow!(
+//                 "Invalid checksum file'",
+//             ));
+//         }
+//     }
+
+//     Ok(checksums)
+// }
 
 async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {
     let response = client
@@ -206,6 +227,163 @@ async fn download_with_retry(
             retry_count
         )
     }))
+}
+
+async fn process_zip(response: reqwest::Response) -> Result<()> {
+    // Read the ZIP file into memory
+    let bytes = response
+        .bytes()
+        .await
+        .context("Failed to read response bytes")?;
+    let cursor = std::io::Cursor::new(bytes);
+
+    // Wrap the cursor in a BufReader and make it compatible with `futures::AsyncBufRead`
+    let buf_reader = BufReader::new(cursor).compat();
+
+    // Create a new ZipFileReader
+    let mut reader = ZipFileReader::new(buf_reader);
+
+    // Iterate through the entries using `next_with_entry`
+    while let Some(mut entry_reader) = reader
+        .next_with_entry()
+        .await
+        .context("Failed to read next ZIP entry")?
+    {
+        // Get the current entry
+        let entry = entry_reader.reader().entry();
+        let file_name = entry
+            .filename()
+            .clone()
+            .into_string()
+            .context("Failed to convert ZIP entry filename to string")?;
+        println!("Found file: {}", file_name);
+
+        if file_name.ends_with("README.md") {
+            println!("Skipping file: {}", file_name);
+
+            // Consume the skipped file's contents
+            let mut temp_buffer = Vec::new();
+            match entry_reader
+                .reader_mut()
+                .read_to_end_checked(&mut temp_buffer)
+                .await
+            {
+                Ok(_) => {
+                    println!("Successfully consumed skipped file: {}", file_name);
+                }
+                Err(err) => {
+                    eprintln!(
+                        "Error while consuming skipped file {}: {:?}\nUnderlying error: {:?}",
+                        file_name,
+                        err,
+                        err.to_string() // Log the underlying error, if any
+                    );
+                    return Err(err)
+                        .context(format!("Failed to consume skipped file {}", file_name));
+                }
+            }
+
+            // Reset the reader after consuming the file
+            reader = entry_reader
+                .done()
+                .await
+                .context("Failed to reset ZIP reader to Ready state")?;
+            continue;
+        }
+
+        // Check if the file matches the target files
+        if file_name.ends_with("md5sum.txt") {
+            println!("Processing md5sum.txt");
+            let mut content = Vec::new();
+            entry_reader
+                .reader_mut()
+                .read_to_end_checked(&mut content)
+                .await
+                .context(format!("Failed to read contents of {}", file_name))?;
+            println!(
+                "Contents of md5sum.txt:\n{}",
+                String::from_utf8_lossy(&content)
+            );
+        } else if file_name.ends_with("_genomic.fna") {
+            println!("Processing genomic file");
+            let mut content = Vec::new();
+            entry_reader
+                .reader_mut()
+                .read_to_end_checked(&mut content)
+                .await
+                .context(format!("Failed to read contents of {}", file_name))?;
+            println!(
+                "Contents of genomic file:\n{}",
+                String::from_utf8_lossy(&content)
+            );
+        }
+
+        reader = entry_reader
+            .done()
+            .await
+            .map_err(|err| {
+                eprintln!(
+                    "Failed to reset ZIP reader to Ready state: {}",
+                    err.to_string() // Prints the error message
+                );
+                err
+            })
+            .context("Failed to reset ZIP reader to Ready state")?;
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dl_sketch_assembly_accession_ncbi_api(
+    client: &Client,
+    accinfo: GBAssemblyData,
+    _location: &PathBuf,
+    _n_retries: u32,
+    _keep_fastas: bool,
+    mut sigs: BuildCollection,
+    genomes_only: bool,
+    proteomes_only: bool,
+    _download_only: bool,
+) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+    // to do:
+    // 1. get working, 2. add back in error handling (md5sum checks + download failures/file failures), 3. add back in retries
+    let _empty_coll = BuildCollection::new();
+    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut checksum_failures = Vec::<FailedChecksum>::new();
+
+    let name = accinfo.name.clone();
+    let accession = accinfo.accession.clone();
+
+    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
+    let url = format!("{}/{}/download", base_url, accession);
+
+    // To do --> move this outside
+    let mut params = HashMap::new();
+    params.insert("api_key", "ACB");
+    let mut headers = HeaderMap::new();
+
+    // what files do we want to get the info for?
+    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+    if genomes_only {
+        file_types = vec![GenBankFileType::Genomic];
+    } else if proteomes_only {
+        file_types = vec![GenBankFileType::Protein];
+    }
+
+    // Perform the GET request
+    let response = match client
+        .get(&url)
+        .headers(headers)
+        .query(&params)
+        .send()
+        .await
+    {
+        Ok(resp) => resp,
+        Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
+    };
+    let processed = process_zip(response).await?;
+    Ok((sigs, download_failures, checksum_failures))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1086,11 +1264,11 @@ pub async fn gbsketch(
                 );
             }
             // Perform download and sketch
-            let result = dl_sketch_assembly_accession(
+            let result = dl_sketch_assembly_accession_ncbi_api(
                 &client_clone,
                 accinfo.clone(),
                 &download_path_clone,
-                Some(retry_times),
+                retry_times,
                 keep_fastas,
                 sigs,
                 genomes_only,
