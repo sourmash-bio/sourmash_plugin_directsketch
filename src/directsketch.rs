@@ -252,7 +252,7 @@ pub async fn download_with_retry_ftp(
                 eprintln!("Connected to FTP server: {}", host);
 
                 // Login anonymously
-                match ftp_stream.login("anonymous", "").await {
+                match ftp_stream.login("anonymous", "anonymous").await {
                     Ok(_) => eprintln!("Logged in as anonymous"),
                     Err(e) => {
                         eprintln!("Failed to login to FTP server: {}", e);
@@ -271,18 +271,26 @@ pub async fn download_with_retry_ftp(
                     .ok_or_else(|| anyhow!("Failed to extract file name from URL"))?;
                 eprintln!("Resolved directory: {}, file: {}", directory, file_name);
 
+                // try to retrieve file directly
+                // eprintln!("Attempting to retrieve file via full path: {}", path);
+                // let data = ftp_stream.simple_retr(path).await?;
                 // Change to the directory containing the file
-                if let Err(e) = ftp_stream.cwd(directory).await {
-                    eprintln!("Failed to change directory to '{}': {}", directory, e);
-                    last_error = Some(anyhow!("Failed to change directory on FTP server: {}", e));
-                    break;
-                }
-                eprintln!("Changed directory to: {}", directory);
+                // if let Err(e) = ftp_stream.cwd(directory).await {
+                //     eprintln!("Failed to change directory to '{}': {}", directory, e);
+                //     last_error = Some(anyhow!("Failed to change directory on FTP server: {}", e));
+                //     break;
+                // }
+                // eprintln!("Changed directory to: {}", directory);
 
-                // Retrieve the file
-                eprintln!("Attempting to retrieve file: {}", file_name);
+                // // Retrieve the file
+                // eprintln!("Attempting to retrieve file: {}", file_name);
+                // let data = ftp_stream.simple_retr(file_name).await?;
+                // eprintln!("Got data!");
+                // let mut reader = Cursor::new();
+                
                 match ftp_stream.simple_retr(file_name).await {
                     Ok(mut reader) => {
+                        eprintln!("got data!");
                         let mut data = Vec::new();
                         match reader.read_to_end(&mut data).await {
                             Ok(_) => eprintln!("Successfully read file data"),
