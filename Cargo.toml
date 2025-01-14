@@ -31,6 +31,7 @@ md5 = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
 futures = "0.3.31"
 getset = "0.1"
+async_ftp = "6.0.0"
 
 [profile.release]
 #target-cpu=native

@@ -3,15 +3,16 @@ use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{Client, Url};
 use sourmash::collection::Collection;
+use async_ftp::FtpStream;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufWriter};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
 use tokio_util::compat::Compat;
 
@@ -23,7 +24,6 @@ use crate::utils::{
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
-use reqwest::Url;
 
 async fn find_genome_directory(
     client: &Client,
@@ -207,6 +207,146 @@ async fn download_with_retry(
         )
     }))
 }
+
+pub async fn download_with_retry_ftp(
+    ftp_url: &str,
+    expected_md5: Option<&str>,
+    retry_count: u32,
+) -> Result<Vec<u8>> {
+    let mut attempts = retry_count;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    while attempts > 0 {
+        eprintln!("Attempts remaining: {}", attempts);
+
+        // Parse the FTP URL
+        let url = match Url::parse(ftp_url) {
+            Ok(url) => {
+                eprintln!("Parsed URL: {}", url);
+                url
+            }
+            Err(e) => {
+                eprintln!("Failed to parse FTP URL: {}. Error: {}", ftp_url, e);
+                return Err(anyhow!("Failed to parse FTP URL: {}", e));
+            }
+        };
+
+        // Extract host and path
+        let host = match url.host_str() {
+            Some(host) => {
+                eprintln!("Extracted host: {}", host);
+                host
+            }
+            None => {
+                eprintln!("Missing host in FTP URL: {}", ftp_url);
+                return Err(anyhow!("Missing host in FTP URL"));
+            }
+        };
+
+        let path = url.path();
+        eprintln!("Extracted path: {}", path);
+
+        // Establish FTP connection
+        match FtpStream::connect((host, 21)).await {
+            Ok(mut ftp_stream) => {
+                eprintln!("Connected to FTP server: {}", host);
+
+                // Login anonymously
+                match ftp_stream.login("anonymous", "").await {
+                    Ok(_) => eprintln!("Logged in as anonymous"),
+                    Err(e) => {
+                        eprintln!("Failed to login to FTP server: {}", e);
+                        return Err(anyhow!("Failed to login to FTP server: {}", e));
+                    }
+                }
+
+                // Extract directory and file name
+                let directory = std::path::Path::new(path)
+                    .parent()
+                    .and_then(|p| p.to_str())
+                    .unwrap_or("/");
+                let file_name = std::path::Path::new(path)
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .ok_or_else(|| anyhow!("Failed to extract file name from URL"))?;
+                eprintln!("Resolved directory: {}, file: {}", directory, file_name);
+
+                // Change to the directory containing the file
+                if let Err(e) = ftp_stream.cwd(directory).await {
+                    eprintln!("Failed to change directory to '{}': {}", directory, e);
+                    last_error = Some(anyhow!("Failed to change directory on FTP server: {}", e));
+                    break;
+                }
+                eprintln!("Changed directory to: {}", directory);
+
+                // Retrieve the file
+                eprintln!("Attempting to retrieve file: {}", file_name);
+                match ftp_stream.simple_retr(file_name).await {
+                    Ok(mut reader) => {
+                        let mut data = Vec::new();
+                        match reader.read_to_end(&mut data).await {
+                            Ok(_) => eprintln!("Successfully read file data"),
+                            Err(e) => {
+                                eprintln!("Failed to read file data: {}", e);
+                                last_error = Some(anyhow!("Failed to read file data: {}", e));
+                                break;
+                            }
+                        }
+
+                        // Quit the FTP session
+                        if let Err(e) = ftp_stream.quit().await {
+                            eprintln!("Failed to quit FTP session: {}", e);
+                        }
+
+                        // Verify MD5 hash if provided
+                        if let Some(md5) = expected_md5 {
+                            let computed_hash = format!("{:x}", md5::compute(&data));
+                            eprintln!("Computed MD5 hash: {}", computed_hash);
+                            if computed_hash == md5 {
+                                eprintln!("MD5 hash matches");
+                                return Ok(data);
+                            } else {
+                                eprintln!(
+                                    "MD5 hash mismatch. Expected: {}; Found: {}",
+                                    md5, computed_hash
+                                );
+                                last_error = Some(anyhow!(
+                                    "MD5 hash does not match. Expected: '{}'; Found: '{}'",
+                                    md5,
+                                    computed_hash
+                                ));
+                            }
+                        } else {
+                            eprintln!("No MD5 hash provided, returning data");
+                            return Ok(data);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Failed to retrieve file: {}", e);
+                        last_error = Some(anyhow!("Failed to retrieve file: {}", e));
+                    }
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to connect to FTP server: {}. Error: {}", host, e);
+                last_error = Some(anyhow!("Failed to connect to FTP server: {}", e));
+            }
+        }
+
+        attempts -= 1;
+        eprintln!("Retrying... {} attempts remaining", attempts);
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download file after {} retries: {}",
+            retry_count,
+            ftp_url
+        )
+    }))
+}
+
+
 
 #[allow(clippy::too_many_arguments)]
 async fn dl_sketch_assembly_accession(
@@ -493,7 +633,18 @@ async fn dl_sketch_url(
         let url = &uinfo.url;
         let expected_md5 = &uinfo.md5sum;
         let range = uinfo.range;
-        match download_with_retry(client, url, expected_md5.as_deref(), retry_count).await {
+
+        // Check if the URL is FTP
+        let is_ftp = url.scheme() == "ftp";
+
+        let download_result = if is_ftp {
+            eprintln!("DETECTED FTP");
+            download_with_retry_ftp(url.as_str(), expected_md5.as_deref(), retry_count).await
+        } else {
+            download_with_retry(client, url, expected_md5.as_deref(), retry_count).await
+        };
+
+        match download_result {
             Ok(data) => {
                 // Write to file if keep_fastas is true and a file is open
                 // note, if multiple urls are provided, this will append to the same file
