@@ -55,7 +55,7 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 ### Memory Requirements
 
-Directsketch downloads the full file, optionally checking the `md5sum`, then performs the sketch. As a result, you will need enough memory to hold up to 3 genomes in memory at once. For microbial genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
+Directsketch downloads the full file(s), checks the `md5sum` if available, then sketches the data. As a result, **you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 3). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
 
 ## Running the commands
 
@@ -146,8 +146,10 @@ options:
                         number of cores to use (default is all available)
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         number of times to retry failed downloads
-  -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
-                        number of accessions to download simultaneously (default=1)
+  p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+                       help='number of accessions to download simultaneously (default=3). Must be <=3 if not using API key')
+  p.add_argument('-a', '--api-key', default=None,
+                       help='API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads')
   -g, --genomes-only    just download and sketch genome (DNA) files
   -m, --proteomes-only  just download and sketch proteome (protein) files
 ```

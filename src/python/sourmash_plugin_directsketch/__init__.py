@@ -66,7 +66,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
         p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-                       help='number of accessions to download simultaneously (default=1)')
+                       help='number of accessions to download simultaneously (default=3). Must be <=3 if not using API key')
         p.add_argument('-a', '--api-key', default=None,
                        help='API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads')
         group = p.add_mutually_exclusive_group()
