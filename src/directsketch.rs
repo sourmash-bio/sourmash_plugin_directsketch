@@ -10,7 +10,7 @@ use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::io::{BufRead, Cursor, Read, Seek};
+use std::io::{Cursor, Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
@@ -136,6 +136,7 @@ fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     Ok(checksums)
 }
 
+#[allow(dead_code)]
 async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {
     let response = client
         .get(url.clone())
@@ -257,6 +258,7 @@ async fn process_zip_async_to_sync(
     process_zip_sync(cursor)
 }
 
+#[allow(clippy::type_complexity)]
 fn process_zip_sync<R: Read + Seek>(
     reader: R,
 ) -> Result<(
@@ -267,7 +269,7 @@ fn process_zip_sync<R: Read + Seek>(
     let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
     let mut genomic_data = None;
     let mut protein_data = None;
-    let mut checksumsD = HashMap::new();
+    let mut checksum_d = HashMap::new();
 
     for i in 0..zip.len() {
         let mut file = zip
@@ -281,8 +283,8 @@ fn process_zip_sync<R: Read + Seek>(
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
-            checksumsD = parse_md5sum_txt(&content)?;
-            println!("Parsed Checksums: {:?}", checksumsD);
+            checksum_d = parse_md5sum_txt(&content)?;
+            println!("Parsed Checksums: {:?}", checksum_d);
         } else if file_name.ends_with("genomic.fna") {
             println!("Extracting genomic data");
             let mut content = Vec::new();
@@ -298,9 +300,10 @@ fn process_zip_sync<R: Read + Seek>(
         }
     }
 
-    Ok((genomic_data, protein_data, checksumsD))
+    Ok((genomic_data, protein_data, checksum_d))
 }
 
+#[allow(dead_code)]
 async fn process_zip(response: reqwest::Response) -> Result<()> {
     // Read the ZIP file into memory
     let bytes = response
@@ -396,7 +399,7 @@ async fn process_zip(response: reqwest::Response) -> Result<()> {
             .map_err(|err| {
                 eprintln!(
                     "Failed to reset ZIP reader to Ready state: {}",
-                    err.to_string() // Prints the error message
+                    err // Prints the error message
                 );
                 err
             })
@@ -411,12 +414,13 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     client: &Client,
     accinfo: GBAssemblyData,
     location: &PathBuf,
-    n_retries: u32,
+    _n_retries: u32,
     keep_fastas: bool,
     mut sigs: BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
     download_only: bool,
+    api_key: String,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     // to do:
     // add back in retries
@@ -433,8 +437,8 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     // To do --> move this outside
     let mut params = HashMap::new();
     // to do: cli api key entry
-    params.insert("api_key", "ACB");
-    let mut headers = HeaderMap::new();
+    params.insert("api_key", api_key.as_str());
+    let headers = HeaderMap::new();
 
     // what files do we want to get the info for?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
@@ -460,11 +464,13 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
     };
 
-    let (mut genome_data, mut protein_data, checksumsD) =
-        match process_zip_async_to_sync(response).await {
-            Ok(result) => result,
-            Err(e) => {
-                eprintln!("Error processing ZIP file: {}", e);
+    let (mut genome_data, mut protein_data, checksum_d) = match process_zip_async_to_sync(response)
+        .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("Error processing ZIP file: {}", e);
+            for file_type in &file_types {
                 // try to get url
                 let mut url = None;
                 if let Ok((base_url, full_name)) =
@@ -475,7 +481,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                     url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
                     // Convert to `Option<Url>`
                 }
-                for file_type in file_types {
+                for file_type in &file_types {
                     let file_name = file_type.filename_to_write(&accession);
                     let failed_download = FailedDownload::from_gbassembly(
                         accession.clone(),
@@ -488,15 +494,16 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                     );
                     download_failures.push(failed_download);
                 }
-                return Ok((empty_coll, download_failures, checksum_failures));
             }
-        };
+            return Ok((empty_coll, download_failures, checksum_failures));
+        }
+    };
     // Adjust `file_types` based on data availability
     for file_type in file_types {
         let file_name = file_type.filename_to_write(&accession);
         let (data, expected_md5) = match file_type.moltype().as_str() {
-            "DNA" => (genome_data.take(), checksumsD.get("DNA")), // Take ownership of genome_data
-            "protein" => (protein_data.take(), checksumsD.get("protein")), // Take ownership of protein_data
+            "DNA" => (genome_data.take(), checksum_d.get("DNA")), // Take ownership of genome_data
+            "protein" => (protein_data.take(), checksum_d.get("protein")), // Take ownership of protein_data
             _ => {
                 eprintln!("Unsupported moltype: {}", file_type.moltype());
                 (None, None)
@@ -591,6 +598,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
 }
 
 #[allow(clippy::too_many_arguments)]
+#[allow(dead_code)]
 async fn dl_sketch_assembly_accession(
     client: &Client,
     accinfo: GBAssemblyData,
@@ -1307,6 +1315,7 @@ pub async fn gbsketch(
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
+    api_key: String,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1454,6 +1463,7 @@ pub async fn gbsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
+        let apik = api_key.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1478,6 +1488,7 @@ pub async fn gbsketch(
                 genomes_only,
                 proteomes_only,
                 download_only,
+                apik,
             )
             .await;
             match result {
