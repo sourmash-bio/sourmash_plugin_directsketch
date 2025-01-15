@@ -109,27 +109,6 @@ async fn fetch_genbank_filename(
     Ok((url, name))
 }
 
-// fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
-//     let mut checksums = HashMap::new();
-
-//     // Convert content to a UTF-8 string
-//     let content_str =
-//         std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
-
-//     // Iterate over each line in the checksum file
-//     for line in content_str.lines() {
-//         let parts: Vec<&str> = line.splitn(2, ' ').collect();
-//         if parts.len() == 2 {
-//             // Trim the filename to remove any leading " ./" if present
-//             let filename = parts[1].trim_start(); // remove any ' ', '.', '/' from front
-//             checksums.insert(filename.to_string(), parts[0].to_string());
-//         } else {
-//             return Err(anyhow!("Invalid checksum file'",));
-//         }
-//     }
-
-//     Ok(checksums)
-// }
 fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     let mut checksums: HashMap<String, String> = HashMap::new();
 
@@ -440,10 +419,8 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     download_only: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     // to do:
-    // 1. get basics working,
-    // 2. add back in error handling (md5sum checks + download failures/file failures),
-    // 3. add back in retries
-    let _empty_coll = BuildCollection::new();
+    // add back in retries
+    let empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
@@ -482,9 +459,38 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         Ok(resp) => resp,
         Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
     };
-    // let processed = process_zip(response).await?;
+
     let (mut genome_data, mut protein_data, checksumsD) =
-        process_zip_async_to_sync(response).await?;
+        match process_zip_async_to_sync(response).await {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("Error processing ZIP file: {}", e);
+                // try to get url
+                let mut url = None;
+                if let Ok((base_url, full_name)) =
+                    fetch_genbank_filename(client, accession.as_str(), None).await
+                {
+                    let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
+                    eprintln!("formatted url: {}", formatted_url);
+                    url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
+                    // Convert to `Option<Url>`
+                }
+                for file_type in file_types {
+                    let file_name = file_type.filename_to_write(&accession);
+                    let failed_download = FailedDownload::from_gbassembly(
+                        accession.clone(),
+                        name.clone(),
+                        file_type.moltype(),
+                        None,
+                        Some(file_name), // intended download filename
+                        url.clone(),     // URL of the file
+                        None,            // No range
+                    );
+                    download_failures.push(failed_download);
+                }
+                return Ok((empty_coll, download_failures, checksum_failures));
+            }
+        };
     // Adjust `file_types` based on data availability
     for file_type in file_types {
         let file_name = file_type.filename_to_write(&accession);
@@ -504,11 +510,22 @@ async fn dl_sketch_assembly_accession_ncbi_api(
             // Verify checksum
             if let Some(expected_md5) = expected_md5 {
                 if &computed_md5 != expected_md5 {
-                    eprintln!(
+                    let error_message = format!(
                         "Checksum mismatch for {}: Expected {}, Got {}",
                         file_name, expected_md5, computed_md5
                     );
                     // Skip processing for checksum failures
+                    let checksum_mismatch: FailedChecksum = FailedChecksum::new(
+                        accession.clone(),
+                        name.clone(),
+                        file_type.moltype(),
+                        None,
+                        Some(file_name.clone()),
+                        None, // To do -- get ftp link from here?
+                        Some(expected_md5.clone()),
+                        error_message.clone(),
+                    );
+                    checksum_failures.push(checksum_mismatch);
                     continue;
                 }
             } else {
@@ -545,6 +562,28 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                     _ => {}
                 }
             }
+        } else {
+            // try to get url for use with urlsketch later
+            let mut url = None;
+            if let Ok((base_url, full_name)) =
+                fetch_genbank_filename(client, accession.as_str(), None).await
+            {
+                let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
+                eprintln!("formatted url: {}", formatted_url);
+                url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
+                // Convert to `Option<Url>`
+            }
+            // no data --> failed download
+            let failed_download = FailedDownload::from_gbassembly(
+                accession.clone(),
+                name.clone(),
+                file_type.moltype(),
+                expected_md5.map(|x| x.to_string()), // single MD5 checksum
+                Some(file_name),                     // intended download filename
+                url,                                 // URL of the file
+                None,                                // No range
+            );
+            download_failures.push(failed_download);
         }
     }
 
