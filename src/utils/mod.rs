@@ -38,6 +38,7 @@ impl std::str::FromStr for InputMolType {
 }
 
 #[allow(dead_code)]
+#[derive(PartialEq)]
 pub enum GenBankFileType {
     Genomic,
     Protein,
