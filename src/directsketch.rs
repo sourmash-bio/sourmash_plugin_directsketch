@@ -10,7 +10,7 @@ use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
-use std::io::{BufRead, Read};
+use std::io::{BufRead, Cursor, Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
@@ -109,8 +109,29 @@ async fn fetch_genbank_filename(
     Ok((url, name))
 }
 
+// fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+//     let mut checksums = HashMap::new();
+
+//     // Convert content to a UTF-8 string
+//     let content_str =
+//         std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
+
+//     // Iterate over each line in the checksum file
+//     for line in content_str.lines() {
+//         let parts: Vec<&str> = line.splitn(2, ' ').collect();
+//         if parts.len() == 2 {
+//             // Trim the filename to remove any leading " ./" if present
+//             let filename = parts[1].trim_start(); // remove any ' ', '.', '/' from front
+//             checksums.insert(filename.to_string(), parts[0].to_string());
+//         } else {
+//             return Err(anyhow!("Invalid checksum file'",));
+//         }
+//     }
+
+//     Ok(checksums)
+// }
 fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
-    let mut checksums = HashMap::new();
+    let mut checksums: HashMap<String, String> = HashMap::new();
 
     // Convert content to a UTF-8 string
     let content_str =
@@ -120,11 +141,16 @@ fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     for line in content_str.lines() {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() == 2 {
-            // Trim the filename to remove any leading " ./" if present
-            let filename = parts[1].trim_start(); // remove any ' ', '.', '/' from front
-            checksums.insert(filename.to_string(), parts[0].to_string());
+            // Trim the filename to remove any leading whitespace
+            let filename = parts[1].trim_start();
+
+            if filename.ends_with("genomic.fna") {
+                checksums.insert("DNA".to_string(), parts[0].to_string());
+            } else if filename.ends_with("protein.faa") {
+                checksums.insert("protein".to_string(), parts[0].to_string());
+            }
         } else {
-            return Err(anyhow!("Invalid checksum file'",));
+            return Err(anyhow!("Invalid checksum file"));
         }
     }
 
@@ -234,23 +260,36 @@ async fn download_with_retry(
     }))
 }
 
-async fn process_zip_async_to_sync(response: reqwest::Response) -> Result<()> {
+async fn process_zip_async_to_sync(
+    response: reqwest::Response,
+) -> Result<(
+    Option<Vec<u8>>,         // genomic_data
+    Option<Vec<u8>>,         // protein_data
+    HashMap<String, String>, // Parsed MD5 checksums
+)> {
     // Download the ZIP file asynchronously
     let bytes = response
         .bytes()
         .await
         .context("Failed to read response bytes")?;
-    let cursor = std::io::Cursor::new(bytes);
+    let cursor = Cursor::new(bytes);
 
     // Switch to synchronous ZIP processing
     process_zip_sync(cursor)
 }
 
-fn process_zip_sync<R: std::io::Read + std::io::Seek>(reader: R) -> Result<()> {
-    // Create a synchronous ZIP archive reader
+fn process_zip_sync<R: Read + Seek>(
+    reader: R,
+) -> Result<(
+    Option<Vec<u8>>,         // Genomic data
+    Option<Vec<u8>>,         // Protein data
+    HashMap<String, String>, // Parsed MD5 checksums
+)> {
     let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
+    let mut genomic_data = None;
+    let mut protein_data = None;
+    let mut checksumsD = HashMap::new();
 
-    // Iterate through the entries in the ZIP archive
     for i in 0..zip.len() {
         let mut file = zip
             .by_index(i)
@@ -263,21 +302,24 @@ fn process_zip_sync<R: std::io::Read + std::io::Seek>(reader: R) -> Result<()> {
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
-            let checksumD = parse_md5sum_txt(&content)?;
-            println!("Checksums: {:?}", checksumD);
+            checksumsD = parse_md5sum_txt(&content)?;
+            println!("Parsed Checksums: {:?}", checksumsD);
         } else if file_name.ends_with("genomic.fna") {
-            println!("Processing genomic file");
+            println!("Extracting genomic data");
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
+            genomic_data = Some(content);
         } else if file_name.ends_with("protein.faa") {
-            println!("Processing protein file");
+            println!("Extracting protein data");
             let mut content = Vec::new();
-            file.read_to_end(&mut content)?;
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            protein_data = Some(content);
         }
     }
 
-    Ok(())
+    Ok((genomic_data, protein_data, checksumsD))
 }
 
 async fn process_zip(response: reqwest::Response) -> Result<()> {
@@ -389,16 +431,18 @@ async fn process_zip(response: reqwest::Response) -> Result<()> {
 async fn dl_sketch_assembly_accession_ncbi_api(
     client: &Client,
     accinfo: GBAssemblyData,
-    _location: &PathBuf,
-    _n_retries: u32,
-    _keep_fastas: bool,
+    location: &PathBuf,
+    n_retries: u32,
+    keep_fastas: bool,
     mut sigs: BuildCollection,
     genomes_only: bool,
     proteomes_only: bool,
-    _download_only: bool,
+    download_only: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     // to do:
-    // 1. get working, 2. add back in error handling (md5sum checks + download failures/file failures), 3. add back in retries
+    // 1. get basics working,
+    // 2. add back in error handling (md5sum checks + download failures/file failures),
+    // 3. add back in retries
     let _empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
@@ -411,16 +455,20 @@ async fn dl_sketch_assembly_accession_ncbi_api(
 
     // To do --> move this outside
     let mut params = HashMap::new();
+    // to do: cli api key entry
     params.insert("api_key", "ACB");
-    params.insert("include_annotation_type", "GENOME_FASTA,PROT_FASTA");
     let mut headers = HeaderMap::new();
 
     // what files do we want to get the info for?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
     if genomes_only {
+        params.insert("include_annotation_type", "GENOME_FASTA");
         file_types = vec![GenBankFileType::Genomic];
     } else if proteomes_only {
+        params.insert("include_annotation_type", "PROT_FASTA");
         file_types = vec![GenBankFileType::Protein];
+    } else {
+        params.insert("include_annotation_type", "GENOME_FASTA,PROT_FASTA");
     }
 
     // Perform the GET request
@@ -435,7 +483,54 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
     };
     // let processed = process_zip(response).await?;
-    let processed = process_zip_async_to_sync(response).await?;
+    let (mut genome_data, mut protein_data, checksumsD) =
+        process_zip_async_to_sync(response).await?;
+    // Adjust `file_types` based on data availability
+    for file_type in file_types {
+        let file_name = file_type.filename_to_write(&accession);
+        let data = match file_type.moltype().as_str() {
+            "DNA" => genome_data.take(),      // Take ownership of genome_data
+            "protein" => protein_data.take(), // Take ownership of protein_data
+            _ => {
+                eprintln!("Unsupported moltype: {}", file_type.moltype());
+                None
+            }
+        };
+
+        if let Some(data) = data {
+            if keep_fastas {
+                let path = location.join(&file_name);
+                fs::write(&path, &data).context("Failed to write data to file")?;
+            }
+
+            if !download_only {
+                match file_type {
+                    GenBankFileType::Genomic => {
+                        eprintln!("Sketching genome");
+                        sigs.build_sigs_from_data(
+                            data, // Ownership is passed here
+                            "DNA",
+                            name.clone(),
+                            file_name.clone(),
+                            None,
+                        )?;
+                    }
+                    GenBankFileType::Protein => {
+                        eprintln!("Sketching protein");
+                        sigs.build_sigs_from_data(
+                            data, // Ownership is passed here
+                            "protein",
+                            name.clone(),
+                            file_name.clone(),
+                            None,
+                        )?;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     Ok((sigs, download_failures, checksum_failures))
 }
 
