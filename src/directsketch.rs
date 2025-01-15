@@ -488,16 +488,33 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     // Adjust `file_types` based on data availability
     for file_type in file_types {
         let file_name = file_type.filename_to_write(&accession);
-        let data = match file_type.moltype().as_str() {
-            "DNA" => genome_data.take(),      // Take ownership of genome_data
-            "protein" => protein_data.take(), // Take ownership of protein_data
+        let (data, expected_md5) = match file_type.moltype().as_str() {
+            "DNA" => (genome_data.take(), checksumsD.get("DNA")), // Take ownership of genome_data
+            "protein" => (protein_data.take(), checksumsD.get("protein")), // Take ownership of protein_data
             _ => {
                 eprintln!("Unsupported moltype: {}", file_type.moltype());
-                None
+                (None, None)
             }
         };
 
         if let Some(data) = data {
+            // Calculate MD5 hash for the data
+            let computed_md5 = format!("{:x}", md5::compute(&data));
+
+            // Verify checksum
+            if let Some(expected_md5) = expected_md5 {
+                if &computed_md5 != expected_md5 {
+                    eprintln!(
+                        "Checksum mismatch for {}: Expected {}, Got {}",
+                        file_name, expected_md5, computed_md5
+                    );
+                    // Skip processing for checksum failures
+                    continue;
+                }
+            } else {
+                eprintln!("No expected checksum found for {}", file_name);
+            }
+
             if keep_fastas {
                 let path = location.join(&file_name);
                 fs::write(&path, &data).context("Failed to write data to file")?;
