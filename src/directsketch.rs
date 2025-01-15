@@ -5,7 +5,6 @@ use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::{header::HeaderMap, Client};
-// use reqwest::blocking::Client;
 use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
@@ -240,22 +239,67 @@ async fn download_with_retry(
     }))
 }
 
-async fn process_zip_async_to_sync(
-    response: reqwest::Response,
+async fn rest_api_download_with_retry(
+    client: &Client,
+    url: Url,
+    headers: HeaderMap,
+    params: HashMap<&str, &str>,
+    retry_count: u32,
 ) -> Result<(
     Option<Vec<u8>>,         // genomic_data
     Option<Vec<u8>>,         // protein_data
     HashMap<String, String>, // Parsed MD5 checksums
 )> {
-    // Download the ZIP file asynchronously
-    let bytes = response
-        .bytes()
-        .await
-        .context("Failed to read response bytes")?;
-    let cursor = Cursor::new(bytes);
+    let mut attempts = retry_count;
+    let mut last_error: Option<anyhow::Error> = None;
 
-    // Switch to synchronous ZIP processing
-    process_zip_sync(cursor)
+    while attempts > 0 {
+        // Perform the GET request
+        let response = client
+            .get(url.clone())
+            .headers(headers.clone())
+            .query(&params)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .context("Failed to read bytes from response")?;
+
+                let cursor = Cursor::new(bytes);
+                // Try processing the ZIP archive
+                match process_zip_sync(cursor) {
+                    Ok(result) => return Ok(result), // Success: Return the processed result
+                    Err(e) => {
+                        eprintln!("Error processing ZIP file: {}", e);
+                        last_error = Some(e); // Capture the error and retry
+                    }
+                }
+            }
+            Ok(resp) => {
+                last_error = Some(anyhow!(
+                    "Server error status code {}: {}. Retrying...",
+                    resp.status(),
+                    url
+                ));
+            }
+            Err(e) => {
+                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+            }
+        }
+
+        attempts -= 1;
+    }
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download file after {} retries: {}",
+            url,
+            retry_count
+        )
+    }))
 }
 
 #[allow(clippy::type_complexity)]
@@ -414,7 +458,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     client: &Client,
     accinfo: GBAssemblyData,
     location: &PathBuf,
-    _n_retries: u32,
+    n_retries: u32,
     keep_fastas: bool,
     mut sigs: BuildCollection,
     genomes_only: bool,
@@ -432,7 +476,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     let accession = accinfo.accession.clone();
 
     let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
-    let url = format!("{}/{}/download", base_url, accession);
+    let url = Url::parse(&format!("{}/{}/download", base_url, accession))?;
 
     // To do --> move this outside
     let mut params = HashMap::new();
@@ -452,52 +496,40 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         params.insert("include_annotation_type", "GENOME_FASTA,PROT_FASTA");
     }
 
-    // Perform the GET request
-    let response = match client
-        .get(&url)
-        .headers(headers)
-        .query(&params)
-        .send()
-        .await
-    {
-        Ok(resp) => resp,
-        Err(e) => return Err(anyhow!("Failed to send request: {}", e)),
-    };
-
-    let (mut genome_data, mut protein_data, checksum_d) = match process_zip_async_to_sync(response)
-        .await
-    {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("Error processing ZIP file: {}", e);
-            for file_type in &file_types {
-                // try to get url
-                let mut url = None;
-                if let Ok((base_url, full_name)) =
-                    fetch_genbank_filename(client, accession.as_str(), None).await
-                {
-                    let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
-                    eprintln!("formatted url: {}", formatted_url);
-                    url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
-                    // Convert to `Option<Url>`
-                }
+    let (mut genome_data, mut protein_data, checksum_d) =
+        match rest_api_download_with_retry(client, url, headers, params, n_retries).await {
+            Ok(result) => result,
+            Err(e) => {
+                eprintln!("Error processing ZIP file: {}", e);
                 for file_type in &file_types {
-                    let file_name = file_type.filename_to_write(&accession);
-                    let failed_download = FailedDownload::from_gbassembly(
-                        accession.clone(),
-                        name.clone(),
-                        file_type.moltype(),
-                        None,
-                        Some(file_name), // intended download filename
-                        url.clone(),     // URL of the file
-                        None,            // No range
-                    );
-                    download_failures.push(failed_download);
+                    // try to get url
+                    let mut url = None;
+                    if let Ok((base_url, full_name)) =
+                        fetch_genbank_filename(client, accession.as_str(), None).await
+                    {
+                        let formatted_url =
+                            format!("{}/{}{}", base_url, full_name, file_type.suffix());
+                        eprintln!("formatted url: {}", formatted_url);
+                        url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
+                        // Convert to `Option<Url>`
+                    }
+                    for file_type in &file_types {
+                        let file_name = file_type.filename_to_write(&accession);
+                        let failed_download = FailedDownload::from_gbassembly(
+                            accession.clone(),
+                            name.clone(),
+                            file_type.moltype(),
+                            None,
+                            Some(file_name), // intended download filename
+                            url.clone(),     // URL of the file
+                            None,            // No range
+                        );
+                        download_failures.push(failed_download);
+                    }
                 }
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
-            return Ok((empty_coll, download_failures, checksum_failures));
-        }
-    };
+        };
     // Adjust `file_types` based on data availability
     for file_type in file_types {
         let file_name = file_type.filename_to_write(&accession);
@@ -767,7 +799,7 @@ async fn process_and_write_range(
     file: &mut File,
     range: Option<(usize, usize)>,
 ) -> Result<()> {
-    let cursor = std::io::Cursor::new(data);
+    let cursor = Cursor::new(data);
     let mut fastx_reader =
         needletail::parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
