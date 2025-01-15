@@ -38,6 +38,7 @@ impl std::str::FromStr for InputMolType {
 }
 
 #[allow(dead_code)]
+#[derive(PartialEq)]
 pub enum GenBankFileType {
     Genomic,
     Protein,
@@ -56,6 +57,7 @@ impl GenBankFileType {
     }
 
     //use for checksums
+    #[allow(dead_code)]
     pub fn server_filename(&self, full_name: &str) -> String {
         format!("{}{}", full_name, self.suffix())
     }
@@ -67,6 +69,7 @@ impl GenBankFileType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
         match self {
             GenBankFileType::Checksum => base_url

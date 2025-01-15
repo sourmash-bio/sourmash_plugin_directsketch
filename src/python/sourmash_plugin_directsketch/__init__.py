@@ -65,8 +65,10 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                        help='number of cores to use (default is all available)')
         p.add_argument('-r', '--retry-times', default=1, type=int,
                        help='number of times to retry failed downloads')
-        p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3],
+        p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                        help='number of accessions to download simultaneously (default=1)')
+        p.add_argument('-a', '--api-key', default=None,
+                       help='API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads')
         group = p.add_mutually_exclusive_group()
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
         group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
@@ -84,7 +86,12 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if args.output is None and not args.download_only:
             notify("Error: output signature zipfile is required if not using '--download-only'.")
             sys.exit(-1)
-
+        if not args.api_key:
+            if args.n_simultaneous_downloads > 3:
+                notify("Error: please provide an API Key to use n_simultaneous_downloads > 3.")
+                sys.exit(-1)
+            else:
+                args.api_key = ""
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
         # lowercase the param string
@@ -107,6 +114,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                                                            args.download_only,
                                                            args.batch_size,
                                                            args.n_simultaneous_downloads,
+                                                           args.api_key,
                                                            args.output)
         
         if status == 0:
