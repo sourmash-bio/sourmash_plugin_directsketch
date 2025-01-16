@@ -158,9 +158,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                 "Error: output signature zipfile is required if not using '--download-only'."
             )
             sys.exit(-1)
-        if args.api_key is None:
+        if not args.api_key:
             api_key = os.environ.get("NCBI_API_KEY", None)
-            if api_key is not None:
+            if api_key:
                 args.api_key = api_key
             elif args.n_simultaneous_downloads > 3:
                 notify(
