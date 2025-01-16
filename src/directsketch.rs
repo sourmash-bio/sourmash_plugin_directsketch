@@ -6,6 +6,7 @@ use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::{header::HeaderMap, Client};
 use sourmash::collection::Collection;
+use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
@@ -200,7 +201,7 @@ async fn rest_api_download_with_retry(
     client: &Client,
     url: Url,
     headers: HeaderMap,
-    params: HashMap<&str, &str>,
+    params: HashMap<&'static str, Cow<'static, str>>,
     retry_count: u32,
 ) -> Result<(
     Option<Vec<u8>>,         // genomic_data
@@ -231,7 +232,6 @@ async fn rest_api_download_with_retry(
                 match process_zip_sync(cursor) {
                     Ok(result) => return Ok(result), // Success: Return the processed result
                     Err(e) => {
-                        eprintln!("Error processing ZIP file: {}", e);
                         last_error = Some(e); // Capture the error and retry
                     }
                 }
@@ -277,7 +277,6 @@ fn process_zip_sync<R: Read + Seek>(
             .by_index(i)
             .context("Failed to access file in ZIP archive")?;
         let file_name = file.name().to_string();
-        eprintln!("Found file: {}", file_name);
 
         if file_name.ends_with("md5sum.txt") {
             println!("Processing md5sum.txt");
@@ -369,41 +368,24 @@ async fn process_zip(response: reqwest::Response) -> Result<()> {
 
         // Check if the file matches the target files
         if file_name.ends_with("md5sum.txt") {
-            println!("Processing md5sum.txt");
             let mut content = Vec::new();
             entry_reader
                 .reader_mut()
                 .read_to_end_checked(&mut content)
                 .await
                 .context(format!("Failed to read contents of {}", file_name))?;
-            println!(
-                "Contents of md5sum.txt:\n{}",
-                String::from_utf8_lossy(&content)
-            );
         } else if file_name.ends_with("_genomic.fna") {
-            println!("Processing genomic file");
             let mut content = Vec::new();
             entry_reader
                 .reader_mut()
                 .read_to_end_checked(&mut content)
                 .await
                 .context(format!("Failed to read contents of {}", file_name))?;
-            println!(
-                "Contents of genomic file:\n{}",
-                String::from_utf8_lossy(&content)
-            );
         }
 
         reader = entry_reader
             .done()
             .await
-            .map_err(|err| {
-                eprintln!(
-                    "Failed to reset ZIP reader to Ready state: {}",
-                    err // Prints the error message
-                );
-                err
-            })
             .context("Failed to reset ZIP reader to Ready state")?;
     }
 
@@ -418,13 +400,12 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     n_retries: u32,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    genomes_only: bool,
-    proteomes_only: bool,
+    file_types: Vec<GenBankFileType>,
     download_only: bool,
-    api_key: String,
+    base_url: &str,
+    headers: HeaderMap,
+    params: HashMap<&'static str, Cow<'static, str>>,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
-    // to do:
-    // add back in retries
     let empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
@@ -432,26 +413,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     let name = accinfo.name.clone();
     let accession = accinfo.accession.clone();
 
-    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
     let url = Url::parse(&format!("{}/{}/download", base_url, accession))?;
-
-    // To do --> move this outside
-    let mut params = HashMap::new();
-    // to do: cli api key entry
-    params.insert("api_key", api_key.as_str());
-    let headers = HeaderMap::new();
-
-    // what files do we want to get the info for?
-    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
-    if genomes_only {
-        params.insert("include_annotation_type", "GENOME_FASTA");
-        file_types = vec![GenBankFileType::Genomic];
-    } else if proteomes_only {
-        params.insert("include_annotation_type", "PROT_FASTA");
-        file_types = vec![GenBankFileType::Protein];
-    } else {
-        params.insert("include_annotation_type", "GENOME_FASTA,PROT_FASTA");
-    }
 
     let (mut genome_data, mut protein_data, checksum_d) =
         match rest_api_download_with_retry(client, url, headers, params, n_retries).await {
@@ -466,9 +428,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                     {
                         let formatted_url =
                             format!("{}/{}{}", base_url, full_name, file_type.suffix());
-                        eprintln!("formatted url: {}", formatted_url);
                         url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
-                        // Convert to `Option<Url>`
                     }
                     for file_type in &file_types {
                         let file_name = file_type.filename_to_write(&accession);
@@ -487,7 +447,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                 return Ok((empty_coll, download_failures, checksum_failures));
             }
         };
-    // Adjust `file_types` based on data availability
+    // check md5sums; write and/or sketch each file
     for file_type in file_types {
         let file_name = file_type.filename_to_write(&accession);
         let (data, expected_md5) = match file_type.moltype().as_str() {
@@ -536,7 +496,6 @@ async fn dl_sketch_assembly_accession_ncbi_api(
             if !download_only {
                 match file_type {
                     GenBankFileType::Genomic => {
-                        eprintln!("Sketching genome");
                         sigs.build_sigs_from_data(
                             data, // Ownership is passed here
                             "DNA",
@@ -546,7 +505,6 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                         )?;
                     }
                     GenBankFileType::Protein => {
-                        eprintln!("Sketching protein");
                         sigs.build_sigs_from_data(
                             data, // Ownership is passed here
                             "protein",
@@ -565,9 +523,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                 fetch_genbank_filename(client, accession.as_str(), None).await
             {
                 let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
-                eprintln!("formatted url: {}", formatted_url);
                 url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
-                // Convert to `Option<Url>`
             }
             // no data --> failed download
             let failed_download = FailedDownload::from_gbassembly(
@@ -1224,6 +1180,12 @@ pub async fn gbsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
+    let headers = HeaderMap::new();
+    let mut params: HashMap<&'static str, Cow<'static, str>> = HashMap::new();
+    if !api_key.is_empty() {
+        params.insert("api_key", Cow::Owned(api_key.to_string()));
+    }
+    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
 
     if download_only {
         if genomes_only {
@@ -1267,6 +1229,21 @@ pub async fn gbsketch(
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
+    // what files do we want to download?
+    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+    if genomes_only {
+        params.insert("include_annotation_type", Cow::Borrowed("GENOME_FASTA"));
+        file_types = vec![GenBankFileType::Genomic];
+    } else if proteomes_only {
+        params.insert("include_annotation_type", Cow::Borrowed("PROT_FASTA"));
+        file_types = vec![GenBankFileType::Protein];
+    } else {
+        params.insert(
+            "include_annotation_type",
+            Cow::Borrowed("GENOME_FASTA,PROT_FASTA"),
+        );
+    }
+
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
 
@@ -1288,7 +1265,9 @@ pub async fn gbsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
-        let apik = api_key.clone();
+        let headers = headers.clone();
+        let params = params.clone();
+        let ftypes = file_types.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1310,10 +1289,11 @@ pub async fn gbsketch(
                 retry_times,
                 keep_fastas,
                 sigs,
-                genomes_only,
-                proteomes_only,
+                ftypes,
                 download_only,
-                apik,
+                base_url,
+                headers,
+                params,
             )
             .await;
             match result {
