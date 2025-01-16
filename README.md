@@ -66,22 +66,11 @@ download and sketch NCBI Assembly Datasets by accession
 
 First, create a file, e.g. `acc.csv` with GenBank identifiers and sketch names.
 ```
-accession,name,ftp_path
-GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45,
-GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2,
+accession,name
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
+GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 ```
-> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty (as above), but no additional columns may be present.
-
-#### What is ftp_path?
-
-If you do not provide an `ftp_path`, `gbsketch` will use the accession to find the `ftp_path` for you.
-
-If you choose to provide it, `ftp_path` must be the `ftp_path` column from NCBI's assembly summary files.
-
-For reference:
-
-- example `ftp_path`: [https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1](https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1)
-- bacteria assembly summary file: [https://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt](https://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt)
+> Two columns must be present: `accession`, and `name`. No additional columns may be present.
 
 ### Run:
 

@@ -118,43 +118,6 @@ def test_gbsketch_manifest(runtmp, capfd):
                  assert row["n_hashes"] == 2596
 
 
-def test_gbsketch_simple_url(runtmp):
-    acc_csv = get_test_data('acc-with-ftppath.csv')
-    output = runtmp.output('simple.zip')
-    failed = runtmp.output('failed.csv')
-    ch_fail = runtmp.output('checksum_dl_failed.csv')
-
-    sig1 = get_test_data('GCA_000175535.1.sig.gz')
-    sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
-
-    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
-
-    assert os.path.exists(output)
-    assert not runtmp.last_result.out # stdout should be empty
-
-    idx = sourmash.load_file_as_index(output)
-    sigs = list(idx.signatures())
-
-    assert len(sigs) == 3
-    for sig in sigs:
-        if 'GCA_000175535.1' in sig.name:
-            assert sig.name == ss1.name
-            assert sig.md5sum() == ss1.md5sum()
-        elif 'GCA_000961135.2' in sig.name:
-            assert sig.name == ss2.name
-            if sig.minhash.moltype == 'DNA':
-                assert sig.md5sum() == ss2.md5sum()
-            else:
-                assert sig.md5sum() == ss3.md5sum()
-
-
 def test_gbsketch_genomes_only(runtmp):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
@@ -285,7 +248,6 @@ def test_gbsketch_save_fastas(runtmp):
     failed = runtmp.output('failed.csv')
     out_dir = runtmp.output('out_fastas')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
-
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -443,7 +405,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name", "ftp_path"]' in captured.err
+    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name"]' in captured.err
 
 
 def test_gbsketch_bad_acc_fail(runtmp, capfd):
@@ -513,7 +475,7 @@ def test_gbsketch_cols_trailing_commas(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert 'Error: CSV error: record 1 (line: 1, byte: 24): found record with 2 fields, but the previous record has 3 fields' in captured.err
+    assert 'Error: CSV error: record 2 (line: 2, byte: 98): found record with 3 fields, but the previous record has 2 fields' in captured.err
 
 
 def test_gbsketch_missing_output(runtmp):
