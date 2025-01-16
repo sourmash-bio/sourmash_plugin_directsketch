@@ -278,20 +278,16 @@ fn process_zip_sync<R: Read + Seek>(
         let file_name = file.name().to_string();
 
         if file_name.ends_with("md5sum.txt") {
-            println!("Processing md5sum.txt");
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
             checksum_d = parse_md5sum_txt(&content)?;
-            println!("Parsed Checksums: {:?}", checksum_d);
         } else if file_name.ends_with("genomic.fna") {
-            println!("Extracting genomic data");
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
             genomic_data = Some(content);
         } else if file_name.ends_with("protein.faa") {
-            println!("Extracting protein data");
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;

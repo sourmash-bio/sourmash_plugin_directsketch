@@ -978,3 +978,44 @@ def test_gbsketch_simple_skipmer(runtmp, capfd):
                             assert (
                                 siginfo["molecule"] == expected["moltype"]
                             ), f"Moltype mismatch: {siginfo['molecule']}"
+
+
+def test_gbsketch_n_downloads_fail(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '4', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" in runtmp.last_result.err
+
+def test_gbsketch_n_downloads_api_key_fail(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '12', '--api-key', '1234', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.err)
+    assert "error: argument -n/--n-simultaneous-downloads: invalid choice: 12 (choose from 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)" in runtmp.last_result.err
+
+def test_gbsketch_n_downloads_api_key(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '9', '--api-key', '1234', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.err)
+
+    assert os.path.exists(output)
+    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" not in runtmp.last_result.err
