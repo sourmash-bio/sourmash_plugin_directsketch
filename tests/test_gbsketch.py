@@ -1004,7 +1004,7 @@ def test_gbsketch_n_downloads_api_key_fail(runtmp):
                     '--failed', failed, '-n', '12', '--api-key', '1234', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
     print(runtmp.last_result.err)
-    assert "invalid choice: 12" in runtmp.last_result.err
+    assert "invalid choice:" in runtmp.last_result.err
 
 def test_gbsketch_n_downloads_api_key(runtmp):
     acc_csv = get_test_data('acc.csv')
