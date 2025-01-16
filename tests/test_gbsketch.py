@@ -655,6 +655,14 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
 
+    assert "finished batch 1" in captured.err
+    assert "finished batch 2" in captured.err
+    print(captured.out)
+    print(runtmp.last_result.err)
+    batch_base = output.split('.zip')[0]
+    print(batch_base)
+    assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
+
     expected_siginfo = {
         (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
