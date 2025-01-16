@@ -118,8 +118,6 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
     let mut duplicate_count = 0;
-    let mut url_count = 0; // Counter for entries with URL
-                           // to do - maybe use HashSet for accessions too to avoid incomplete dupes
     let mut rdr = csv::Reader::from_path(input_csv)?;
 
     // Check column names

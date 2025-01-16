@@ -1,5 +1,4 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
-use async_zip::base::read::stream::ZipFileReader;
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
@@ -14,9 +13,9 @@ use std::io::{Cursor, Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufReader, BufWriter};
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
-use tokio_util::compat::{Compat, TokioAsyncReadCompatExt};
+use tokio_util::compat::Compat;
 use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
@@ -301,95 +300,6 @@ fn process_zip_sync<R: Read + Seek>(
     }
 
     Ok((genomic_data, protein_data, checksum_d))
-}
-
-#[allow(dead_code)]
-async fn process_zip(response: reqwest::Response) -> Result<()> {
-    // Read the ZIP file into memory
-    let bytes = response
-        .bytes()
-        .await
-        .context("Failed to read response bytes")?;
-    let cursor = std::io::Cursor::new(bytes);
-
-    // Wrap the cursor in a BufReader and make it compatible with `futures::AsyncBufRead`
-    let buf_reader = BufReader::new(cursor).compat();
-
-    // Create a new ZipFileReader
-    let mut reader = ZipFileReader::new(buf_reader);
-
-    // Iterate through the entries using `next_with_entry`
-    while let Some(mut entry_reader) = reader
-        .next_with_entry()
-        .await
-        .context("Failed to read next ZIP entry")?
-    {
-        // Get the current entry
-        let entry = entry_reader.reader().entry();
-        let file_name = entry
-            .filename()
-            .clone()
-            .into_string()
-            .context("Failed to convert ZIP entry filename to string")?;
-        println!("Found file: {}", file_name);
-
-        if file_name.ends_with("README.md") {
-            println!("Skipping file: {}", file_name);
-
-            // Consume the skipped file's contents
-            let mut temp_buffer = Vec::new();
-            match entry_reader
-                .reader_mut()
-                .read_to_end_checked(&mut temp_buffer)
-                .await
-            {
-                Ok(_) => {
-                    println!("Successfully consumed skipped file: {}", file_name);
-                }
-                Err(err) => {
-                    eprintln!(
-                        "Error while consuming skipped file {}: {:?}\nUnderlying error: {:?}",
-                        file_name,
-                        err,
-                        err.to_string() // Log the underlying error, if any
-                    );
-                    return Err(err)
-                        .context(format!("Failed to consume skipped file {}", file_name));
-                }
-            }
-
-            // Reset the reader after consuming the file
-            reader = entry_reader
-                .done()
-                .await
-                .context("Failed to reset ZIP reader to Ready state")?;
-            continue;
-        }
-
-        // Check if the file matches the target files
-        if file_name.ends_with("md5sum.txt") {
-            let mut content = Vec::new();
-            entry_reader
-                .reader_mut()
-                .read_to_end_checked(&mut content)
-                .await
-                .context(format!("Failed to read contents of {}", file_name))?;
-        } else if file_name.ends_with("_genomic.fna") {
-            let mut content = Vec::new();
-            entry_reader
-                .reader_mut()
-                .read_to_end_checked(&mut content)
-                .await
-                .context(format!("Failed to read contents of {}", file_name))?;
-        }
-
-        reader = entry_reader
-            .done()
-            .await
-            .context("Failed to reset ZIP reader to Ready state")?;
-    }
-
-    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
