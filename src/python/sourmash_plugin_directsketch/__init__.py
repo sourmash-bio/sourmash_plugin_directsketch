@@ -68,7 +68,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                        help='number of accessions to download simultaneously (default=3). Must be <=3 if not using API key')
         p.add_argument('-a', '--api-key', default=None,
-                       help='API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads')
+                       help='API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads. Alternatively, set NCBI_API_KEY environmental variable.')
         group = p.add_mutually_exclusive_group()
         group.add_argument('-g', '--genomes-only', action='store_true', help='just download and sketch genome (DNA) files')
         group.add_argument('-m', '--proteomes-only', action='store_true', help='just download and sketch proteome (protein) files')
@@ -86,8 +86,11 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if args.output is None and not args.download_only:
             notify("Error: output signature zipfile is required if not using '--download-only'.")
             sys.exit(-1)
-        if not args.api_key:
-            if args.n_simultaneous_downloads > 3:
+        if args.api_key is None:
+            api_key =os.environ.get("NCBI_API_KEY", None)
+            if api_key is not None:
+                args.api_key = api_key
+            elif args.n_simultaneous_downloads > 3:
                 notify("Error: please provide an API Key to use n_simultaneous_downloads > 3.")
                 sys.exit(-1)
             else:
@@ -199,7 +202,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                                                            args.checksum_fail)
         
         if status == 0:
-            notify("...gbsketch is done!")
+            notify("...urlsketch is done!")
             if args.output is not None:
                 notify(f"Sigs in '{args.output}'.")
             if args.keep_fasta:
