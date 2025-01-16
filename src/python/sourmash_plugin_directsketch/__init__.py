@@ -63,7 +63,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                           help='parameter string for sketching (default: k=31,scaled=1000)')
         p.add_argument('-c', '--cores', default=0, type=int,
                        help='number of cores to use (default is all available)')
-        p.add_argument('-r', '--retry-times', default=1, type=int,
+        p.add_argument('-r', '--retry-times', default=3, type=int,
                        help='number of times to retry failed downloads')
         p.add_argument('-n', '--n-simultaneous-downloads', default=1, type=int, choices = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
                        help='number of accessions to download simultaneously (default=3). Must be <=3 if not using API key')
@@ -152,7 +152,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                           help='parameter string for sketching (default: k=31,scaled=1000)')
         p.add_argument('-c', '--cores', default=0, type=int,
                        help='number of cores to use (default is all available)')
-        p.add_argument('-r', '--retry-times', default=1, type=int,
+        p.add_argument('-r', '--retry-times', default=3, type=int,
                        help='number of times to retry failed downloads')
         p.add_argument('-n', '--n-simultaneous-downloads', default=3, type=int, choices = [1, 2, 3],
                        help='number of simultaneous downloads (default=3)')
