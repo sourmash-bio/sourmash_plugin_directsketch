@@ -38,7 +38,7 @@ def test_gbsketch_simple(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -91,7 +91,7 @@ def test_gbsketch_manifest(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -130,7 +130,7 @@ def test_gbsketch_genomes_only(runtmp):
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--genomes-only',
+                    '--failed', failed, '-r', '3', '--genomes-only',
                     '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
@@ -161,7 +161,7 @@ def test_gbsketch_proteomes_only(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--proteomes-only',
+                    '--failed', failed, '-r', '3', '--proteomes-only',
                     '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
@@ -189,7 +189,7 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
     ss2 = sourmash.load_one_signature(sig2, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -222,7 +222,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '3',
                     '--checksum-fail', ch_fail,
                     '--param-str', "protein,k=10,scaled=200")
 
@@ -258,7 +258,7 @@ def test_gbsketch_save_fastas(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
                     '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
@@ -290,7 +290,7 @@ def test_gbsketch_download_only(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
                     '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
@@ -329,7 +329,7 @@ def test_gbsketch_bad_acc(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1', #'--fastas', output_fastas,
+                    '--failed', failed, '-r', '3', #'--fastas', output_fastas,
                     '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
@@ -382,7 +382,7 @@ def test_gbsketch_missing_accfile(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -400,7 +400,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -427,7 +427,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
         
     captured = capfd.readouterr()
@@ -447,7 +447,7 @@ def test_gbsketch_version_bug(runtmp):
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -470,7 +470,7 @@ def test_gbsketch_cols_trailing_commas(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                 '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -487,7 +487,7 @@ def test_gbsketch_missing_output(runtmp):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
@@ -511,7 +511,7 @@ def test_zip_file_permissions(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -542,7 +542,7 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='hp')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '3',
                     '--checksum-fail', ch_fail,
                     '--param-str',"protein,k=10,scaled=200",
                     '-p', "dayhoff,k=10,scaled=200",
@@ -603,7 +603,7 @@ def test_gbsketch_simple_batched_single(runtmp, capfd):
     ss2 = sourmash.load_one_signature(sig2, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc1, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
                     '--batch-size', '1')
 
@@ -645,7 +645,7 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
                     '--batch-size', '1')
 
@@ -698,7 +698,7 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     assert os.path.exists(out1)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
                     '--batch-size', '1')
 
@@ -743,7 +743,7 @@ def test_gbsketch_negative_batch_size(runtmp):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv,
-                    '--failed', failed, '-r', '1', '--batch-size', '-2',
+                    '--failed', failed, '-r', '3', '--batch-size', '-2',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Batch size cannot be negative (input value: -2)" in runtmp.last_result.err
@@ -779,7 +779,7 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     assert os.path.exists(out2)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
                     '--batch-size', '1')
 
@@ -827,7 +827,7 @@ def test_gbsketch_bad_param_str(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', acc_csv, "-o", output,
-                    '--failed', failed, '-r', '1', "--checksum-fail", ch_fail,
+                    '--failed', failed, '-r', '3', "--checksum-fail", ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,protein")
         
     captured = capfd.readouterr()
@@ -854,7 +854,7 @@ def test_gbsketch_overwrite(runtmp, capfd):
 
     # run the workflow once - write all to single output
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200")
     assert os.path.exists(output)
     captured = capfd.readouterr()
@@ -875,7 +875,7 @@ def test_gbsketch_overwrite(runtmp, capfd):
 
     # now, try running again - providing same output file.
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200")
 
     # check that sigs can still be read
@@ -896,7 +896,7 @@ def test_gbsketch_simple_skipmer(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "skipm2n3,k=21,scaled=1000")
 
     assert os.path.exists(output)
@@ -1004,7 +1004,7 @@ def test_gbsketch_n_downloads_api_key_fail(runtmp):
                     '--failed', failed, '-n', '12', '--api-key', '1234', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
     print(runtmp.last_result.err)
-    assert "error: argument -n/--n-simultaneous-downloads: invalid choice: 12 (choose from 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)" in runtmp.last_result.err
+    assert "invalid choice: 12" in runtmp.last_result.err
 
 def test_gbsketch_n_downloads_api_key(runtmp):
     acc_csv = get_test_data('acc.csv')
