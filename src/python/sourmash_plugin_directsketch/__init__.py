@@ -56,13 +56,13 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         super().__init__(p)
         p.add_argument(
             "input_csv",
-            help="a txt file or csv file containing accessions in the first column",
+            help="A txt file or csv file containing accessions in the first column.",
         )
         p.add_argument(
             "-o",
             "--output",
             default=None,
-            help="output zip file for the signatures. Must end with '.zip'",
+            help="Output ZIP file for the signatures. Must end with '.zip'.",
         )
         p.add_argument("-f", "--fastas", help="Write fastas here", default=".")
         p.add_argument(
@@ -77,21 +77,21 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             "-k",
             "--keep-fasta",
             action="store_true",
-            help="write FASTA files in addition to sketching. Default: do not write FASTA files",
+            help="Write FASTA files. Default: do not write FASTA files.",
         )
         p.add_argument(
             "--download-only",
-            help="just download genomes; do not sketch",
+            help="Download FASTAS but do not sketch. Requires '--keep-fasta'. By default this downloads both genomes and proteomes.",
             action="store_true",
         )
         p.add_argument(
             "--failed",
-            help="csv of failed accessions and download links (should be mostly protein).",
+            help="CSV of failed accessions and download links (should be mostly protein).",
             required=True,
         )
         p.add_argument(
             "--checksum-fail",
-            help="csv of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded",
+            help="CSV of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded.",
             required=True,
         )
         p.add_argument(
@@ -100,29 +100,29 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             action="append",
             type=str,
             default=[],
-            help="parameter string for sketching (default: k=31,scaled=1000)",
+            help="Parameter string for sketching (default: k=31,scaled=1000).",
         )
         p.add_argument(
             "-c",
             "--cores",
             default=0,
             type=int,
-            help="number of cores to use (default is all available)",
+            help="Number of cores to use (default is all available).",
         )
         p.add_argument(
             "-r",
             "--retry-times",
             default=3,
             type=int,
-            help="number of times to retry failed downloads",
+            help="Number of times to retry failed downloads (default=3).",
         )
         p.add_argument(
             "-n",
             "--n-simultaneous-downloads",
-            default=1,
+            default=3,
             type=int,
             choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            help="number of accessions to download simultaneously (default=3). Must be <=3 if not using API key",
+            help="Number of accessions to download simultaneously (default=3). Must be <=3 if not using API key.",
         )
         p.add_argument(
             "-a",
@@ -135,13 +135,13 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             "-g",
             "--genomes-only",
             action="store_true",
-            help="just download and sketch genome (DNA) files",
+            help="Download and sketch genome (DNA) files only.",
         )
         group.add_argument(
             "-m",
             "--proteomes-only",
             action="store_true",
-            help="just download and sketch proteome (protein) files",
+            help="Download and sketch proteome (protein) files only.",
         )
 
     def main(self, args):
@@ -177,7 +177,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         num_threads = set_thread_pool(args.cores)
 
         notify(
-            f"downloading and sketching all accessions in '{args.input_csv} using {args.retry_times} retries and {num_threads} threads"
+            f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
         )
 
         super().main(args)
@@ -216,10 +216,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         super().__init__(p)
         p.add_argument(
             "input_csv",
-            help="a txt file or csv file containing accessions in the first column",
+            help="A txt file or csv file containing accessions in the first column.",
         )
         p.add_argument(
-            "-o", "--output", default=None, help="output zip file for the signatures"
+            "-o", "--output", default=None, help="Output ZIP file for the signatures. Must end with '.zip'.",
         )
         p.add_argument(
             "--batch-size",
@@ -229,28 +229,28 @@ class Download_and_Sketch_Url(CommandLinePlugin):
                             This allows urlsketch to recover after unexpected failures, rather than needing to \
                             restart sketching from scratch. Default: write all sigs to single zipfile.",
         )
-        p.add_argument("-f", "--fastas", help="Write fastas here", default=".")
+        p.add_argument("-f", "--fastas", help="Write fastas here.", default=".")
         p.add_argument(
             "-k",
             "--keep-fasta",
             "--keep-fastq",
             action="store_true",
-            help="write FASTA/Q files in addition to sketching. Default: do not write FASTA files",
+            help="Write FASTA/Q files. Default: do not write FASTA files.",
         )
         p.add_argument(
             "--download-only",
-            help="just download genomes; do not sketch",
+            help="Download FASTAS but do not sketch. Requires '--keep-fasta/--keep-fastq'.",
             action="store_true",
         )
         p.add_argument(
             "--failed",
-            help="csv of failed accessions and download links.",
+            help="CSV of failed accessions and download links.",
             required=True,
         )
         # don't require checksum_fail here b/c users don't need to provide checksums
         p.add_argument(
             "--checksum-fail",
-            help="csv of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).",
+            help="CSV of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).",
             default=None,
         )
         p.add_argument(
@@ -259,21 +259,21 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             action="append",
             type=str,
             default=[],
-            help="parameter string for sketching (default: k=31,scaled=1000)",
+            help="Parameter string for sketching (default: k=31,scaled=1000).",
         )
         p.add_argument(
             "-c",
             "--cores",
             default=0,
             type=int,
-            help="number of cores to use (default is all available)",
+            help="Number of cores to use (default is all available).",
         )
         p.add_argument(
             "-r",
             "--retry-times",
             default=3,
             type=int,
-            help="number of times to retry failed downloads",
+            help="Number of times to retry failed downloads (default=3).",
         )
         p.add_argument(
             "-n",
@@ -288,13 +288,13 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             "-g",
             "--genomes-only",
             action="store_true",
-            help="just download and sketch genome (DNA) files",
+            help="Download and sketch genome (DNA) files only.",
         )
         group.add_argument(
             "-m",
             "--proteomes-only",
             action="store_true",
-            help="just download and sketch proteome (protein) files",
+            help="Download and sketch proteome (protein) files only.",
         )
 
     def main(self, args):
@@ -320,7 +320,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         num_threads = set_thread_pool(args.cores)
 
         notify(
-            f"downloading and sketching all accessions in '{args.input_csv} using {num_threads} threads"
+            f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
         )
 
         super().main(args)
