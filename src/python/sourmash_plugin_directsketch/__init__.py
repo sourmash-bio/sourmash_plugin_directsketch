@@ -112,7 +112,11 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if status == 0:
             notify("...gbsketch is done!")
             if args.output is not None:
-                notify(f"Sigs in '{args.output}'.")
+                if args.batch_size:
+                    batch_base = args.output.split('.zip')[0]
+                    notify(f"Sigs in '{batch_base}.1.zip', etc")
+                else:
+                    notify(f"Sigs in '{args.output}'.")
             if args.keep_fasta:
                 notify(f"FASTAs in '{args.fastas}'.")
 
@@ -193,7 +197,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         if status == 0:
             notify("...gbsketch is done!")
             if args.output is not None:
-                notify(f"Sigs in '{args.output}'.")
+                if args.batch_size:
+                    batch_base = args.output.split('.zip')[0]
+                    notify(f"Sigs in '{batch_base}.1.zip', etc")
+                else:
+                    notify(f"Sigs in '{args.output}'.")
+
             if args.keep_fasta:
                 notify(f"FASTAs in '{args.fastas}'.")
 
