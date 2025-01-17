@@ -3,17 +3,20 @@ use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::Client;
+use reqwest::{header::HeaderMap, Client};
 use sourmash::collection::Collection;
+use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::{self, create_dir_all};
+use std::io::{Cursor, Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Semaphore;
 use tokio_util::compat::Compat;
+use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
 
@@ -105,42 +108,27 @@ async fn fetch_genbank_filename(
     Ok((url, name))
 }
 
-async fn download_and_parse_md5(client: &Client, url: &Url) -> Result<HashMap<String, String>> {
-    let response = client
-        .get(url.clone())
-        .send()
-        .await
-        .context("Failed to send request")?;
+fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+    let mut checksums: HashMap<String, String> = HashMap::new();
 
-    // Check if the status code is 200 OK
-    if !response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to download MD5 checksum file from URL {}: HTTP status {}",
-            url,
-            response.status()
-        ));
-    }
-
-    let content = response
-        .text()
-        .await
-        .context("Failed to download MD5 checksum file")?;
-
-    let mut checksums = HashMap::new();
+    // Convert content to a UTF-8 string
+    let content_str =
+        std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
 
     // Iterate over each line in the checksum file
-    for line in content.lines() {
+    for line in content_str.lines() {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() == 2 {
-            // Trim the filename to remove any leading " ./" if present
-            let filename = parts[1].trim_start_matches(" ./"); // remove any ' ', '.', '/' from front
-            checksums.insert(filename.to_string(), parts[0].to_string());
+            // Trim the filename to remove any leading whitespace
+            let filename = parts[1].trim_start();
+
+            if filename.ends_with("genomic.fna") {
+                checksums.insert("DNA".to_string(), parts[0].to_string());
+            } else if filename.ends_with("protein.faa") {
+                checksums.insert("protein".to_string(), parts[0].to_string());
+            }
         } else {
-            return Err(anyhow!(
-                "Invalid checksum line format in URL '{}': '{}'",
-                url,
-                line
-            ));
+            return Err(anyhow!("Invalid checksum file"));
         }
     }
 
@@ -208,20 +196,122 @@ async fn download_with_retry(
     }))
 }
 
+async fn rest_api_download_with_retry(
+    client: &Client,
+    url: Url,
+    headers: HeaderMap,
+    params: HashMap<&'static str, Cow<'static, str>>,
+    retry_count: u32,
+) -> Result<(
+    Option<Vec<u8>>,         // genomic_data
+    Option<Vec<u8>>,         // protein_data
+    HashMap<String, String>, // Parsed MD5 checksums
+)> {
+    let mut attempts = retry_count;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    while attempts > 0 {
+        // Perform the GET request
+        let response = client
+            .get(url.clone())
+            .headers(headers.clone())
+            .query(&params)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .context("Failed to read bytes from response")?;
+
+                let cursor = Cursor::new(bytes);
+                // Try processing the ZIP archive
+                match process_zip_sync(cursor) {
+                    Ok(result) => return Ok(result), // Success: Return the processed result
+                    Err(e) => {
+                        last_error = Some(e); // Capture the error and retry
+                    }
+                }
+            }
+            Ok(resp) => {
+                last_error = Some(anyhow!(
+                    "Server error status code {}: {}. Retrying...",
+                    resp.status(),
+                    url
+                ));
+            }
+            Err(e) => {
+                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+            }
+        }
+
+        attempts -= 1;
+    }
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download file after {} retries: {}",
+            url,
+            retry_count
+        )
+    }))
+}
+
+#[allow(clippy::type_complexity)]
+fn process_zip_sync<R: Read + Seek>(
+    reader: R,
+) -> Result<(
+    Option<Vec<u8>>,         // Genomic data
+    Option<Vec<u8>>,         // Protein data
+    HashMap<String, String>, // Parsed MD5 checksums
+)> {
+    let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
+    let mut genomic_data = None;
+    let mut protein_data = None;
+    let mut checksum_d = HashMap::new();
+
+    for i in 0..zip.len() {
+        let mut file = zip
+            .by_index(i)
+            .context("Failed to access file in ZIP archive")?;
+        let file_name = file.name().to_string();
+
+        if file_name.ends_with("md5sum.txt") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            checksum_d = parse_md5sum_txt(&content)?;
+        } else if file_name.ends_with("genomic.fna") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            genomic_data = Some(content);
+        } else if file_name.ends_with("protein.faa") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            protein_data = Some(content);
+        }
+    }
+
+    Ok((genomic_data, protein_data, checksum_d))
+}
+
 #[allow(clippy::too_many_arguments)]
-async fn dl_sketch_assembly_accession(
+async fn dl_sketch_assembly_accession_ncbi_api(
     client: &Client,
     accinfo: GBAssemblyData,
     location: &PathBuf,
-    retry: Option<u32>,
+    n_retries: u32,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    genomes_only: bool,
-    proteomes_only: bool,
+    file_types: Vec<GenBankFileType>,
     download_only: bool,
+    base_url: &str,
+    headers: HeaderMap,
+    params: HashMap<&'static str, Cow<'static, str>>,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
-    // todo -- move default retry to main function
-    let retry_count = retry.unwrap_or(3); // Default retry count
     let empty_coll = BuildCollection::new();
     let mut download_failures = Vec::<FailedDownload>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
@@ -229,142 +319,132 @@ async fn dl_sketch_assembly_accession(
     let name = accinfo.name.clone();
     let accession = accinfo.accession.clone();
 
-    // keep track of any accessions for which we fail to find URLs
-    let (base_url, full_name) =
-        match fetch_genbank_filename(client, accession.as_str(), accinfo.url.clone()).await {
+    let url = Url::parse(&format!("{}/{}/download", base_url, accession))?;
+
+    let (mut genome_data, mut protein_data, checksum_d) =
+        match rest_api_download_with_retry(client, url, headers, params, n_retries).await {
             Ok(result) => result,
-            Err(_err) => {
-                // Add accession to failed downloads with each moltype
-                if !proteomes_only {
-                    let failed_download_dna = FailedDownload::from_gbassembly(
-                        accession.clone(),
-                        name.clone(),
-                        "dna".to_string(),
-                        None, // No MD5 checksum
-                        None, // No Download filename
-                        None, // URL of the file
-                        None, // No range in this case
-                    );
-                    download_failures.push(failed_download_dna);
-                }
-                if !genomes_only {
-                    let failed_download_protein = FailedDownload::from_gbassembly(
-                        accession.clone(),
-                        name.clone(),
-                        "protein".to_string(),
-                        None, // No MD5 checksum
-                        None, // No Download filename
-                        None, // URL of the file
-                        None, // No range in this case
-                    );
-                    download_failures.push(failed_download_protein)
-                }
-
-                return Ok((empty_coll, download_failures, checksum_failures));
-            }
-        };
-    let md5sum_url = GenBankFileType::Checksum.url(&base_url, &full_name);
-
-    let mut file_types = vec![
-        GenBankFileType::Genomic,
-        GenBankFileType::Protein,
-        // GenBankFileType::AssemblyReport,
-    ];
-    if genomes_only {
-        file_types = vec![GenBankFileType::Genomic];
-    } else if proteomes_only {
-        file_types = vec![GenBankFileType::Protein];
-    }
-
-    let checksums = match download_and_parse_md5(client, &md5sum_url).await {
-        Ok(cs) => cs,
-        Err(err) => {
-            // capture the error message as a string
-            let error_message = err.to_string();
-            // if we can't download/parse the md5sum file, write to checksum failures file to allow manual troubleshooting
-            for file_type in &file_types {
-                // get filename, filetype info to facilitate downstream
-                let url = file_type.url(&base_url, &full_name);
-                let file_name = file_type.filename_to_write(&accession);
-                let failed_checksum_download: FailedChecksum = FailedChecksum::new(
-                    accession.clone(),
-                    name.clone(),
-                    file_type.moltype(),
-                    Some(md5sum_url.clone()),
-                    Some(file_name),
-                    Some(url),
-                    None,
-                    error_message.clone(), // write full error message
+            Err(_e) => {
+                eprintln!(
+                    "Error downloading NCBI ZIP file for accession '{}'. Writing to failures file.",
+                    accession
                 );
-                checksum_failures.push(failed_checksum_download);
-            }
-            // return early from function b/c we can't check any checksums
-            return Ok((empty_coll, download_failures, checksum_failures));
-        }
-    };
-
-    for file_type in &file_types {
-        let url = file_type.url(&base_url, &full_name);
-        let expected_md5 = checksums.get(&file_type.server_filename(&full_name));
-        let file_name = file_type.filename_to_write(&accession);
-        let data =
-            match download_with_retry(client, &url, expected_md5.map(|x| x.as_str()), retry_count)
-                .await
-            {
-                Ok(data) => data,
-                Err(e) => {
-                    let error_message = e.to_string();
-                    // did we have a checksum error or a download error?
-                    // here --> keep track of accession errors + filetype
-                    if error_message.contains("MD5 hash does not match") {
-                        let checksum_mismatch: FailedChecksum = FailedChecksum::new(
-                            accession.clone(),
-                            name.clone(),
-                            file_type.moltype(),
-                            Some(md5sum_url.clone()),
-                            Some(file_name.clone()),
-                            Some(url.clone()),
-                            expected_md5.cloned(),
-                            error_message.clone(),
-                        );
-                        checksum_failures.push(checksum_mismatch);
-                    } else {
+                for file_type in &file_types {
+                    // try to get url
+                    let mut url = None;
+                    if let Ok((base_url, full_name)) =
+                        fetch_genbank_filename(client, accession.as_str(), None).await
+                    {
+                        let formatted_url =
+                            format!("{}/{}{}", base_url, full_name, file_type.suffix());
+                        url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
+                    }
+                    for file_type in &file_types {
+                        let file_name = file_type.filename_to_write(&accession);
                         let failed_download = FailedDownload::from_gbassembly(
                             accession.clone(),
                             name.clone(),
                             file_type.moltype(),
-                            expected_md5.map(|x| x.to_string()), // single MD5 checksum
-                            Some(file_name),                     // intended download filename
-                            Some(url),                           // URL of the file
-                            None,                                // No range
+                            None,
+                            Some(file_name), // intended download filename
+                            url.clone(),     // URL of the file
+                            None,            // No range
                         );
                         download_failures.push(failed_download);
                     }
+                }
+                return Ok((empty_coll, download_failures, checksum_failures));
+            }
+        };
+    // check md5sums; write and/or sketch each file
+    for file_type in file_types {
+        let file_name = file_type.filename_to_write(&accession);
+        let (data, expected_md5) = match file_type.moltype().as_str() {
+            "DNA" => (genome_data.take(), checksum_d.get("DNA")), // Take ownership of genome_data
+            "protein" => (protein_data.take(), checksum_d.get("protein")), // Take ownership of protein_data
+            _ => {
+                eprintln!("Unsupported moltype: {}", file_type.moltype());
+                (None, None)
+            }
+        };
+
+        if let Some(data) = data {
+            // Calculate MD5 hash for the data
+            let computed_md5 = format!("{:x}", md5::compute(&data));
+
+            // Verify checksum
+            if let Some(expected_md5) = expected_md5 {
+                if &computed_md5 != expected_md5 {
+                    let error_message = format!(
+                        "Checksum mismatch for {}: Expected {}, Got {}",
+                        file_name, expected_md5, computed_md5
+                    );
+                    // Skip processing for checksum failures
+                    let checksum_mismatch: FailedChecksum = FailedChecksum::new(
+                        accession.clone(),
+                        name.clone(),
+                        file_type.moltype(),
+                        None,
+                        Some(file_name.clone()),
+                        None, // To do -- get ftp link from here?
+                        Some(expected_md5.clone()),
+                        error_message.clone(),
+                    );
+                    checksum_failures.push(checksum_mismatch);
                     continue;
                 }
-            };
+            } else {
+                eprintln!("No expected checksum found for {}", file_name);
+            }
 
-        if keep_fastas {
-            let path = location.join(&file_name);
-            fs::write(&path, &data).context("Failed to write data to file")?;
-        }
-        if !download_only {
-            // sketch data
-            match file_type {
-                GenBankFileType::Genomic => {
-                    sigs.build_sigs_from_data(data, "DNA", name.clone(), file_name.clone(), None)?;
+            if keep_fastas {
+                let path = location.join(&file_name);
+                fs::write(&path, &data).context("Failed to write data to file")?;
+            }
+
+            if !download_only {
+                match file_type {
+                    GenBankFileType::Genomic => {
+                        sigs.build_sigs_from_data(
+                            data, // Ownership is passed here
+                            "DNA",
+                            name.clone(),
+                            file_name.clone(),
+                            None,
+                        )?;
+                    }
+                    GenBankFileType::Protein => {
+                        sigs.build_sigs_from_data(
+                            data, // Ownership is passed here
+                            "protein",
+                            name.clone(),
+                            file_name.clone(),
+                            None,
+                        )?;
+                    }
+                    _ => {}
                 }
-                GenBankFileType::Protein => {
-                    sigs.build_sigs_from_data(
-                        data,
-                        "protein",
-                        name.clone(),
-                        file_name.clone(),
-                        None,
-                    )?;
-                }
-                _ => {} // Do nothing for other file types
-            };
+            }
+        } else {
+            // try to get url for use with urlsketch later
+            let mut url = None;
+            if let Ok((base_url, full_name)) =
+                fetch_genbank_filename(client, accession.as_str(), None).await
+            {
+                let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
+                url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
+            }
+            // no data --> failed download
+            let failed_download = FailedDownload::from_gbassembly(
+                accession.clone(),
+                name.clone(),
+                file_type.moltype(),
+                expected_md5.map(|x| x.to_string()), // single MD5 checksum
+                Some(file_name),                     // intended download filename
+                url,                                 // URL of the file
+                None,                                // No range
+            );
+            download_failures.push(failed_download);
         }
     }
 
@@ -377,7 +457,7 @@ async fn process_and_write_range(
     file: &mut File,
     range: Option<(usize, usize)>,
 ) -> Result<()> {
-    let cursor = std::io::Cursor::new(data);
+    let cursor = Cursor::new(data);
     let mut fastx_reader =
         needletail::parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
 
@@ -925,6 +1005,7 @@ pub async fn gbsketch(
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
+    api_key: String,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1008,6 +1089,12 @@ pub async fn gbsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
+    let headers = HeaderMap::new();
+    let mut params: HashMap<&'static str, Cow<'static, str>> = HashMap::new();
+    if !api_key.is_empty() {
+        params.insert("api_key", Cow::Owned(api_key.to_string()));
+    }
+    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
 
     if download_only {
         if genomes_only {
@@ -1051,6 +1138,21 @@ pub async fn gbsketch(
     // report every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
+    // what files do we want to download?
+    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+    if genomes_only {
+        params.insert("include_annotation_type", Cow::Borrowed("GENOME_FASTA"));
+        file_types = vec![GenBankFileType::Genomic];
+    } else if proteomes_only {
+        params.insert("include_annotation_type", Cow::Borrowed("PROT_FASTA"));
+        file_types = vec![GenBankFileType::Protein];
+    } else {
+        params.insert(
+            "include_annotation_type",
+            Cow::Borrowed("GENOME_FASTA,PROT_FASTA"),
+        );
+    }
+
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
 
@@ -1072,6 +1174,9 @@ pub async fn gbsketch(
         let checksum_send_failed = send_failed_checksums.clone();
         let download_path_clone = download_path.clone(); // Clone the path for each task
         let send_errors = error_sender.clone();
+        let headers = headers.clone();
+        let params = params.clone();
+        let ftypes = file_types.clone();
 
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
@@ -1086,16 +1191,18 @@ pub async fn gbsketch(
                 );
             }
             // Perform download and sketch
-            let result = dl_sketch_assembly_accession(
+            let result = dl_sketch_assembly_accession_ncbi_api(
                 &client_clone,
                 accinfo.clone(),
                 &download_path_clone,
-                Some(retry_times),
+                retry_times,
                 keep_fastas,
                 sigs,
-                genomes_only,
-                proteomes_only,
+                ftypes,
                 download_only,
+                base_url,
+                headers,
+                params,
             )
             .await;
             match result {

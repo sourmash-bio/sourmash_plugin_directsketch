@@ -38,6 +38,7 @@ impl std::str::FromStr for InputMolType {
 }
 
 #[allow(dead_code)]
+#[derive(PartialEq, Clone)]
 pub enum GenBankFileType {
     Genomic,
     Protein,
@@ -56,6 +57,7 @@ impl GenBankFileType {
     }
 
     //use for checksums
+    #[allow(dead_code)]
     pub fn server_filename(&self, full_name: &str) -> String {
         format!("{}{}", full_name, self.suffix())
     }
@@ -67,6 +69,7 @@ impl GenBankFileType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
         match self {
             GenBankFileType::Checksum => base_url
@@ -108,7 +111,6 @@ pub struct UrlInfo {
 pub struct GBAssemblyData {
     pub accession: String,
     pub name: String,
-    pub url: Option<reqwest::Url>,
 }
 
 pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
@@ -116,13 +118,11 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
     let mut duplicate_count = 0;
-    let mut url_count = 0; // Counter for entries with URL
-                           // to do - maybe use HashSet for accessions too to avoid incomplete dupes
     let mut rdr = csv::Reader::from_path(input_csv)?;
 
     // Check column names
     let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name", "ftp_path"];
+    let expected_header = vec!["accession", "name"];
     if header != expected_header {
         return Err(anyhow!(
             "Invalid column names in CSV file. Columns should be: {:?}",
@@ -149,24 +149,11 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             .get(1)
             .ok_or_else(|| anyhow!("Missing 'name' field"))?
             .to_string();
-        // optionally get url
-        let url = record.get(2).and_then(|s| {
-            if s.is_empty() {
-                None
-            } else {
-                let trimmed_s = s.trim_end_matches('/');
-                reqwest::Url::parse(trimmed_s).map_err(|_| ()).ok()
-            }
-        });
 
-        if url.is_some() {
-            url_count += 1;
-        }
         // store accession data
         results.push(GBAssemblyData {
             accession: acc.to_string(),
             name: name.to_string(),
-            url,
         });
     }
 
@@ -174,10 +161,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
     }
-    println!(
-        "Loaded {} rows (including {} rows with valid URL).",
-        row_count, url_count
-    );
+    println!("Loaded {} rows", row_count);
 
     Ok((results, row_count))
 }

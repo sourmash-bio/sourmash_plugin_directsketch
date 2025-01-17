@@ -55,7 +55,7 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 ### Memory Requirements
 
-Directsketch downloads the full file, optionally checking the `md5sum`, then performs the sketch. As a result, you will need enough memory to hold up to 3 genomes in memory at once. For microbial genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
+Directsketch downloads the full file(s), checks the `md5sum` if available, then sketches the data. As a result, **you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 3). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
 
 ## Running the commands
 
@@ -66,22 +66,11 @@ download and sketch NCBI Assembly Datasets by accession
 
 First, create a file, e.g. `acc.csv` with GenBank identifiers and sketch names.
 ```
-accession,name,ftp_path
-GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45,
-GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2,
+accession,name
+GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
+GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 ```
-> Three columns must be present: `accession`, `name`, and `ftp_path`. The `ftp_path` column can be empty (as above), but no additional columns may be present.
-
-#### What is ftp_path?
-
-If you do not provide an `ftp_path`, `gbsketch` will use the accession to find the `ftp_path` for you.
-
-If you choose to provide it, `ftp_path` must be the `ftp_path` column from NCBI's assembly summary files.
-
-For reference:
-
-- example `ftp_path`: [https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1](https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/036/600/915/GCA_036600915.1_ASM3660091v1)
-- bacteria assembly summary file: [https://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt](https://ftp.ncbi.nih.gov/genomes/genbank/bacteria/assembly_summary.txt)
+> Two columns must be present: `accession`, and `name`. No additional columns may be present.
 
 ### Run:
 
@@ -114,42 +103,43 @@ summary of sketches:
 Full Usage:
 
 ```
-usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] --failed FAILED --checksum-fail CHECKSUM_FAIL [-p PARAM_STRING] [-c CORES]
-                 [-r RETRY_TIMES] [-g | -m]
+usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] --failed FAILED --checksum-fail CHECKSUM_FAIL [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES]
+                 [-n {1,2,3,4,5,6,7,8,9,10}] [-a API_KEY] [-g | -m]
                  input_csv
 
 download and sketch GenBank assembly datasets
 
 positional arguments:
-  input_csv             a txt file or csv file containing accessions in the first column
+  input_csv             A txt file or csv file containing accessions in the first column.
 
 options:
   -h, --help            show this help message and exit
   -q, --quiet           suppress non-error output
   -d, --debug           provide debugging output
   -o OUTPUT, --output OUTPUT
-                        output zip file for the signatures
+                        Output ZIP file for the signatures. Must end with '.zip'.
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of accessions. 
-                        This allows gbsketch to recover after unexpected failures, rather than needing to
-                        restart sketching from scratch. Default: write all sigs to single zipfile.
-  -k, --keep-fasta      write FASTA files in addition to sketching. Default: do not write FASTA files
-  --download-only       just download genomes; do not sketch
-  --failed FAILED       csv of failed accessions and download links (should be mostly protein).
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to restart sketching
+                        from scratch. Default: write all sigs to single zipfile.
+  -k, --keep-fasta      Write FASTA files. Default: do not write FASTA files.
+  --download-only       Download FASTAS but do not sketch. Requires '--keep-fasta'. By default this downloads both genomes and proteomes.
+  --failed FAILED       CSV of failed accessions and download links (should be mostly protein).
   --checksum-fail CHECKSUM_FAIL
-                        csv of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded
+                        CSV of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded.
   -p PARAM_STRING, --param-string PARAM_STRING
-                        parameter string for sketching (default: k=31,scaled=1000)
+                        Parameter string for sketching (default: k=31,scaled=1000).
   -c CORES, --cores CORES
-                        number of cores to use (default is all available)
+                        Number of cores to use (default is all available).
   -r RETRY_TIMES, --retry-times RETRY_TIMES
-                        number of times to retry failed downloads
-  -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
-                        number of accessions to download simultaneously (default=1)
-  -g, --genomes-only    just download and sketch genome (DNA) files
-  -m, --proteomes-only  just download and sketch proteome (protein) files
+                        Number of times to retry failed downloads (default=3).
+  -n {1,2,3,4,5,6,7,8,9,10}, --n-simultaneous-downloads {1,2,3,4,5,6,7,8,9,10}
+                        Number of accessions to download simultaneously (default=3). Must be <=3 if not using API key.
+  -a API_KEY, --api-key API_KEY
+                        API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads. Alternatively, set NCBI_API_KEY environmental variable.
+  -g, --genomes-only    Download and sketch genome (DNA) files only.
+  -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
 
 ## `urlsketch`
@@ -185,43 +175,42 @@ sourmash scripts urlsketch acc-url.csv -o test-urlsketch.zip -f out_fastas -k --
 
 Full Usage:
 ```
-usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [--batch-size BATCH_SIZE] [-f FASTAS] [-k] [--download-only] --failed FAILED [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES]
-                  [-r RETRY_TIMES]
+usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [--batch-size BATCH_SIZE] [-f FASTAS] [-k] [--download-only] --failed FAILED [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES] [-n {1,2,3}]
+                  [-g | -m]
                   input_csv
 
 download and sketch GenBank assembly datasets
 
 positional arguments:
-  input_csv             a txt file or csv file containing accessions in the first column
+  input_csv             A txt file or csv file containing accessions in the first column.
 
 options:
   -h, --help            show this help message and exit
   -q, --quiet           suppress non-error output
   -d, --debug           provide debugging output
   -o OUTPUT, --output OUTPUT
-                        output zip file for the signatures
+                        Output ZIP file for the signatures. Must end with '.zip'.
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of urls.
-                        This allows urlsketch to recover after unexpected failures, rather than needing to
-                        restart sketching from scratch. Default: write all sigs to single zipfile.
+                        Write smaller zipfiles, each containing sigs associated with this number of urls. This allows urlsketch to recover after unexpected failures, rather than needing to restart sketching from
+                        scratch. Default: write all sigs to single zipfile.
   -f FASTAS, --fastas FASTAS
-                        Write fastas here
+                        Write fastas here.
   -k, --keep-fasta, --keep-fastq
-                        write FASTA/Q files in addition to sketching. Default: do not write FASTA files
-  --download-only       just download genomes; do not sketch
-  --failed FAILED       csv of failed accessions and download links.
+                        Write FASTA/Q files. Default: do not write FASTA files.
+  --download-only       Download FASTAS but do not sketch. Requires '--keep-fasta/--keep-fastq'.
+  --failed FAILED       CSV of failed accessions and download links.
   --checksum-fail CHECKSUM_FAIL
-                        csv of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).
+                        CSV of accessions where the md5sum check failed. If not provided, md5sum failures will be written to the download failures file (no additional md5sum information).
   -p PARAM_STRING, --param-string PARAM_STRING
-                        parameter string for sketching (default: k=31,scaled=1000)
+                        Parameter string for sketching (default: k=31,scaled=1000).
   -c CORES, --cores CORES
-                        number of cores to use (default is all available)
+                        Number of cores to use (default is all available).
   -r RETRY_TIMES, --retry-times RETRY_TIMES
-                        number of times to retry failed downloads
+                        Number of times to retry failed downloads (default=3).
   -n {1,2,3}, --n-simultaneous-downloads {1,2,3}
                         number of simultaneous downloads (default=3)
-  -g, --genomes-only    just download and sketch genome (DNA) files
-  -m, --proteomes-only  just download and sketch proteome (protein) files
+  -g, --genomes-only    Download and sketch genome (DNA) files only.
+  -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
 
 ## Code of Conduct
