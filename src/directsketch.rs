@@ -248,6 +248,8 @@ async fn rest_api_download_with_retry(
         }
 
         attempts -= 1;
+        // delay by 1 second. NCBI allows 3 downloads/sec (10 with API KEY). This delay may help avoid issues.
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
     Err(last_error.unwrap_or_else(|| {
         anyhow!(
