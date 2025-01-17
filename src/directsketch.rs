@@ -324,8 +324,11 @@ async fn dl_sketch_assembly_accession_ncbi_api(
     let (mut genome_data, mut protein_data, checksum_d) =
         match rest_api_download_with_retry(client, url, headers, params, n_retries).await {
             Ok(result) => result,
-            Err(e) => {
-                eprintln!("Error processing ZIP file: {}", e);
+            Err(_e) => {
+                eprintln!(
+                    "Error downloading NCBI ZIP file for accession '{}'. Writing to failures file.",
+                    accession
+                );
                 for file_type in &file_types {
                     // try to get url
                     let mut url = None;

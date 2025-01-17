@@ -202,7 +202,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             notify("...gbsketch is done!")
             if args.output is not None:
                 if args.batch_size:
-                    batch_base = args.output.split('.zip')[0]
+                    batch_base = args.output.split(".zip")[0]
                     notify(f"Sigs in '{batch_base}.1.zip', etc")
                 else:
                     notify(f"Sigs in '{args.output}'.")
@@ -223,7 +223,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             help="A txt file or csv file containing accessions in the first column.",
         )
         p.add_argument(
-            "-o", "--output", default=None, help="Output ZIP file for the signatures. Must end with '.zip'.",
+            "-o",
+            "--output",
+            default=None,
+            help="Output ZIP file for the signatures. Must end with '.zip'.",
         )
         p.add_argument(
             "--batch-size",
@@ -284,8 +287,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             "--n-simultaneous-downloads",
             default=3,
             type=int,
-            choices=[1, 2, 3],
-            help="number of simultaneous downloads (default=3)",
+            help="Number of simultaneous downloads (default=3). Restrict this to match your servers limits, otherwise many downloads will fail.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -348,7 +350,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             notify("...urlsketch is done!")
             if args.output is not None:
                 if args.batch_size:
-                    batch_base = args.output.split('.zip')[0]
+                    batch_base = args.output.split(".zip")[0]
                     notify(f"Sigs in '{batch_base}.1.zip', etc")
                 else:
                     notify(f"Sigs in '{args.output}'.")
