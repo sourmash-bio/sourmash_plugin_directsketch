@@ -183,9 +183,8 @@ async fn download_with_retry(
         }
 
         attempts -= 1;
-        if attempts == 0 {
-            break;
-        }
+        //NCBI allows 3 downloads/sec (10 with API KEY). This delay may help avoid issues.
+        tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     }
     Err(last_error.unwrap_or_else(|| {
         anyhow!(
