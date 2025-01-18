@@ -57,6 +57,10 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 Directsketch downloads the full file(s), checks the `md5sum` if available, then sketches the data. As a result, **you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 3). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
 
+### Rerunning failures
+
+If using batches, you can rerun the same command and any failed sketches will be retried. Alternatively, the `--failed` file from either `gbsketch` or `urlsketch` can be used as input into `urlsketch`. We cannot append to the existing output zipfile of signatures, so please provide a different output file if running `urlsketch` with the failure file.
+
 ## Running the commands
 
 ## `gbsketch`
