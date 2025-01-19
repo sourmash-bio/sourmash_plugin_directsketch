@@ -405,7 +405,7 @@ def test_gbsketch_empty_accfile(runtmp, capfd):
         
     captured = capfd.readouterr()
     print(captured.err)
-    assert 'Error: Invalid column names in CSV file. Columns should be: ["accession", "name"]' in captured.err
+    assert "Error: Missing column name 'accession' in CSV file." in captured.err
 
 
 def test_gbsketch_bad_acc_fail(runtmp, capfd):
