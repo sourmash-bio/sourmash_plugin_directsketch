@@ -374,6 +374,32 @@ def test_gbsketch_bad_acc(runtmp):
                 assert sig.md5sum() == ss3.md5sum()
 
 
+def test_gbsketch_extra_column(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        for line in lines:
+            outF.write(line.strip() + ',extra\n')
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(f"looking for path: {output}")
+
+    assert "WARNING: extra column 'extra' in CSV file. Ignoring." in captured.err
+
+
 def test_gbsketch_missing_accfile(runtmp, capfd):
     acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')
