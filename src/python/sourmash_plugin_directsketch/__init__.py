@@ -87,12 +87,10 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "--failed",
             help="CSV of failed accessions and download links (should be mostly protein).",
-            required=True,
         )
         p.add_argument(
             "--checksum-fail",
             help="CSV of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded.",
-            required=True,
         )
         p.add_argument(
             "-p",
@@ -176,6 +174,11 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
 
         num_threads = set_thread_pool(args.cores)
 
+        if args.failed is None:
+            args.failed = os.path.basename(args.input_csv) + '.fail.txt'
+        if args.checksum_fail is None:
+            args.failed = os.path.basename(args.input_csv) + '.ckechsum_fail.txt'
+
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
         )
@@ -252,7 +255,6 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument(
             "--failed",
             help="CSV of failed accessions and download links.",
-            required=True,
         )
         # don't require checksum_fail here b/c users don't need to provide checksums
         p.add_argument(
@@ -324,6 +326,9 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         args.param_string = args.param_string.lower()
 
         num_threads = set_thread_pool(args.cores)
+
+        if args.failed is None:
+            args.failed = os.path.basename(args.input_csv) + '.fail.txt'
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
