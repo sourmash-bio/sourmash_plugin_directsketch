@@ -162,7 +162,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             api_key = os.environ.get("NCBI_API_KEY", None)
             if api_key:
                 args.api_key = api_key
-            elif args.n_simultaneous_downloads > 3:
+            elif args.n_simultaneous_downloads is not None \
+                 and args.n_simultaneous_downloads > 3:
                 notify(
                     "Error: please provide an API Key to use n_simultaneous_downloads > 3."
                 )
