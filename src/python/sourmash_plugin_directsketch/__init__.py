@@ -178,7 +178,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
 
         if args.n_simultaneous_downloads is None:
             if args.api_key:
-                notif("API key provided - setting --n-simultaneous-downloads to 9")
+                notify("API key provided - setting --n-simultaneous-downloads to 9")
                 args.n_simultaneous_downloads = 9
             else:
                 args.n_simultaneous_downloads = 3
