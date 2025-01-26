@@ -119,7 +119,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "-n",
             "--n-simultaneous-downloads",
-            default=3,
+            default=None,
             type=int,
             choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             help="Number of accessions to download simultaneously (default=3). Must be <=3 if not using API key.",
@@ -175,6 +175,13 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         args.param_string = args.param_string.lower()
 
         num_threads = set_thread_pool(args.cores)
+
+        if args.n_simultaneous_downloads is None:
+            if args.api_key:
+                notif("API key provided - setting --n-simultaneous-downloads to 9")
+                args.n_simultaneous_downloads = 9
+            else:
+                args.n_simultaneous_downloads = 3
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
