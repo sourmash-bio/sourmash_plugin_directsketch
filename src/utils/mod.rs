@@ -133,17 +133,17 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
         ));
     }
 
-/*  Not needed for the moment, but leaving the code around ;).
-    for h in expected_header.iter() {
-        if !header.iter().any(|e| *h == e) {
-            return Err(anyhow!(
-                "Missing column name '{}' in CSV file. Columns should be: {:?}",
-                h,
-                expected_header
-            ));
+    /*  Not needed for the moment, but leaving the code around ;).
+        for h in expected_header.iter() {
+            if !header.iter().any(|e| *h == e) {
+                return Err(anyhow!(
+                    "Missing column name '{}' in CSV file. Columns should be: {:?}",
+                    h,
+                    expected_header
+                ));
+            }
         }
-    }
-*/
+    */
     for h in header.iter() {
         if !expected_header.iter().any(|e| h == *e) {
             eprintln!("WARNING: extra column '{}' in CSV file. Ignoring.", h);
