@@ -78,7 +78,7 @@ def test_urlsketch_simple_default_failed(runtmp):
     # check default value for --failed
     acc_csv = get_test_data('acc-url.csv')
     output = runtmp.output('simple.zip')
-    failed = runtmp.output('acc-url.csv.fail.txt')
+    failed = runtmp.output('acc-url.csv.fail.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
