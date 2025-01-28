@@ -175,9 +175,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         num_threads = set_thread_pool(args.cores)
 
         if args.failed is None:
-            args.failed = os.path.basename(args.input_csv) + '.fail.txt'
+            args.failed = os.path.basename(args.input_csv) + '.fail.csv'
         if args.checksum_fail is None:
-            args.checksum_fail = os.path.basename(args.input_csv) + '.ckechsum_fail.txt'
+            args.checksum_fail = os.path.basename(args.input_csv) + '.checksum_fail.csv'
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
