@@ -328,7 +328,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         num_threads = set_thread_pool(args.cores)
 
         if args.failed is None:
-            args.failed = os.path.basename(args.input_csv) + '.fail.txt'
+            args.failed = os.path.basename(args.input_csv) + '.fail.csv'
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
