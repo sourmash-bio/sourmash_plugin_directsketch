@@ -400,6 +400,26 @@ def test_gbsketch_extra_column(runtmp, capfd):
     assert "WARNING: extra column 'extra' in CSV file. Ignoring." in captured.err
 
 
+def test_gbsketch_bad_column_order(runtmp, capfd):
+    acc_csv = get_test_data('acc-bad-header-order.csv')
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                        '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                        '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert not os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    assert "Invalid column names in CSV file." in captured.err
+
+
 def test_gbsketch_missing_accfile(runtmp, capfd):
     acc_csv = runtmp.output('acc1.csv')
     output = runtmp.output('simple.zip')

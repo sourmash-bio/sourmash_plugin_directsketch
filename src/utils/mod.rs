@@ -124,6 +124,16 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     let header = rdr.headers()?;
     let expected_header = vec!["accession", "name"];
 
+    let header_v: Vec<_> = header.iter().collect();
+
+    if header_v[0..2].to_vec() != expected_header {
+        return Err(anyhow!(
+            "Invalid column names in CSV file. Columns should be: {:?}, in that order",
+            expected_header
+        ));
+    }
+
+/*  Not needed for the moment, but leaving the code around ;).
     for h in expected_header.iter() {
         if !header.iter().any(|e| *h == e) {
             return Err(anyhow!(
@@ -133,7 +143,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             ));
         }
     }
-
+*/
     for h in header.iter() {
         if !expected_header.iter().any(|e| h == *e) {
             eprintln!("WARNING: extra column '{}' in CSV file. Ignoring.", h);
