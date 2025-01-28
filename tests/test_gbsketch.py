@@ -80,7 +80,7 @@ def test_gbsketch_simple_default_failed(runtmp, capfd):
     # test the default value for --failed
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
-    failed = runtmp.output('acc.csv.fail.txt')
+    failed = runtmp.output('acc.csv.fail.csv')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
