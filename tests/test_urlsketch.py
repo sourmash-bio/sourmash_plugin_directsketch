@@ -74,7 +74,7 @@ def test_urlsketch_simple(runtmp):
             assert range == ""
 
 
-def test_urlsketch_simple_defaul_tfailed(runtmp):
+def test_urlsketch_simple_default_failed(runtmp):
     # check default value for --failed
     acc_csv = get_test_data('acc-url.csv')
     output = runtmp.output('simple.zip')
