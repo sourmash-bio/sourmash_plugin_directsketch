@@ -87,12 +87,10 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "--failed",
             help="CSV of failed accessions and download links (should be mostly protein).",
-            required=True,
         )
         p.add_argument(
             "--checksum-fail",
             help="CSV of accessions where the md5sum check failed or the md5sum file was improperly formatted or could not be downloaded.",
-            required=True,
         )
         p.add_argument(
             "-p",
@@ -119,7 +117,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "-n",
             "--n-simultaneous-downloads",
-            default=3,
+            default=None,
             type=int,
             choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
             help="Number of accessions to download simultaneously (default=3). Must be <=3 if not using API key.",
@@ -162,7 +160,8 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             api_key = os.environ.get("NCBI_API_KEY", None)
             if api_key:
                 args.api_key = api_key
-            elif args.n_simultaneous_downloads > 3:
+            elif args.n_simultaneous_downloads is not None \
+                 and args.n_simultaneous_downloads > 3:
                 notify(
                     "Error: please provide an API Key to use n_simultaneous_downloads > 3."
                 )
@@ -175,6 +174,18 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         args.param_string = args.param_string.lower()
 
         num_threads = set_thread_pool(args.cores)
+
+        if args.failed is None:
+            args.failed = os.path.basename(args.input_csv) + '.fail.csv'
+        if args.checksum_fail is None:
+            args.checksum_fail = os.path.basename(args.input_csv) + '.checksum_fail.csv'
+
+        if args.n_simultaneous_downloads is None:
+            if args.api_key:
+                notify("API key provided - setting --n-simultaneous-downloads to 9")
+                args.n_simultaneous_downloads = 9
+            else:
+                args.n_simultaneous_downloads = 3
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
@@ -252,7 +263,6 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument(
             "--failed",
             help="CSV of failed accessions and download links.",
-            required=True,
         )
         # don't require checksum_fail here b/c users don't need to provide checksums
         p.add_argument(
@@ -324,6 +334,9 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         args.param_string = args.param_string.lower()
 
         num_threads = set_thread_pool(args.cores)
+
+        if args.failed is None:
+            args.failed = os.path.basename(args.input_csv) + '.fail.csv'
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
