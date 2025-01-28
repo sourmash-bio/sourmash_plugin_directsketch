@@ -126,7 +126,7 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
 
     let header_v: Vec<_> = header.iter().collect();
 
-    if header_v[0..2].to_vec() != expected_header {
+    if header_v.len() < 2 || header_v[0..2].to_vec() != expected_header {
         return Err(anyhow!(
             "Invalid column names in CSV file. Columns should be: {:?}, in that order",
             expected_header
