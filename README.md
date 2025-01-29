@@ -14,7 +14,7 @@ Commands:
 - `gbsketch` - download and sketch NCBI Assembly Datasets by accession
 - `urlsketch` - download and sketch directly from a url
 
-This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided or accessible, and sketching to a sourmash zipfile. FASTA files can also be saved if desired. It's quite fast, but still very much at alpha level. Here be dragons.
+This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided or accessible, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's quite fast, but still under active development.
 
 ## Installation
 
