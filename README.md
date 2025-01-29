@@ -18,8 +18,6 @@ This plugin is an attempt to improve sourmash database generation by downloading
 
 ## Installation
 
-### Linux
-
 Option 1 (recommended): Create a conda environment and install into it:
 ```
 conda create -n directsketch sourmash_plugin_directsketch # create and install
@@ -31,25 +29,11 @@ Option 2: Install without creating an environment
 conda install sourmash_plugin_directsketch
 ```
 
-### Other Platforms
-
-On other platforms, you can create a conda environment with requirements like so:
-```
-curl -JLO https://raw.githubusercontent.com/sourmash-bio/sourmash_plugin_directsketch/main/environment.yml
-conda env create -f environment.yml
-```
-
-then activate the environment and install `sourmash_plugin_directsketch` via `pip`:
-```
-conda activate directsketch
-pip install sourmash_plugin_directsketch
-```
-
 ## Usage Considerations
 
 ### Allowing restart with batching
 
-If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of sigs associated with each url provided. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc. For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
+If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of sigs associated with each url provided. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.zip`, your batches will be `output.1.zip`, `output.2.zip`, etc. **Note: for now, batching does not handle additional periods well; please avoid additional `.` in your filenames to use batched restart. See https://github.com/sourmash-bio/sourmash_plugin_directsketch/issues/172 for details.** For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
 
 To build a single database after batched sketching, you can use `sig cat` to build a single zipfile (`sourmash sig cat *.zip -o OUTPUT.zip`) or `sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
 
@@ -74,7 +58,7 @@ accession,name
 GCA_000961135.2,GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-45
 GCA_000175555.1,GCA_000175555.1 ACUK01000506.1 Saccharolobus solfataricus 98/2
 ```
-> Two columns must be present: `accession`, and `name`. No additional columns may be present.
+> Two columns must be present: `accession`, and `name`.
 
 ### Run:
 
@@ -228,6 +212,7 @@ We suggest filing issues in [the directsketch issue tracker](https://github.com/
 ## Authors
 
 * N. Tessa Pierce-Ward
+* C. Titus Brown
 
 ## Dev docs
 
@@ -242,7 +227,7 @@ pytest tests
 
 ### Generating a release
 
-Bump version number in `Cargo.toml` and push.
+Bump version number in `Cargo.toml` and `pyproject.toml` and push.
 
 Make a new release on github.
 
@@ -251,6 +236,7 @@ Then pull, and:
 ```
 make sdist
 ```
+> Make sure directory is clean to avoid pulling in additional files.
 
 followed by `make upload_sdist`.
 
