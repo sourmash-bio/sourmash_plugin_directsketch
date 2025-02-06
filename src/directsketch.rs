@@ -8,7 +8,7 @@ use sourmash::collection::Collection;
 use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
-use std::fs::{self, create_dir_all};
+use std::fs::create_dir_all;
 use std::io::{Cursor, Read, Seek};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -389,16 +389,28 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         }
     };
 
-    // if we are writing fasta, build file handles
-    let mut file_handles: HashMap<GenBankFileType, File> = HashMap::new();
-    let sanitized_name = name.replace(" ", "_");
-
-    for file_type in file_types.iter(){
-        let download_filename = if accessions_and_ranges.len() > 1 {
-            format!("{}_{}", sanitized_name, file_type.suffix())
+    // build download_filenames as needed
+    let file_basename = if let Some(custom_basename) = accinfo.savefasta_basename.as_ref() {
+        // Use `download_file_basename` if provided
+        custom_basename.clone()
+    } else if accessions_and_ranges.len() == 1 {
+        let single_acc = &accessions_and_ranges[0];
+        if let Some((start, end)) = single_acc.range {
+            // If single accession with range, include range in filename
+            format!("{}.{}-{}", single_acc.accession, start, end)
         } else {
-            file_type.filename_to_write(&accessions_and_ranges[0].accession)
-        };
+            // Single accession without range → use standard filename
+            single_acc.accession.clone()
+        }
+    } else {
+        // Multiple accessions → Use `sanitized_name`
+        name.replace(" ", "_")
+    };
+
+    let mut file_handles: HashMap<GenBankFileType, File> = HashMap::new();
+
+    for file_type in file_types.iter() {
+        let download_filename = format!("{}_{}", file_basename, file_type.suffix());
         if keep_fastas {
             for file_type in file_types.iter() {
                 let file_handle = open_file_for_writing(location, Some(&download_filename)).await?;
@@ -416,7 +428,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
 
         for file_type in file_types.iter() {
             // todo: this is redundant with above --> consolidate
-            let download_filename = format!("{}_{}", sanitized_name, file_type.suffix());
+            let download_filename = format!("{}_{}", file_basename, file_type.suffix());
             // let file_name = file_type.filename_to_write(&accession);
 
             // Try to get the file from the drained HashMap

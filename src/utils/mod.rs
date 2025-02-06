@@ -118,6 +118,9 @@ pub struct GBAssemblyData {
 
     #[serde(deserialize_with = "deserialize_accession_with_range")]
     pub accession_info: Vec<GBAssemblyInfo>,
+
+    #[serde(default)] // Allows missing `download_filename`
+    pub savefasta_basename: Option<String>,
 }
 
 #[derive(Debug, Clone)]
