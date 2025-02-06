@@ -389,6 +389,23 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         }
     };
 
+    // if we are writing fasta, build file handles
+    let mut file_handles: HashMap<GenBankFileType, File> = HashMap::new();
+    let sanitized_name = name.replace(" ", "_");
+
+    for file_type in file_types.iter(){
+        let download_filename = if accessions_and_ranges.len() > 1 {
+            format!("{}_{}", sanitized_name, file_type.suffix())
+        } else {
+            file_type.filename_to_write(&accessions_and_ranges[0].accession)
+        };
+        if keep_fastas {
+            for file_type in file_types.iter() {
+                let file_handle = open_file_for_writing(location, Some(&download_filename)).await?;
+                file_handles.insert(file_type.clone(), file_handle.expect("Cannot open file"));
+            }
+        }
+    }
     // Iterate over each accession in gb_data
     for (accession, mut files) in gb_data {
         // get range if we have one
@@ -398,13 +415,9 @@ async fn dl_sketch_assembly_accession_ncbi_api(
         let drained_files: HashMap<_, _> = files.drain().collect();
 
         for file_type in file_types.iter() {
-            // need to open a file for each file type if keep_fastas
-            // let mut file: Option<File> = if keep_fastas {
-            //     open_file_for_writing(location, download_filename.as_ref()).await?
-            // } else {
-            //     None
-            // };
-            let file_name = file_type.filename_to_write(&accession);
+            // todo: this is redundant with above --> consolidate
+            let download_filename = format!("{}_{}", sanitized_name, file_type.suffix());
+            // let file_name = file_type.filename_to_write(&accession);
 
             // Try to get the file from the drained HashMap
             let (_filename, data, expected_md5) = match drained_files.get(file_type) {
@@ -421,7 +434,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                         name.clone(),
                         file_type.moltype(),
                         None,
-                        Some(file_name.clone()),
+                        Some(download_filename.clone()),
                         None, // TODO: fetch FTP link
                         range,
                     );
@@ -451,7 +464,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                 if &computed_md5 != &expected_md5 {
                     let error_message = format!(
                         "Checksum mismatch for {}: Expected {}, Got {}",
-                        file_name, expected_md5, computed_md5
+                        download_filename, expected_md5, computed_md5
                     );
                     // Skip processing for checksum failures
                     let checksum_mismatch: FailedChecksum = FailedChecksum::new(
@@ -459,7 +472,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                         name.clone(),
                         file_type.moltype(),
                         None,
-                        Some(file_name.clone()),
+                        Some(download_filename.clone()),
                         None, // To do -- get ftp link from here?
                         Some(expected_md5.clone()),
                         error_message.clone(),
@@ -468,22 +481,24 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                     continue;
                 }
             } else {
-                eprintln!("No expected checksum found for {}", file_name);
+                eprintln!("No expected checksum found for {}", download_filename);
             }
 
             if keep_fastas {
-                let path = location.join(&file_name);
-                fs::write(&path, &data).context("Failed to write data to file")?;
-                // if range.is_some() {
-                //     process_and_write_range(&data, file, range)
-                //         .await
-                //         .context("Failed to process and write range to file")?;
-                // } else {
-                //     // Write the entire data if no range is provided
-                //     file.write_all(&data)
-                //         .await
-                //         .context("Failed to write data to file")?;
-                // }
+                // let path = location.join(&download_filename);
+                // fs::write(&path, &data).context("Failed to write data to file")?;
+                if let Some(file) = file_handles.get_mut(file_type) {
+                    if let Some(range) = range {
+                        process_and_write_range(&data, file, Some(range))
+                            .await
+                            .context("Failed to process and write range to file")?;
+                    } else {
+                        // Write the entire data if no range is provided
+                        file.write_all(&data)
+                            .await
+                            .context("Failed to write data to file")?;
+                    }
+                }
             }
 
             if !download_only {
@@ -493,7 +508,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                             data, // Ownership is passed here
                             "DNA",
                             name.clone(),
-                            file_name.clone(),
+                            download_filename.clone(),
                             range,
                         )?;
                     }
@@ -502,7 +517,7 @@ async fn dl_sketch_assembly_accession_ncbi_api(
                             data, // Ownership is passed here
                             "protein",
                             name.clone(),
-                            file_name.clone(),
+                            download_filename.clone(),
                             range,
                         )?;
                     }
