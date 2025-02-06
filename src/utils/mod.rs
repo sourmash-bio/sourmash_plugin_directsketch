@@ -1,14 +1,16 @@
 use anyhow::{anyhow, Result};
+use csv::ReaderBuilder;
 use reqwest::Url;
+use serde::Deserialize;
 use sourmash::collection::Collection;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use tokio::io::AsyncWriteExt;
 
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug, Deserialize)]
 pub enum InputMolType {
     Dna,
     Protein,
@@ -38,7 +40,7 @@ impl std::str::FromStr for InputMolType {
 }
 
 #[allow(dead_code)]
-#[derive(PartialEq, Clone)]
+#[derive(PartialEq, Clone, Eq, Hash)]
 pub enum GenBankFileType {
     Genomic,
     Protein,
@@ -90,94 +92,130 @@ impl GenBankFileType {
     }
 }
 
-#[allow(dead_code)]
-#[derive(Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
     pub moltype: InputMolType,
+
+    #[serde(deserialize_with = "deserialize_urlinfo")]
     pub url_info: Vec<UrlInfo>,
-    pub download_filename: Option<String>, // Need to require this if --keep-fastas are used
+
+    #[serde(default)] // Allows missing `download_filename`
+    pub download_filename: Option<String>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct UrlInfo {
-    pub url: reqwest::Url,
+    pub url: Url,
     pub md5sum: Option<String>,
     pub range: Option<(usize, usize)>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct GBAssemblyData {
-    pub accession: String,
     pub name: String,
+
+    #[serde(deserialize_with = "deserialize_accession_with_range")]
+    pub accession_info: Vec<GBAssemblyInfo>,
 }
 
-pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
+#[derive(Debug, Clone)]
+pub struct GBAssemblyInfo {
+    pub accession: String,
+    pub range: Option<(usize, usize)>,
+}
+
+// Custom deserialization for `accession` and `range`
+fn deserialize_accession_with_range<'de, D>(
+    deserializer: D,
+) -> Result<Vec<GBAssemblyInfo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct RawRow {
+        accession: String,
+        #[serde(default)] // Allows missing "range" column
+        range: Option<String>,
+    }
+
+    let raw: RawRow = Deserialize::deserialize(deserializer)?;
+
+    let accessions: Vec<String> = raw
+        .accession
+        .split(';')
+        .map(|s| s.trim().to_string())
+        .collect();
+
+    let ranges = match raw.range {
+        Some(r) => parse_ranges(&r, accessions.len()).map_err(serde::de::Error::custom)?,
+        None => vec![None; accessions.len()], // Default to None for each accession if no range
+    };
+
+    if accessions.len() != ranges.len() {
+        return Err(serde::de::Error::custom(format!(
+            "Mismatch between accessions ({}) and ranges ({})",
+            accessions.len(),
+            ranges.len()
+        )));
+    }
+
+    let result = accessions
+        .into_iter()
+        .zip(ranges.into_iter())
+        .map(|(acc, range)| GBAssemblyInfo {
+            accession: acc,
+            range,
+        })
+        .collect();
+
+    Ok(result)
+}
+
+pub fn load_gbassembly_info<P: AsRef<std::path::Path>>(
+    input_csv: P,
+) -> Result<(Vec<GBAssemblyData>, usize)> {
+    let required_columns = &["accession", "name"]; // Only enforce required columns exist
+
+    let file = std::fs::File::open(&input_csv).map_err(|e| {
+        anyhow!(
+            "Failed to open CSV file '{}': {}",
+            input_csv.as_ref().display(),
+            e
+        )
+    })?;
+    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+
+    // Validate headers as we read
+    let headers = rdr
+        .headers()
+        .map_err(|e| anyhow!("Failed to read CSV headers: {}", e))?;
+
+    for &column in required_columns {
+        if !headers.iter().any(|h| h == column) {
+            return Err(anyhow!("Missing required column: '{}' in CSV file", column));
+        }
+    }
+
     let mut results = Vec::new();
     let mut row_count = 0;
-    let mut processed_rows = std::collections::HashSet::new();
+    let mut processed_rows = HashSet::new();
     let mut duplicate_count = 0;
-    let mut rdr = csv::Reader::from_path(input_csv)?;
 
-    // Check column names
-    let header = rdr.headers()?;
-    let expected_header = vec!["accession", "name"];
+    for result in rdr.deserialize() {
+        let record: GBAssemblyData =
+            result.map_err(|e| anyhow!("Failed to deserialize CSV row: {}", e))?;
 
-    let header_v: Vec<_> = header.iter().collect();
-
-    if header_v.len() < 2 || header_v[0..2].to_vec() != expected_header {
-        return Err(anyhow!(
-            "Invalid column names in CSV file. Columns should be: {:?}, in that order",
-            expected_header
-        ));
-    }
-
-    /*  Not needed for the moment, but leaving the code around ;).
-        for h in expected_header.iter() {
-            if !header.iter().any(|e| *h == e) {
-                return Err(anyhow!(
-                    "Missing column name '{}' in CSV file. Columns should be: {:?}",
-                    h,
-                    expected_header
-                ));
-            }
-        }
-    */
-    for h in header.iter() {
-        if !expected_header.iter().any(|e| h == *e) {
-            eprintln!("WARNING: extra column '{}' in CSV file. Ignoring.", h);
-        }
-    }
-
-    for result in rdr.records() {
-        let record = result?;
-        let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
+        let row_string = format!("{:?}", record);
+        if !processed_rows.insert(row_string) {
             duplicate_count += 1;
             continue;
         }
-        processed_rows.insert(row_string.clone());
         row_count += 1;
-
-        // require acc, name
-        let acc = record
-            .get(0)
-            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
-            .to_string();
-        let name = record
-            .get(1)
-            .ok_or_else(|| anyhow!("Missing 'name' field"))?
-            .to_string();
-
-        // store accession data
-        results.push(GBAssemblyData {
-            accession: acc.to_string(),
-            name: name.to_string(),
-        });
+        results.push(record);
     }
 
-    // Print warning if there were duplicated rows.
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
     }
@@ -186,64 +224,68 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     Ok((results, row_count))
 }
 
-fn parse_urls(url_field: Option<&str>) -> Result<Vec<reqwest::Url>, anyhow::Error> {
-    let url_field = url_field.ok_or_else(|| anyhow!("Missing 'url' field"))?;
-
-    let mut urls = Vec::new();
-
-    for s in url_field.split(';').map(|s| s.trim()) {
-        if s.is_empty() {
-            return Err(anyhow!("Empty URL entry found in 'url' field"));
-        }
-
-        let parsed_url =
-            reqwest::Url::parse(s).map_err(|e| anyhow!("Invalid URL '{}': {}", s, e))?;
-        urls.push(parsed_url);
+// Custom deserialization for `url` and `md5sum`
+fn deserialize_urlinfo<'de, D>(deserializer: D) -> Result<Vec<UrlInfo>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    struct RawRow {
+        url: String,
+        #[serde(default)]
+        md5sum: Option<String>,
+        #[serde(default)]
+        range: Option<String>,
     }
 
-    if urls.is_empty() {
-        return Err(anyhow!("No valid URLs found in 'url' field"));
-    }
+    let raw: RawRow = Deserialize::deserialize(deserializer)?;
+    let urls: Vec<&str> = raw.url.split(';').map(|s| s.trim()).collect();
 
-    Ok(urls)
-}
+    let md5sums: Vec<Option<String>> = match raw.md5sum {
+        Some(ref md5s) => md5s
+            .split(';')
+            .map(|s| {
+                let trimmed = s.trim();
+                if trimmed.is_empty() {
+                    None
+                } else {
+                    Some(trimmed.to_string())
+                }
+            })
+            .collect(),
+        None => vec![None; urls.len()], // Default to None if no MD5s provided
+    };
 
-fn parse_md5sums(
-    md5sum_field: &str,
-    expected_num_urls: usize,
-    accession: &str,
-) -> Result<(Vec<Option<String>>, usize), anyhow::Error> {
-    if md5sum_field.trim().is_empty() {
-        // Return a vector of None for each expected URL and a count of 0
-        return Ok((vec![None; expected_num_urls], 0));
-    }
+    let ranges = match raw.range {
+        Some(ref r) => parse_ranges(r, urls.len()).map_err(serde::de::Error::custom)?,
+        None => vec![None; urls.len()], // Default to None for each URL if no range
+    };
 
-    let md5sums: Vec<Option<String>> = md5sum_field
-        .split(';')
-        .map(|s| {
-            let trimmed = s.trim();
-            if trimmed.is_empty() {
-                None
-            } else {
-                Some(trimmed.to_string())
-            }
-        })
-        .collect();
-
-    // Validate the number of MD5 sums matches the expected number of URLs
-    if md5sums.len() != expected_num_urls {
-        return Err(anyhow::anyhow!(
-            "Number of MD5 sums ({}) does not match the number of URLs ({}) for accession '{}'",
+    if urls.len() != md5sums.len() || urls.len() != ranges.len() {
+        return Err(serde::de::Error::custom(format!(
+            "Mismatch between URLs ({}) and MD5 sums ({}) or ranges ({})",
+            urls.len(),
             md5sums.len(),
-            expected_num_urls,
-            accession
-        ));
+            ranges.len()
+        )));
     }
 
-    // Count the number of non-None MD5 sums
-    let count = md5sums.iter().filter(|md5| md5.is_some()).count();
+    let mut url_infos = Vec::new();
+    for ((url, md5), range) in urls
+        .into_iter()
+        .zip(md5sums.into_iter())
+        .zip(ranges.into_iter())
+    {
+        let parsed_url = Url::parse(url)
+            .map_err(|e| serde::de::Error::custom(format!("Invalid URL '{}': {}", url, e)))?;
+        url_infos.push(UrlInfo {
+            url: parsed_url,
+            md5sum: md5,
+            range,
+        });
+    }
 
-    Ok((md5sums, count))
+    Ok(url_infos)
 }
 
 fn parse_ranges(
@@ -296,113 +338,67 @@ fn parse_ranges(
         .collect()
 }
 
-pub fn load_accession_info(
-    input_csv: String,
-    keep_fasta: bool,
+pub fn load_accession_info<P: AsRef<std::path::Path>>(
+    input_csv: P,
+    keep_fastas: bool,
 ) -> Result<(Vec<AccessionData>, usize)> {
-    let mut results = Vec::new();
-    let mut row_count = 0;
-    let mut processed_rows = std::collections::HashSet::new();
-    let mut duplicate_count = 0;
-    let mut md5sum_count = 0; // Counter for entries with MD5sum
-                              // to do - maybe use HashSet for accessions too to avoid incomplete dupes
-    let mut rdr = csv::Reader::from_path(input_csv)?;
+    let mut required_columns = vec!["accession", "name", "moltype", "url"]; // Enforce required columns
 
-    // Check column names
-    let header = rdr.headers()?;
-    let expected_header = vec![
-        "accession",
-        "name",
-        "moltype",
-        "md5sum",
-        "download_filename",
-        "url",
-        "range",
-    ];
-    if header != expected_header {
-        return Err(anyhow!(
-            "Invalid column names in CSV file. Columns should be: {:?}",
-            expected_header
-        ));
+    // If `keep_fastas` is true, add `"download_filename"` to required columns
+    if keep_fastas {
+        required_columns.push("download_filename");
     }
 
-    for result in rdr.records() {
-        let record = result?;
-        let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
+    let file = std::fs::File::open(&input_csv).map_err(|e| {
+        anyhow!(
+            "Failed to open CSV file '{}': {}",
+            input_csv.as_ref().display(),
+            e
+        )
+    })?;
+    let mut rdr = ReaderBuilder::new().has_headers(true).from_reader(file);
+
+    // Validate headers as we read
+    let headers = rdr
+        .headers()
+        .map_err(|e| anyhow!("Failed to read CSV headers: {}", e))?;
+
+    for &column in &required_columns {
+        if !headers.iter().any(|h| h == column) {
+            return Err(anyhow!("Missing required column: '{}' in CSV file", column));
+        }
+    }
+
+    let mut results = Vec::new();
+    let mut row_count = 0;
+    let mut processed_rows = HashSet::new();
+    let mut duplicate_count = 0;
+
+    for result in rdr.deserialize() {
+        let record: AccessionData =
+            result.map_err(|e| anyhow!("Failed to deserialize CSV row: {}", e))?;
+
+        // If `keep_fastas` is true, ensure `download_filename` is present and not None
+        if keep_fastas && record.download_filename.is_none() {
+            return Err(anyhow!(
+                "Missing required value in 'download_filename' column for accession '{}'",
+                record.accession
+            ));
+        }
+
+        let row_string = format!("{:?}", record);
+        if !processed_rows.insert(row_string) {
             duplicate_count += 1;
             continue;
         }
-        processed_rows.insert(row_string.clone());
         row_count += 1;
-
-        // require acc, name
-        let acc = record
-            .get(0)
-            .ok_or_else(|| anyhow!("Missing 'accession' field"))?
-            .to_string();
-        let name = record
-            .get(1)
-            .ok_or_else(|| anyhow!("Missing 'name' field"))?
-            .to_string();
-        let moltype = record
-            .get(2)
-            .ok_or_else(|| anyhow!("Missing 'moltype' field"))?
-            .parse::<InputMolType>()
-            .map_err(|_| anyhow!("Invalid 'moltype' value"))?;
-
-        // Parse URLs
-        let url_result = parse_urls(record.get(5));
-        let urls = match url_result {
-            Ok(urls) => {
-                if urls.is_empty() {
-                    return Err(anyhow!("No valid URLs found in 'url' field"));
-                }
-                urls
-            }
-            Err(e) => return Err(e), // Propagate the error if parsing fails
-        };
-
-        // Parse MD5sums (optional)
-        let (md5sums, md5sum_count_in_row) =
-            parse_md5sums(record.get(3).unwrap_or(""), urls.len(), &acc)?;
-        // Update the overall MD5 sum count
-        md5sum_count += md5sum_count_in_row;
-
-        // Parse ranges (optional)
-        let range_field = record.get(6).unwrap_or("");
-        let ranges = parse_ranges(range_field, urls.len()).map_err(|e| anyhow!("{}", e))?;
-
-        // Combine URLs, MD5 sums, and ranges into UrlInfo
-        let url_info: Vec<UrlInfo> = urls
-            .into_iter()
-            .zip(md5sums)
-            .zip(ranges)
-            .map(|((url, md5sum), range)| UrlInfo { url, md5sum, range })
-            .collect();
-
-        let download_filename = record.get(4).map(|s| s.to_string());
-        if keep_fasta && download_filename.is_none() {
-            return Err(anyhow!("Missing 'download_filename' field"));
-        }
-        // store accession data
-        results.push(AccessionData {
-            accession: acc,
-            name,
-            moltype,
-            url_info,
-            download_filename,
-        });
+        results.push(record);
     }
 
-    // Print warning if there were duplicated rows.
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
     }
-    println!(
-        "Loaded {} rows (including {} rows with MD5sum).",
-        row_count, md5sum_count
-    );
+    println!("Loaded {} rows", row_count);
 
     Ok((results, row_count))
 }
