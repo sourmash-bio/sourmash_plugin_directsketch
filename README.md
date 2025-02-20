@@ -45,6 +45,10 @@ Directsketch downloads the full file(s), checks the `md5sum` if available, then 
 
 If using batches, you can rerun the same command and any failed sketches will be retried. Alternatively, the `--failed` file from either `gbsketch` or `urlsketch` can be used as input into `urlsketch`. We cannot append to the existing output zipfile of signatures, so please provide a different output file if running `urlsketch` with the failure file.
 
+### Using an NCBI API Key (gbsketch only)
+
+`gbsketch` uses the NCBI REST API to download reference genomes. The API limits you to 3 downloads per second, or 10 if you provide an API Key. To obtain an API key, follow the instructions [here](https://support.nlm.nih.gov/kbArticle/?pn=KA-05317). Once you have a key, you can provide it via the command line or set the `NCBI_API_KEY` variable (`export NCBI_API_KEY=YOUR_KEY`), which `gbsketch` will check and use automatically.
+
 ## Running the commands
 
 ## `gbsketch`
