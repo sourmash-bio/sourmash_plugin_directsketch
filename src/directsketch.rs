@@ -3,7 +3,8 @@ use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::{header::HeaderMap, Client};
+use reqwest::{header::HeaderMap, header::HeaderValue, Client};
+use serde_json::json;
 use sourmash::collection::Collection;
 use std::borrow::Cow;
 use std::cmp::max;
@@ -22,7 +23,7 @@ use pyo3::prelude::*;
 
 use crate::utils::{
     load_accession_info, load_gbassembly_info, AccessionData, FailedChecksum, FailedDownload,
-    GBAssemblyData, GenBankFileType, InputMolType, MultiCollection,
+    GBAssemblyData, GenBankFileType, InputMolType, MultiCollection, UrlInfo,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -111,21 +112,28 @@ async fn fetch_genbank_filename(
 fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     let mut checksums: HashMap<String, String> = HashMap::new();
 
-    // Convert content to a UTF-8 string
     let content_str =
         std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
 
-    // Iterate over each line in the checksum file
     for line in content_str.lines() {
         let parts: Vec<&str> = line.splitn(2, ' ').collect();
         if parts.len() == 2 {
-            // Trim the filename to remove any leading whitespace
-            let filename = parts[1].trim_start();
+            let checksum = parts[0].to_string();
+            let file_path = parts[1].trim_start();
 
-            if filename.ends_with("genomic.fna") {
-                checksums.insert("DNA".to_string(), parts[0].to_string());
-            } else if filename.ends_with("protein.faa") {
-                checksums.insert("protein".to_string(), parts[0].to_string());
+            // Extract accession from the file path
+            if let Some((_, rest)) = file_path.split_once("ncbi_dataset/data/") {
+                if let Some((accession, filename)) = rest.split_once('/') {
+                    let normalized_filename = if filename == "protein.faa" {
+                        format!("{}_protein.faa.gz", accession)
+                    } else if filename.ends_with("genomic.fna") {
+                        format!("{}_genomic.fna.gz", accession)
+                    } else {
+                        continue;
+                    };
+
+                    checksums.insert(normalized_filename, checksum);
+                }
             }
         } else {
             return Err(anyhow!("Invalid checksum file"));
@@ -146,7 +154,11 @@ async fn download_with_retry(
     let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
+        // Add the gzip request header
+        // let mut headers = HeaderMap::new();
+        // headers.insert("X-Datasets-Gzip-Request", HeaderValue::from_static("true"));
         let response = client.get(url.clone()).send().await;
+        // let response = client.get(url.clone()).headers(headers).send().await;
 
         match response {
             Ok(resp) if resp.status().is_success() => {
@@ -296,6 +308,134 @@ fn process_zip_sync<R: Read + Seek>(
     }
 
     Ok((genomic_data, protein_data, checksum_d))
+}
+
+pub async fn download_parse_dehydrated_zip_with_retry(
+    client: &Client,
+    url: Url,
+    headers: HeaderMap,
+    // params: HashMap<&'static str, Cow<'static, str>>,
+    params: serde_json::Value,
+    retry_count: u32,
+) -> Result<(
+    HashMap<String, String>, // Parsed MD5 checksums
+    HashMap<String, String>, // Direct download links
+)> {
+    let mut attempts = retry_count;
+    let mut last_error: Option<anyhow::Error> = None;
+
+    while attempts > 0 {
+        let response = client
+            .post(url.clone())
+            .headers(headers.clone())
+            .json(&params)
+            .send()
+            .await;
+
+        match response {
+            Ok(resp) if resp.status().is_success() => {
+                let bytes = resp
+                    .bytes()
+                    .await
+                    .context("Failed to read bytes from response")?;
+                match parse_dehydrated_files(&bytes) {
+                    Ok((checksums, links)) => {
+                        return Ok((checksums, links));
+                    }
+                    Err(e) => {
+                        last_error =
+                            Some(anyhow!("Failed to parse ZIP archive: {}. Retrying...", e));
+                    }
+                }
+            }
+            Ok(resp) => {
+                last_error = Some(anyhow!(
+                    "Server error status code {}: {}. Retrying...",
+                    resp.status(),
+                    url
+                ));
+            }
+            Err(e) => {
+                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+            }
+        }
+
+        attempts -= 1;
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download file after {} retries: {}",
+            retry_count,
+            url
+        )
+    }))
+}
+
+pub fn parse_dehydrated_files(
+    zip_data: &[u8],
+) -> Result<(
+    HashMap<String, String>, // Parsed MD5 checksums
+    HashMap<String, String>, // Direct download links
+)> {
+    let reader = Cursor::new(zip_data);
+    let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
+
+    let mut checksum_d = HashMap::new();
+    let mut download_links = HashMap::new();
+
+    for i in 0..zip.len() {
+        let mut file = zip
+            .by_index(i)
+            .context("Failed to access file in ZIP archive")?;
+        let file_name = file.name().to_string();
+
+        if file_name.ends_with("md5sum.txt") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            checksum_d = parse_md5sum_txt(&content)?;
+        } else if file_name.ends_with("fetch.txt") {
+            let mut content = Vec::new();
+            file.read_to_end(&mut content)
+                .context(format!("Failed to read contents of {}", file_name))?;
+            download_links = parse_fetch_txt(&content)?;
+        }
+    }
+
+    Ok((checksum_d, download_links))
+}
+
+fn parse_fetch_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+    let mut download_links = HashMap::new();
+
+    let content_str =
+        std::str::from_utf8(content).context("Failed to convert fetch file to UTF-8")?;
+
+    for line in content_str.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        if columns.len() >= 3 {
+            let url = columns[0].to_string();
+            let file_path = columns[2].trim_start();
+
+            // Extract accession from the file path and normalize the filename
+            if let Some((_, rest)) = file_path.split_once("data/") {
+                if let Some((accession, filename)) = rest.split_once('/') {
+                    let normalized_filename = if filename == "protein.faa" {
+                        format!("{}_protein.faa.gz", accession)
+                    } else if filename.ends_with("genomic.fna") {
+                        format!("{}_genomic.fna.gz", accession)
+                    } else {
+                        continue;
+                    };
+
+                    download_links.insert(normalized_filename, url);
+                }
+            }
+        }
+    }
+
+    Ok(download_links)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -545,8 +685,6 @@ async fn dl_sketch_url(
     retry: Option<u32>,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    _genomes_only: bool,
-    _proteomes_only: bool,
     download_only: bool,
     write_checksum_fail: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
@@ -1089,13 +1227,12 @@ pub async fn gbsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
-    let headers = HeaderMap::new();
-    let mut params: HashMap<&'static str, Cow<'static, str>> = HashMap::new();
-    if !api_key.is_empty() {
-        params.insert("api_key", Cow::Owned(api_key.to_string()));
-    }
-    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
 
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse()?);
+    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
+
+    // build sketch params
     if download_only {
         if genomes_only {
             eprintln!("Downloading genomes only.");
@@ -1140,18 +1277,51 @@ pub async fn gbsketch(
 
     // what files do we want to download?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+
+    let mut annotation_types = vec!["SEQUENCE_REPORT"];
+
     if genomes_only {
-        params.insert("include_annotation_type", Cow::Borrowed("GENOME_FASTA"));
+        annotation_types.push("GENOME_FASTA");
         file_types = vec![GenBankFileType::Genomic];
     } else if proteomes_only {
-        params.insert("include_annotation_type", Cow::Borrowed("PROT_FASTA"));
+        annotation_types.push("PROT_FASTA");
         file_types = vec![GenBankFileType::Protein];
     } else {
-        params.insert(
-            "include_annotation_type",
-            Cow::Borrowed("GENOME_FASTA,PROT_FASTA"),
-        );
+        annotation_types.push("GENOME_FASTA");
+        annotation_types.push("PROT_FASTA");
     }
+
+    // get accessions for retrieval
+    let accessions: Vec<String> = accession_info
+        .iter()
+        .map(|accinfo| accinfo.accession.clone())
+        .collect();
+
+    let post_params = json!({
+        "accessions": accessions,
+        "include_annotation_type": annotation_types,
+        "hydrated": "DATA_REPORT_ONLY",
+        "api_key": if !api_key.is_empty() { Some(api_key) } else { None }
+    });
+
+    // NTP: debug output only, remove later
+    let json_string = serde_json::to_string_pretty(&post_params)?;
+    eprintln!("Request Parameters (JSON):\n{}", json_string);
+
+    // dl + parse dehydrated file
+    let (md5_checksums, download_links) = download_parse_dehydrated_zip_with_retry(
+        &client,
+        post_url,
+        headers,
+        post_params,
+        retry_times,
+    )
+    .await?;
+
+    // NTP TEMP: Output the parsed results
+    eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
+    eprintln!("MD5 Checksums: {:?}", md5_checksums);
+    eprintln!("Download Links: {:?}", download_links);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
@@ -1166,72 +1336,140 @@ pub async fn gbsketch(
             }
         }
 
-        // clone remaining utilities
-        let semaphore_clone = Arc::clone(&semaphore);
-        let client_clone = Arc::clone(&client);
-        let send_sigs = send_sigs.clone();
-        let send_failed = send_failed.clone();
-        let checksum_send_failed = send_failed_checksums.clone();
-        let download_path_clone = download_path.clone(); // Clone the path for each task
-        let send_errors = error_sender.clone();
-        let headers = headers.clone();
-        let params = params.clone();
-        let ftypes = file_types.clone();
+        // collect info for this accession into vector of accessiondata
+        let mut accData = Vec::<AccessionData>::new();
+        let mut download_failures = Vec::<FailedDownload>::new();
 
-        tokio::spawn(async move {
-            let _permit = semaphore_clone.acquire().await;
-            // progress report when the permit is available and processing begins
-            if (i + 1) % reporting_threshold == 0 {
-                let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-                println!(
-                    "Starting accession {}/{} ({}%)",
-                    (i + 1),
-                    n_accs,
-                    percent_processed
-                );
+        for ftype in &file_types {
+            if ftype == &GenBankFileType::Genomic {
+                let genomic_filename = format!("{}_genomic.fna.gz", accinfo.accession);
+                let genomic_url = download_links
+                    .get(&genomic_filename)
+                    .and_then(|url| Url::parse(url).ok());
+                let genomic_md5sum = md5_checksums.get(&genomic_filename).cloned();
+
+                if let (Some(genomic_url), Some(genomic_md5sum)) = (genomic_url, genomic_md5sum) {
+                    let genomic_url_info =
+                        vec![UrlInfo::new(genomic_url, Some(genomic_md5sum), None)];
+
+                    let genomic_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Dna,
+                        genomic_url_info,
+                        Some(genomic_filename),
+                    );
+                    accData.push(genomic_accinfo);
+                } else {
+                    // Build a placeholder AccessionData and convert to FailedDownload
+                    let placeholder_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Dna,
+                        vec![],
+                        Some(genomic_filename),
+                    );
+                    download_failures
+                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                }
+            } else if ftype == &GenBankFileType::Protein {
+                let protein_filename = format!("{}_protein.faa.gz", accinfo.accession);
+                let protein_url = download_links
+                    .get(&protein_filename)
+                    .and_then(|url| Url::parse(url).ok());
+                let protein_md5sum = md5_checksums.get(&protein_filename).cloned();
+
+                if let (Some(protein_url), Some(protein_md5sum)) = (protein_url, protein_md5sum) {
+                    let protein_url_info =
+                        vec![UrlInfo::new(protein_url, Some(protein_md5sum), None)];
+
+                    let protein_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Protein,
+                        protein_url_info,
+                        Some(protein_filename),
+                    );
+                    accData.push(protein_accinfo);
+                } else {
+                    // Build a placeholder AccessionData and convert to FailedDownload
+                    let placeholder_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Protein,
+                        vec![],
+                        Some(protein_filename),
+                    );
+                    download_failures
+                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                }
             }
-            // Perform download and sketch
-            let result = dl_sketch_assembly_accession_ncbi_api(
-                &client_clone,
-                accinfo.clone(),
-                &download_path_clone,
-                retry_times,
-                keep_fastas,
-                sigs,
-                ftypes,
-                download_only,
-                base_url,
-                headers,
-                params,
-            )
-            .await;
-            match result {
-                Ok((coll, failed_downloads, failed_checksums)) => {
-                    if !coll.is_empty() {
-                        if let Err(e) = send_sigs.send(coll).await {
-                            eprintln!("Failed to send signatures: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+        }
+
+        for accinfo in accData {
+            println!("{:?}", accinfo);
+            // clone remaining utilities
+            let semaphore_clone = Arc::clone(&semaphore);
+            let client_clone = Arc::clone(&client);
+            let send_sigs = send_sigs.clone();
+            let send_failed = send_failed.clone();
+            let checksum_send_failed = send_failed_checksums.clone();
+            let download_path_clone = download_path.clone(); // Clone the path for each task
+            let send_errors = error_sender.clone();
+            let ftype_sigs = sigs.clone();
+
+            tokio::spawn(async move {
+                let _permit = semaphore_clone.acquire().await;
+                // progress report when the permit is available and processing begins
+                if (i + 1) % reporting_threshold == 0 {
+                    let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+                    println!(
+                        "Starting accession {}/{} ({}%)",
+                        (i + 1),
+                        n_accs,
+                        percent_processed
+                    );
+                }
+
+                let result = dl_sketch_url(
+                    &client_clone,
+                    accinfo,
+                    &download_path_clone,
+                    Some(retry_times),
+                    keep_fastas,
+                    ftype_sigs,
+                    download_only,
+                    true,
+                )
+                .await;
+                match result {
+                    Ok((coll, failed_downloads, failed_checksums)) => {
+                        if !coll.is_empty() {
+                            if let Err(e) = send_sigs.send(coll).await {
+                                eprintln!("Failed to send signatures: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                        for fail in failed_downloads {
+                            if let Err(e) = send_failed.send(fail).await {
+                                eprintln!("Failed to send failed download info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                        for fail in failed_checksums {
+                            if let Err(e) = checksum_send_failed.send(fail).await {
+                                eprintln!("Failed to send failed checksum info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
                         }
                     }
-                    for fail in failed_downloads {
-                        if let Err(e) = send_failed.send(fail).await {
-                            eprintln!("Failed to send failed download info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
-                    }
-                    for fail in failed_checksums {
-                        if let Err(e) = checksum_send_failed.send(fail).await {
-                            eprintln!("Failed to send failed checksum info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
+                    Err(e) => {
+                        let _ = send_errors.send(e).await;
                     }
                 }
-                Err(e) => {
-                    let _ = send_errors.send(e).await;
-                }
-            }
-            drop(send_errors);
-        });
+                drop(send_errors);
+            });
+        }
     }
     // drop senders as we're done sending data
     drop(send_sigs);
@@ -1464,8 +1702,6 @@ pub async fn urlsketch(
                 Some(retry_times),
                 keep_fastas,
                 sigs,
-                genomes_only,
-                proteomes_only,
                 download_only,
                 write_checksum_fail,
             )

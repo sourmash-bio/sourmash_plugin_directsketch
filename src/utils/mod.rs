@@ -8,7 +8,7 @@ use tokio::io::AsyncWriteExt;
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum InputMolType {
     Dna,
     Protein,
@@ -91,7 +91,7 @@ impl GenBankFileType {
 }
 
 #[allow(dead_code)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
@@ -100,11 +100,35 @@ pub struct AccessionData {
     pub download_filename: Option<String>, // Need to require this if --keep-fastas are used
 }
 
-#[derive(Clone)]
+impl AccessionData {
+    pub fn new(
+        accession: String,
+        name: String,
+        moltype: InputMolType,
+        url_info: Vec<UrlInfo>,
+        download_filename: Option<String>,
+    ) -> Self {
+        AccessionData {
+            accession,
+            name,
+            moltype,
+            url_info,
+            download_filename,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct UrlInfo {
     pub url: reqwest::Url,
     pub md5sum: Option<String>,
     pub range: Option<(usize, usize)>,
+}
+
+impl UrlInfo {
+    pub fn new(url: reqwest::Url, md5sum: Option<String>, range: Option<(usize, usize)>) -> Self {
+        UrlInfo { url, md5sum, range }
+    }
 }
 
 #[derive(Clone)]
