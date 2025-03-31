@@ -301,12 +301,6 @@ pub async fn download_and_process_with_retry(
         let mut last_error: Option<anyhow::Error> = None;
 
         while attempts_left > 0 {
-            if keep_fastas {
-                // If writing, always start fresh for the first attempt
-                let path = location.join(&download_filename);
-                try_remove_file(&path).await;
-            }
-
             let response = match client.get(url.clone()).send().await {
                 Ok(resp) if resp.status().is_success() => resp,
                 Ok(resp) => {
@@ -1580,6 +1574,14 @@ pub async fn gbsketch(
                     download_failures
                         .push(FailedDownload::from_accession_data(&placeholder_accinfo));
                 }
+            }
+        }
+
+        // if we failed to get a download link, write to download failures
+        for fail in &download_failures {
+            if let Err(e) = send_failed.send(fail.clone()).await {
+                eprintln!("Failed to send missing download failure info: {}", e);
+                let _ = error_sender.send(e.into()).await;
             }
         }
 
