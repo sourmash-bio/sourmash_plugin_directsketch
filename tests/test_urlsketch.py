@@ -395,6 +395,63 @@ def test_urlsketch_missing_output(runtmp):
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
 
 
+def test_urlsketch_empty_url_fail(runtmp, capfd):
+    # modify the acc file to have an empty URL
+    acc_csv = get_test_data('acc-url.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        for line in lines:
+            # if this acc exist in line, write an line with empty URL instead
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz', '')  # add empty URL
+                print(mod_line)
+                outF.write(mod_line)
+            else:
+                outF.write(line)
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    # this should fail since the URL is empty
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert "Error: No valid URLs found in 'url' field for accession 'GCA_000175535.1': Empty URL entry found in 'url' field" in capfd.readouterr().err
+
+
+def test_urlsketch_empty_url_force(runtmp, capfd):
+    # modify the acc file to have an empty URL
+    acc_csv = get_test_data('acc-url.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        for line in lines:
+            # if this acc exist in line, write an line with empty URL instead
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz', '')  # add empty URL
+                outF.write(mod_line)
+            else:
+                outF.write(line)
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1', '--force',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Warning: No valid URLs found in 'url' field for accession 'GCA_000175535.1'" in captured.err
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+
+
 def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
@@ -415,7 +472,7 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
-        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert url == ""
         assert range == ""
     assert not runtmp.last_result.out # stdout should be empty
 
@@ -426,26 +483,18 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
 
         runtmp.sourmash('scripts', 'urlsketch', failed, '-o', out2,
                     '--failed', fail2, '-r', '1',
-                    '-p', "protein,k=10,scaled=200")
+                    '-p', "protein,k=10,scaled=200", '--force')
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
+    assert "Warning: No valid URLs found in 'url' field for accession 'GCA_000175535.1'." in captured.err
     assert "Error: No signatures written, exiting." in captured.err
 
-    # since no protein file exists, fail2 should just be the same as failed
+    # since the protein file URL was empty, this will now be an emtpy failure file
     assert os.path.exists(fail2)
-    with open(fail2, 'r') as failF:
-        header = next(failF).strip()
+    with open(fail2, 'r') as fail2F:
+        header = next(fail2F).strip()
         assert header == "accession,name,moltype,md5sum,download_filename,url,range"
-        for line in failF:
-            print(line)
-            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
-            assert acc == "GCA_000175535.1"
-            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
-            assert moltype == "protein"
-            assert download_filename == "GCA_000175535.1_protein.faa.gz"
-            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
-            assert range == ""
 
 
 def test_zip_file_permissions(runtmp):

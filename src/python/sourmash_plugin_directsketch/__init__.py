@@ -299,6 +299,11 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             type=int,
             help="Number of simultaneous downloads (default=3). Restrict this to match your servers limits, otherwise many downloads will fail.",
         )
+        p.add_argument(
+            "--force",
+            action="store_true",
+            help="Skip input rows with empty or improper URLs.",
+        )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
             "-g",
@@ -355,6 +360,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.download_only,
             args.batch_size,
             args.n_simultaneous_downloads,
+            args.force,
             args.output,
             args.checksum_fail,
         )

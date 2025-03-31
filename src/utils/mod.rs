@@ -327,6 +327,7 @@ fn parse_ranges(
 pub fn load_accession_info(
     input_csv: String,
     keep_fasta: bool,
+    force: bool,
 ) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
@@ -334,6 +335,7 @@ pub fn load_accession_info(
     let mut duplicate_count = 0;
     let mut md5sum_count = 0; // Counter for entries with MD5sum
                               // to do - maybe use HashSet for accessions too to avoid incomplete dupes
+    let mut url_failed = 0;
     let mut rdr = csv::Reader::from_path(input_csv)?;
 
     // Check column names
@@ -382,13 +384,22 @@ pub fn load_accession_info(
         // Parse URLs
         let url_result = parse_urls(record.get(5));
         let urls = match url_result {
-            Ok(urls) => {
-                if urls.is_empty() {
-                    return Err(anyhow!("No valid URLs found in 'url' field"));
+            Ok(urls) => urls,
+            Err(e) => {
+                if force {
+                    eprintln!(
+                        "Warning: No valid URLs found in 'url' field for accession '{}'.",
+                        acc
+                    );
+                    url_failed += 1;
+                    continue;
+                } else {
+                    return Err(anyhow!( // Propagate the error if not forcing
+                        "No valid URLs found in 'url' field for accession '{}': {}",
+                        acc, e
+                    ));
                 }
-                urls
             }
-            Err(e) => return Err(e), // Propagate the error if parsing fails
         };
 
         // Parse MD5sums (optional)
@@ -426,6 +437,9 @@ pub fn load_accession_info(
     // Print warning if there were duplicated rows.
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
+    }
+    if url_failed > 0 {
+        println!("Warning: Failed to get URLs from {} rows.", url_failed);
     }
     println!(
         "Loaded {} rows (including {} rows with MD5sum).",

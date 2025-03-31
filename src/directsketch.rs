@@ -1702,6 +1702,7 @@ pub async fn urlsketch(
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
+    force: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1784,7 +1785,7 @@ pub async fn urlsketch(
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas)?;
+    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
