@@ -502,7 +502,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
         lines = inF.readlines()
         outF.write(lines[0])  # write the header line
         for line in lines:
-            # if this acc exist in line, copy it and write
+            # if this acc exist in line, write bad acc instead
             if "GCA_000175535.1" in line:
                 mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
@@ -520,7 +520,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
-    assert "Error: No signatures written, exiting." in captured.err
+    assert "Error: Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting." in captured.err
 
 
 def test_gbsketch_version_bug(runtmp):

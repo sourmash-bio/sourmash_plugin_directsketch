@@ -521,21 +521,25 @@ pub async fn download_parse_dehydrated_zip_with_retry(
             .await;
 
         match response {
-            Ok(resp) if resp.status().is_success() => {
-                let bytes = resp
-                    .bytes()
-                    .await
-                    .context("Failed to read bytes from response")?;
-                match parse_dehydrated_files(&bytes) {
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(bytes) => match parse_dehydrated_files(&bytes) {
                     Ok(links) => {
-                        return Ok(links);
+                        if links.is_empty() {
+                            last_error = Some(anyhow!(
+                                        "Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?"
+                                    ));
+                        } else {
+                            return Ok(links);
+                        }
                     }
                     Err(e) => {
-                        last_error =
-                            Some(anyhow!("Failed to parse ZIP archive: {}. Retrying...", e));
+                        last_error = Some(e.into());
                     }
+                },
+                Err(e) => {
+                    last_error = Some(e.into());
                 }
-            }
+            },
             Ok(resp) => {
                 last_error = Some(anyhow!(
                     "Server error status code {}: {}. Retrying...",
@@ -544,18 +548,23 @@ pub async fn download_parse_dehydrated_zip_with_retry(
                 ));
             }
             Err(e) => {
-                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+                // last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+                last_error = Some(e.into());
             }
+        }
+        if attempts > 0 {
+            eprintln!("Retrying... ({} attempts left)", attempts);
         }
     }
 
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "Failed to download file after {} retries: {}",
-            retry_count,
-            url
-        )
-    }))
+    Err(anyhow!(
+        "Failed to download and parse dehydrated ZIP file after {} attempts: {}\n  Last error: {}",
+        retry_count,
+        url,
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "Unknown".to_string())
+    ))
 }
 
 pub fn parse_dehydrated_files(zip_data: &[u8]) -> Result<HashMap<String, String>> // Direct download links
@@ -1485,17 +1494,25 @@ pub async fn gbsketch(
     eprintln!("Request Parameters (JSON):\n{}", json_string);
 
     // dl + parse dehydrated file
-    let download_links = download_parse_dehydrated_zip_with_retry(
+    let download_links = match download_parse_dehydrated_zip_with_retry(
         &client,
         post_url,
         headers,
         post_params,
         retry_times,
     )
-    .await?;
-
-    // NTP TEMP: Output the parsed results
+    .await
+    {
+        Ok(links) => links,
+        Err(e) => {
+            bail!(
+                "Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting.\n Reason:\n{}",
+                e
+            );
+        }
+    };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
+    // NTP TEMP: Output the parsed results
     eprintln!("Download Links: {:?}", download_links);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
