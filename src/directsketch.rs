@@ -259,93 +259,146 @@ pub async fn process_fastx(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn download_and_process_with_retry(
     client: &Client,
-    url: &str,
-    _accession: &str,
-    name: &str,
-    filename: &str,
-    moltype: InputMolType,
-    range: Option<(usize, usize)>,
-    keep_fastas: bool,
-    retry_count: u32,
+    accinfo: AccessionData,
     location: &PathBuf,
-    sigs: &mut BuildCollection,
-) -> Result<()> {
-    let mut attempts_left = retry_count;
-    let path = location.join(filename);
-    let mut last_error: Option<anyhow::Error> = None;
+    retry: Option<u32>,
+    keep_fastas: bool,
+    mut sigs: BuildCollection,
+    download_only: bool,
+    write_checksum_fail: bool,
+) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+    let retry_count = retry.unwrap_or(3);
+    let mut download_failures = Vec::new();
+    let mut checksum_failures = Vec::new();
+    let empty_coll = BuildCollection::new();
 
-    while attempts_left > 0 {
-        if keep_fastas && path.exists() {
-            try_remove_file(&path).await;
-        }
+    let name = accinfo.name.clone();
+    let accession = accinfo.accession.clone();
+    let download_filename = accinfo
+        .download_filename
+        .clone()
+        .unwrap_or_else(|| "".to_string());
+    let moltype = accinfo.moltype.clone();
+    let filename = download_filename.clone();
+    let merged_sample = accinfo.url_info.len() > 1;
 
-        let response = match client.get(url).send().await {
-            Ok(resp) if resp.status().is_success() => resp,
-            Ok(resp) => {
-                let err = anyhow!("HTTP error {} from {}", resp.status(), url);
-                last_error = Some(anyhow!(err).context("Non-success status code"));
-                attempts_left -= 1;
-                continue;
+    // Open file (if applicable) once, and append to it for merged samples
+    let mut file: Option<File> = if keep_fastas {
+        open_file_for_writing(location, Some(&download_filename)).await?
+    } else {
+        None
+    };
+
+    for uinfo in &accinfo.url_info {
+        let url = &uinfo.url;
+        let expected_md5 = &uinfo.md5sum;
+        let range = uinfo.range;
+
+        let mut attempts_left = retry_count;
+        let mut last_error: Option<anyhow::Error> = None;
+
+        while attempts_left > 0 {
+            if keep_fastas {
+                // If writing, always start fresh for the first attempt
+                let path = location.join(&download_filename);
+                try_remove_file(&path).await;
             }
-            Err(e) => {
-                last_error = Some(anyhow!(e).context("Failed to send request"));
-                attempts_left -= 1;
-                continue;
-            }
-        };
 
-        match response.bytes().await {
-            Ok(data) => {
-                // Try to open the file if we are writing it
-                let mut file_opt =
-                    match open_file_for_writing(location, Some(&filename.to_string())).await {
-                        Ok(f) => f,
-                        Err(e) => {
-                            last_error = Some(anyhow!(e));
-                            attempts_left -= 1;
-                            continue;
-                        }
-                    };
-
-                if let Err(e) = process_fastx(
-                    &data,
-                    file_opt.as_mut(),
-                    sigs,
-                    moltype.as_str(),
-                    name.to_string(),
-                    filename.to_string(),
-                    range,
-                )
-                .await
-                {
-                    last_error = Some(anyhow!(e));
-                    if keep_fastas {
-                        try_remove_file(&path).await;
-                    }
+            let response = match client.get(url.clone()).send().await {
+                Ok(resp) if resp.status().is_success() => resp,
+                Ok(resp) => {
+                    last_error = Some(anyhow!("HTTP error {} from {}", resp.status(), url));
                     attempts_left -= 1;
                     continue;
                 }
+                Err(e) => {
+                    last_error = Some(anyhow!(e).context("Failed to send request"));
+                    attempts_left -= 1;
+                    continue;
+                }
+            };
 
-                return Ok(()); // success
+            match response.bytes().await {
+                Ok(data) => {
+                    // Attempt to parse and process FASTX
+                    let mut f = file.as_mut();
+                    let process_result = process_fastx(
+                        &data,
+                        f.as_deref_mut(),
+                        &mut sigs,
+                        moltype.as_str(),
+                        name.clone(),
+                        filename.clone(),
+                        range,
+                    )
+                    .await;
+
+                    if let Err(e) = process_result {
+                        last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
+                        if keep_fastas {
+                            let path = location.join(&download_filename);
+                            try_remove_file(&path).await;
+                        }
+                        attempts_left -= 1;
+                        continue;
+                    }
+
+                    // If download_only, skip signature addition
+                    if download_only {
+                        return Ok((sigs, download_failures, checksum_failures));
+                    }
+
+                    break; // success, break retry loop
+                }
+
+                Err(e) => {
+                    last_error = Some(anyhow!(e).context("Failed to read response body"));
+                    attempts_left -= 1;
+                }
             }
-            Err(e) => {
-                last_error = Some(anyhow!(e).context("Failed to read response body"));
-                attempts_left -= 1;
-                continue;
+        }
+
+        // If we exhausted retries for this URL
+        if attempts_left == 0 {
+            let err_msg = last_error
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "Unknown failure".to_string());
+
+            if err_msg.contains("CRC") || err_msg.contains("decompression") {
+                if write_checksum_fail {
+                    checksum_failures.push(FailedChecksum::new(
+                        accession.clone(),
+                        name.clone(),
+                        moltype.to_string(),
+                        None,
+                        Some(download_filename.clone()),
+                        Some(url.clone()),
+                        expected_md5.clone(),
+                        err_msg.clone(),
+                    ));
+                }
+
+                if merged_sample {
+                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                }
+            } else {
+                download_failures.push(FailedDownload::from_accession_data(&accinfo));
+            }
+
+            // Fail fast for unmerged samples
+            if !merged_sample {
+                return Ok((empty_coll, download_failures, checksum_failures));
             }
         }
     }
 
-    // Retries exhausted: return final error with context
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "Failed to download and process {} after {} attempts",
-            url,
-            retry_count
-        )
-    }))
+    sigs.update_info(name, filename);
+
+    Ok((sigs, download_failures, checksum_failures))
 }
 
 async fn rest_api_download_with_retry(
@@ -1555,7 +1608,7 @@ pub async fn gbsketch(
                     );
                 }
 
-                let result = dl_sketch_url(
+                let result = download_and_process_with_retry(
                     &client_clone,
                     accinfo,
                     &download_path_clone,
