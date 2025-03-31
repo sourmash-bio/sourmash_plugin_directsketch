@@ -779,14 +779,17 @@ impl BuildCollection {
             &full_sequence
         };
         // add seq to sigs
+        self.add_sequence(input_moltype, sequence_to_process)
+    }
+
+    pub fn add_sequence(&mut self, input_moltype: &str, sequence: &[u8]) -> Result<()> {
         self.iter_mut().try_for_each(|(rec, sig)| {
             if input_moltype == "protein"
                 && (rec.moltype() == HashFunctions::Murmur64Protein
                     || rec.moltype() == HashFunctions::Murmur64Dayhoff
                     || rec.moltype() == HashFunctions::Murmur64Hp)
             {
-                sig.add_protein(sequence_to_process)
-                    .context("Failed to add protein")?;
+                sig.add_protein(sequence).context("Failed to add protein")?;
                 if !rec.sequence_added {
                     rec.sequence_added = true;
                 }
@@ -795,7 +798,7 @@ impl BuildCollection {
                     || rec.moltype() == HashFunctions::Murmur64Skipm2n3
                     || rec.moltype() == HashFunctions::Murmur64Skipm1n3)
             {
-                sig.add_sequence(sequence_to_process, true)
+                sig.add_sequence(sequence, true)
                     .context("Failed to add sequence")?;
                 if !rec.sequence_added {
                     rec.sequence_added = true;

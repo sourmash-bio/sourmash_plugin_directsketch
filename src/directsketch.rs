@@ -1,9 +1,10 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
+use needletail::parse_fastx_reader;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::{header::HeaderMap, header::HeaderValue, Client};
+use reqwest::{header::HeaderMap, Client};
 use serde_json::json;
 use sourmash::collection::Collection;
 use std::borrow::Cow;
@@ -208,6 +209,145 @@ async fn download_with_retry(
     }))
 }
 
+async fn try_remove_file(path: &PathBuf) {
+    if path.exists() {
+        if let Err(e) = tokio::fs::remove_file(path).await {
+            eprintln!("Failed to remove file {}: {e}", path);
+        }
+    }
+}
+
+/// Processes FASTX records from the provided data slice. Writes FASTA entries if a file is given
+/// and adds sequences to signatures in the provided `BuildCollection`.
+/// Note, if internal checksum (e.g. CRC32) or decompression issues occur, it will return an error.
+pub async fn process_fastx(
+    data: &[u8],
+    mut file: Option<&mut File>,
+    sigs: &mut BuildCollection,
+    moltype: &str,
+    name: String,
+    filename: String,
+    range: Option<(usize, usize)>,
+) -> Result<()> {
+    let cursor = Cursor::new(data);
+    let mut fastx_reader = parse_fastx_reader(cursor)
+        .context("Failed to parse FASTX data (possibly CRC32 or decompression issue)")?;
+
+    while let Some(record) = fastx_reader.next() {
+        let record = record.context("Failed to read FASTX record")?;
+        let subseq = extract_range_from_record(&record, range)?;
+
+        // Optionally write the sequence in FASTA format
+        if let Some(ref mut file) = file {
+            let fasta_entry = format!(
+                ">{}\n{}\n",
+                String::from_utf8_lossy(record.id()),
+                String::from_utf8_lossy(&subseq)
+            );
+            file.write_all(fasta_entry.as_bytes())
+                .await
+                .context("Failed to write FASTA entry")?;
+        }
+
+        // Add the sequence to all matching records/signatures
+        sigs.add_sequence(moltype, &subseq)?;
+    }
+
+    // Update the sig/manifest info once per call
+    sigs.update_info(name, filename);
+
+    Ok(())
+}
+
+pub async fn download_and_process_with_retry(
+    client: &Client,
+    url: &str,
+    _accession: &str,
+    name: &str,
+    filename: &str,
+    moltype: InputMolType,
+    range: Option<(usize, usize)>,
+    keep_fastas: bool,
+    retry_count: u32,
+    location: &PathBuf,
+    sigs: &mut BuildCollection,
+) -> Result<()> {
+    let mut attempts_left = retry_count;
+    let path = location.join(filename);
+    let mut last_error: Option<anyhow::Error> = None;
+
+    while attempts_left > 0 {
+        if keep_fastas && path.exists() {
+            try_remove_file(&path).await;
+        }
+
+        let response = match client.get(url).send().await {
+            Ok(resp) if resp.status().is_success() => resp,
+            Ok(resp) => {
+                let err = anyhow!("HTTP error {} from {}", resp.status(), url);
+                last_error = Some(anyhow!(err).context("Non-success status code"));
+                attempts_left -= 1;
+                continue;
+            }
+            Err(e) => {
+                last_error = Some(anyhow!(e).context("Failed to send request"));
+                attempts_left -= 1;
+                continue;
+            }
+        };
+
+        match response.bytes().await {
+            Ok(data) => {
+                // Try to open the file if we are writing it
+                let mut file_opt =
+                    match open_file_for_writing(location, Some(&filename.to_string())).await {
+                        Ok(f) => f,
+                        Err(e) => {
+                            last_error = Some(anyhow!(e));
+                            attempts_left -= 1;
+                            continue;
+                        }
+                    };
+
+                if let Err(e) = process_fastx(
+                    &data,
+                    file_opt.as_mut(),
+                    sigs,
+                    moltype.as_str(),
+                    name.to_string(),
+                    filename.to_string(),
+                    range,
+                )
+                .await
+                {
+                    last_error = Some(anyhow!(e));
+                    if keep_fastas {
+                        try_remove_file(&path).await;
+                    }
+                    attempts_left -= 1;
+                    continue;
+                }
+
+                return Ok(()); // success
+            }
+            Err(e) => {
+                last_error = Some(anyhow!(e).context("Failed to read response body"));
+                attempts_left -= 1;
+                continue;
+            }
+        }
+    }
+
+    // Retries exhausted: return final error with context
+    Err(last_error.unwrap_or_else(|| {
+        anyhow!(
+            "Failed to download and process {} after {} attempts",
+            url,
+            retry_count
+        )
+    }))
+}
+
 async fn rest_api_download_with_retry(
     client: &Client,
     url: Url,
@@ -317,14 +457,15 @@ pub async fn download_parse_dehydrated_zip_with_retry(
     // params: HashMap<&'static str, Cow<'static, str>>,
     params: serde_json::Value,
     retry_count: u32,
-) -> Result<(
-    HashMap<String, String>, // Parsed MD5 checksums
+) -> Result<
     HashMap<String, String>, // Direct download links
-)> {
+> {
     let mut attempts = retry_count;
     let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
+        attempts -= 1;
+
         let response = client
             .post(url.clone())
             .headers(headers.clone())
@@ -339,8 +480,8 @@ pub async fn download_parse_dehydrated_zip_with_retry(
                     .await
                     .context("Failed to read bytes from response")?;
                 match parse_dehydrated_files(&bytes) {
-                    Ok((checksums, links)) => {
-                        return Ok((checksums, links));
+                    Ok(links) => {
+                        return Ok(links);
                     }
                     Err(e) => {
                         last_error =
@@ -359,8 +500,6 @@ pub async fn download_parse_dehydrated_zip_with_retry(
                 last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
             }
         }
-
-        attempts -= 1;
     }
 
     Err(last_error.unwrap_or_else(|| {
@@ -372,16 +511,11 @@ pub async fn download_parse_dehydrated_zip_with_retry(
     }))
 }
 
-pub fn parse_dehydrated_files(
-    zip_data: &[u8],
-) -> Result<(
-    HashMap<String, String>, // Parsed MD5 checksums
-    HashMap<String, String>, // Direct download links
-)> {
+pub fn parse_dehydrated_files(zip_data: &[u8]) -> Result<HashMap<String, String>> // Direct download links
+{
     let reader = Cursor::new(zip_data);
     let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
 
-    let mut checksum_d = HashMap::new();
     let mut download_links = HashMap::new();
 
     for i in 0..zip.len() {
@@ -390,12 +524,7 @@ pub fn parse_dehydrated_files(
             .context("Failed to access file in ZIP archive")?;
         let file_name = file.name().to_string();
 
-        if file_name.ends_with("md5sum.txt") {
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)
-                .context(format!("Failed to read contents of {}", file_name))?;
-            checksum_d = parse_md5sum_txt(&content)?;
-        } else if file_name.ends_with("fetch.txt") {
+        if file_name.ends_with("fetch.txt") {
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
@@ -403,7 +532,7 @@ pub fn parse_dehydrated_files(
         }
     }
 
-    Ok((checksum_d, download_links))
+    Ok(download_links)
 }
 
 fn parse_fetch_txt(content: &[u8]) -> Result<HashMap<String, String>> {
@@ -1309,7 +1438,7 @@ pub async fn gbsketch(
     eprintln!("Request Parameters (JSON):\n{}", json_string);
 
     // dl + parse dehydrated file
-    let (md5_checksums, download_links) = download_parse_dehydrated_zip_with_retry(
+    let download_links = download_parse_dehydrated_zip_with_retry(
         &client,
         post_url,
         headers,
@@ -1320,7 +1449,6 @@ pub async fn gbsketch(
 
     // NTP TEMP: Output the parsed results
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
-    eprintln!("MD5 Checksums: {:?}", md5_checksums);
     eprintln!("Download Links: {:?}", download_links);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
@@ -1346,11 +1474,9 @@ pub async fn gbsketch(
                 let genomic_url = download_links
                     .get(&genomic_filename)
                     .and_then(|url| Url::parse(url).ok());
-                let genomic_md5sum = md5_checksums.get(&genomic_filename).cloned();
 
-                if let (Some(genomic_url), Some(genomic_md5sum)) = (genomic_url, genomic_md5sum) {
-                    let genomic_url_info =
-                        vec![UrlInfo::new(genomic_url, Some(genomic_md5sum), None)];
+                if let Some(genomic_url) = genomic_url {
+                    let genomic_url_info = vec![UrlInfo::new(genomic_url, None, None)];
 
                     let genomic_accinfo = AccessionData::new(
                         accinfo.accession.clone(),
@@ -1377,11 +1503,9 @@ pub async fn gbsketch(
                 let protein_url = download_links
                     .get(&protein_filename)
                     .and_then(|url| Url::parse(url).ok());
-                let protein_md5sum = md5_checksums.get(&protein_filename).cloned();
 
-                if let (Some(protein_url), Some(protein_md5sum)) = (protein_url, protein_md5sum) {
-                    let protein_url_info =
-                        vec![UrlInfo::new(protein_url, Some(protein_md5sum), None)];
+                if let Some(protein_url) = protein_url {
+                    let protein_url_info = vec![UrlInfo::new(protein_url, None, None)];
 
                     let protein_accinfo = AccessionData::new(
                         accinfo.accession.clone(),

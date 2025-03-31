@@ -14,14 +14,18 @@ pub enum InputMolType {
     Protein,
 }
 
-impl InputMolType {}
+impl InputMolType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InputMolType::Dna => "DNA",
+            InputMolType::Protein => "protein",
+        }
+    }
+}
 
 impl fmt::Display for InputMolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputMolType::Dna => write!(f, "DNA"),
-            InputMolType::Protein => write!(f, "protein"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
