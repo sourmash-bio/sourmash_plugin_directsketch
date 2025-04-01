@@ -40,11 +40,7 @@ async fn download_with_retry(
     let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
-        // Add the gzip request header
-        // let mut headers = HeaderMap::new();
-        // headers.insert("X-Datasets-Gzip-Request", HeaderValue::from_static("true"));
         let response = client.get(url.clone()).send().await;
-        // let response = client.get(url.clone()).headers(headers).send().await;
 
         match response {
             Ok(resp) if resp.status().is_success() => {
@@ -108,7 +104,7 @@ async fn try_remove_file(path: &PathBuf) {
 pub async fn process_fastx(
     data: &[u8],
     mut file: Option<&mut File>,
-    sigs: &mut BuildCollection,
+    sigs: &mut BuildCollection, // will be empty collection if download_only
     moltype: &str,
     name: String,
     filename: String,
@@ -134,11 +130,11 @@ pub async fn process_fastx(
                 .context("Failed to write FASTA entry")?;
         }
 
-        // Add the sequence to all matching records/signatures
+        // Add the sequence to all matching records/signatures. Will not impact empty collection.
         sigs.add_sequence(moltype, &subseq)?;
     }
 
-    // Update the sig/manifest info once per call
+    // Update the sig/manifest info once per call. Will not impact empty collection.
     sigs.update_info(name, filename);
 
     Ok(())
@@ -221,12 +217,6 @@ pub async fn download_and_process_with_retry(
                         attempts_left -= 1;
                         continue;
                     }
-
-                    // If download_only, skip signature addition
-                    if download_only {
-                        return Ok((sigs, download_failures, checksum_failures));
-                    }
-
                     break; // success, break retry loop
                 }
 
@@ -258,6 +248,7 @@ pub async fn download_and_process_with_retry(
                     ));
                 }
 
+                // Mark the whole merged sample as failed, in addition to writing the checksum failure
                 if merged_sample {
                     download_failures.push(FailedDownload::from_accession_data(&accinfo));
                 }
@@ -265,10 +256,8 @@ pub async fn download_and_process_with_retry(
                 download_failures.push(FailedDownload::from_accession_data(&accinfo));
             }
 
-            // Fail fast for unmerged samples
-            if !merged_sample {
-                return Ok((empty_coll, download_failures, checksum_failures));
-            }
+            // If any download completely fails, we should stop processing further URLs (rather than getting incomplete merged sigs/files)
+            return Ok((empty_coll, download_failures, checksum_failures));
         }
     }
 
@@ -281,7 +270,6 @@ pub async fn download_parse_dehydrated_zip_with_retry(
     client: &Client,
     url: Url,
     headers: HeaderMap,
-    // params: HashMap<&'static str, Cow<'static, str>>,
     params: serde_json::Value,
     retry_count: u32,
 ) -> Result<
