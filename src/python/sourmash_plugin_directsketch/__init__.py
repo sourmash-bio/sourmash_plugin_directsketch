@@ -117,16 +117,16 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "-n",
             "--n-simultaneous-downloads",
-            default=None,
+            default=10,
             type=int,
-            choices=[1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
-            help="Number of accessions to download simultaneously (default=3). Must be <=3 if not using API key.",
+            choices=range(1, 31),
+            help="Number of files to download simultaneously (1-30; default=10). Note that simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.",
         )
         p.add_argument(
             "-a",
             "--api-key",
             default=None,
-            help="API Key for NCBI REST API. Enables use of up to 10 simultaneous downloads. Alternatively, set NCBI_API_KEY environmental variable.",
+            help="API Key for NCBI REST API. Alternatively, set NCBI_API_KEY environmental variable. If provided, will be used when downloading the initial dehyrated file.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -160,12 +160,6 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             api_key = os.environ.get("NCBI_API_KEY", None)
             if api_key:
                 args.api_key = api_key
-            elif args.n_simultaneous_downloads is not None \
-                 and args.n_simultaneous_downloads > 3:
-                notify(
-                    "Error: please provide an API Key to use n_simultaneous_downloads > 3."
-                )
-                sys.exit(-1)
             else:
                 args.api_key = ""
         # convert to a single string for easier rust handling
@@ -213,8 +207,12 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             notify("...gbsketch is done!")
             if args.output is not None:
                 if args.batch_size:
-                    batch_base = args.output.split(".zip")[0]
-                    notify(f"Sigs in '{batch_base}.1.zip', etc")
+                    if args.output.endswith(".sig.zip"):
+                        batch_base = args.output.split(".sig.zip")[0]
+                        notify(f"Sigs in '{batch_base}.1.sig.zip', etc")
+                    else:
+                        batch_base = args.output.split(".zip")[0]
+                        notify(f"Sigs in '{batch_base}.1.zip', etc")
                 else:
                     notify(f"Sigs in '{args.output}'.")
             if args.keep_fasta:
@@ -295,9 +293,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument(
             "-n",
             "--n-simultaneous-downloads",
-            default=3,
+            default=10,
             type=int,
-            help="Number of simultaneous downloads (default=3). Restrict this to match your servers limits, otherwise many downloads will fail.",
+            choices=range(1, 31),
+            help="Number of files to download simultaneously (1-30; default=10).  Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.",
         )
         p.add_argument(
             "--force",
@@ -369,8 +368,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             notify("...urlsketch is done!")
             if args.output is not None:
                 if args.batch_size:
-                    batch_base = args.output.split(".zip")[0]
-                    notify(f"Sigs in '{batch_base}.1.zip', etc")
+                    if args.output.endswith(".sig.zip"):
+                        batch_base = args.output.split(".sig.zip")[0]
+                        notify(f"Sigs in '{batch_base}.1.sig.zip', etc")
+                    else:
+                        batch_base = args.output.split(".zip")[0]
+                        notify(f"Sigs in '{batch_base}.1.zip', etc")
                 else:
                     notify(f"Sigs in '{args.output}'.")
 

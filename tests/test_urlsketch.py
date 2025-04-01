@@ -1551,3 +1551,24 @@ def test_urlsketch_merged_ranged_fail(runtmp):
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
             assert range == "1-50000;50000-100000"
+
+
+def test_urlsketch_max_n_downloads(runtmp, capfd):
+    #check that we can use 30 simultaneous downloads
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    assert  os.environ["NCBI_API_KEY"] == ""
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert "using 30 simultaneous downloads, 3 retries" in captured.out

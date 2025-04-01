@@ -1142,8 +1142,8 @@ def test_gbsketch_simple_skipmer(runtmp, capfd):
                             ), f"Moltype mismatch: {siginfo['molecule']}"
 
 
-def test_gbsketch_n_downloads_fail(runtmp):
-    #check that n <=3 if no API key
+def test_gbsketch_max_n_downloads(runtmp, capfd):
+    #check that we can use 30 simultaneous downloads
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -1151,39 +1151,15 @@ def test_gbsketch_n_downloads_fail(runtmp):
 
     assert  os.environ["NCBI_API_KEY"] == ""
 
-    with pytest.raises(utils.SourmashCommandFailed):
-        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '4', '--checksum-fail', ch_fail,
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
     print(runtmp.last_result.out)
     print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
 
-    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" in runtmp.last_result.err
+    assert "using 30 simultaneous downloads, 3 retries" in captured.out
+    assert "Successfully downloaded and parsed dehydrated zipfile. Now processing accessions." in captured.err
 
-
-def test_gbsketch_n_downloads_api_key_fail(runtmp):
-    acc_csv = get_test_data('acc.csv')
-    output = runtmp.output('simple.zip')
-    failed = runtmp.output('failed.csv')
-    ch_fail = runtmp.output('checksum_dl_failed.csv')
-
-    with pytest.raises(utils.SourmashCommandFailed):
-        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '12', '--api-key', '1234', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
-    print(runtmp.last_result.err)
-    assert "invalid choice:" in runtmp.last_result.err
-
-def test_gbsketch_n_downloads_api_key(runtmp):
-    acc_csv = get_test_data('acc.csv')
-    output = runtmp.output('simple.zip')
-    failed = runtmp.output('failed.csv')
-    ch_fail = runtmp.output('checksum_dl_failed.csv')
-
-    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '9', '--api-key', '1234', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
-    print(runtmp.last_result.err)
-
-    assert os.path.exists(output)
-    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" not in runtmp.last_result.err
