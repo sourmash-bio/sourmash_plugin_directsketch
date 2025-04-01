@@ -624,8 +624,9 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
     };
 
     // Regex to match the exact zip filename and its batches (e.g., "outpath.zip" --> "outpath.N.zip"; "outpath.sig.zip" --> "outpath.N.sig.zip", etc.)
+    // Also match .incomplete so we can delete these.
     let zip_file_pattern = Regex::new(&format!(
-        r"^{}(?:\.(\d+))?\.{}$",
+        r"^{}(?:\.(\d+))?\.{}(?:\.incomplete)?$",
         regex::escape(base),
         regex::escape(suffix)
     ))?;
@@ -689,6 +690,19 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
+                // remove any incomplete batches
+                if file_name.ends_with(".incomplete") {
+                    eprintln!("Removing incomplete zip file: '{}'", file_name);
+                    if let Err(e) = tokio::fs::remove_file(&entry_path).await {
+                        eprintln!(
+                            "Warning: Failed to remove incomplete file '{}': {:?}",
+                            file_name, e
+                        );
+                    }
+                    continue;
+                }
+
+                // try to load a valid zip file
                 Collection::from_zipfile(&entry_path)
                     .map(|collection| {
                         collections.push(collection);
@@ -719,7 +733,7 @@ async fn create_or_get_zip_file(
     outpath: &PathBuf,
     batch_size: usize,
     batch_index: usize,
-) -> Result<(ZipFileWriter<Compat<File>>, PathBuf)> {
+) -> Result<(ZipFileWriter<Compat<File>>, PathBuf, PathBuf)> {
     let batch_outpath = if batch_size == 0 {
         // If batch size is zero, use provided outpath (contains .zip extension)
         outpath.clone()
@@ -743,12 +757,16 @@ async fn create_or_get_zip_file(
             .unwrap_or(camino::Utf8Path::new(""))
             .join(new_filename)
     };
+    let temp_outpath = batch_outpath.with_extension(format!(
+        "{}.incomplete",
+        batch_outpath.extension().unwrap_or_default()
+    ));
 
-    let file = File::create(&batch_outpath)
+    let file = File::create(&temp_outpath)
         .await
-        .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
+        .with_context(|| format!("Failed to create file: {:?}", temp_outpath))?;
 
-    Ok((ZipFileWriter::with_tokio(file), batch_outpath))
+    Ok((ZipFileWriter::with_tokio(file), temp_outpath, batch_outpath))
 }
 
 pub fn zipwriter_handle(
@@ -764,6 +782,7 @@ pub fn zipwriter_handle(
         let mut wrote_sigs = false;
         let mut count = 0; // count the number of accessions/downloaded files sketched
         let mut zip_writer = None;
+        let mut current_temp_path: Option<PathBuf> = None;
         let mut current_batch_path: Option<PathBuf> = None;
 
         if let Some(outpath) = output_sigs {
@@ -774,8 +793,9 @@ pub fn zipwriter_handle(
                     // create zip file if needed
                     zip_writer =
                         match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                            Ok((writer, batch_outpath)) => {
-                                current_batch_path = Some(batch_outpath);
+                            Ok((writer, temp_outpath, final_outpath)) => {
+                                current_temp_path = Some(temp_outpath);
+                                current_batch_path = Some(final_outpath);
                                 Some(writer)
                             }
                             Err(e) => {
@@ -824,6 +844,21 @@ pub fn zipwriter_handle(
                             return;
                         }
                     }
+                    // rename temp to final
+                    if let Some(temp_path) = current_temp_path.take() {
+                        let final_path = current_batch_path.as_ref().unwrap();
+                        if let Err(e) = tokio::fs::rename(&temp_path, final_path).await {
+                            let _ = error_sender
+                                .send(anyhow::anyhow!(
+                                    "Failed to rename {:?} to {:?}: {}",
+                                    temp_path,
+                                    final_path,
+                                    e
+                                ))
+                                .await;
+                            return;
+                        }
+                    }
                     eprintln!(
                         "finished batch {}: wrote to '{}'",
                         batch_index,
@@ -852,6 +887,21 @@ pub fn zipwriter_handle(
                         let error = anyhow::Error::new(e).context("Failed to close ZIP file");
                         let _ = error_sender.send(error).await;
                         return;
+                    }
+                    // rename temp to final
+                    if let Some(temp_path) = current_temp_path.take() {
+                        let final_path = current_batch_path.as_ref().unwrap();
+                        if let Err(e) = tokio::fs::rename(&temp_path, final_path).await {
+                            let _ = error_sender
+                                .send(anyhow::anyhow!(
+                                    "Failed to rename {:?} to {:?}: {}",
+                                    temp_path,
+                                    final_path,
+                                    e
+                                ))
+                                .await;
+                            return;
+                        }
                     }
                     // notify about final batch
                     eprintln!(
@@ -1260,7 +1310,6 @@ pub async fn gbsketch(
         }
 
         for accinfo in acc_data {
-            println!("{:?}", accinfo);
             // clone remaining utilities
             let semaphore_clone = Arc::clone(&semaphore);
             let client_clone = Arc::clone(&client);
