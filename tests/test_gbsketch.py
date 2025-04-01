@@ -665,8 +665,8 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         assert range == ""
 
 
-def test_gbsketch_simple_batched_single(runtmp, capfd):
-    # make sure both sigs associated with same acc end up in same zip
+def test_gbsketch_simple_batched_single_acc(runtmp, capfd):
+    # DNA and protein sigs for a single accession will be in separate zips now :shrug:
     acc_csv = get_test_data('acc.csv')
     acc1 = runtmp.output('acc1.csv')
     # open acc.csv with csv dictreader and keep accession= GCA_000961135.2 line
@@ -683,6 +683,7 @@ def test_gbsketch_simple_batched_single(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
 
     sig1 = get_test_data('GCA_000961135.2.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.protein.sig.gz')
@@ -710,6 +711,10 @@ def test_gbsketch_simple_batched_single(runtmp, capfd):
     sigs = list(idx.signatures())
     for sig in sigs:
         all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+    idx2 = sourmash.load_file_as_index(out2)
+    sigs2 = list(idx2.signatures())
+    for sig in sigs2:
+        all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
 
     # Assert that all expected signatures are found
     assert all_siginfo == expected_siginfo
@@ -734,7 +739,7 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
-                    '--batch-size', '1')
+                    '--batch-size', '2')
 
     assert os.path.exists(out1)
     assert os.path.exists(out2)
@@ -778,7 +783,6 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     out2 = runtmp.output('simple.2.zip')
     out3 = runtmp.output('simple.3.zip')
 
-
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
@@ -821,6 +825,7 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     # Collect actual signature information from gbsketch zip batches
     all_siginfo = set()
     for out_file in [out2, out3]:
+        print( f"Loading signatures from {out_file}...")
         idx = sourmash.load_file_as_index(out_file)
         sigs = list(idx.signatures())
         for sig in sigs:

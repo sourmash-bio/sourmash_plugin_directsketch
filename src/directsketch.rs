@@ -1084,7 +1084,7 @@ async fn create_or_get_zip_file(
     outpath: &PathBuf,
     batch_size: usize,
     batch_index: usize,
-) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
+) -> Result<(ZipFileWriter<Compat<File>>, PathBuf)> {
     let batch_outpath = if batch_size == 0 {
         // If batch size is zero, use provided outpath (contains .zip extension)
         outpath.clone()
@@ -1097,11 +1097,12 @@ async fn create_or_get_zip_file(
             batch_index
         ))
     };
+
     let file = File::create(&batch_outpath)
         .await
         .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
 
-    Ok(ZipFileWriter::with_tokio(file))
+    Ok((ZipFileWriter::with_tokio(file), batch_outpath))
 }
 
 pub fn zipwriter_handle(
@@ -1115,8 +1116,9 @@ pub fn zipwriter_handle(
         let mut md5sum_occurrences = HashMap::new();
         let mut zip_manifest = BuildManifest::new();
         let mut wrote_sigs = false;
-        let mut acc_count = 0; // count the number of accessions (or urls, in urlsketch)
+        let mut count = 0; // count the number of accessions/downloaded files sketched
         let mut zip_writer = None;
+        let mut current_batch_path: Option<PathBuf> = None;
 
         if let Some(outpath) = output_sigs {
             let outpath: PathBuf = outpath.into();
@@ -1126,7 +1128,10 @@ pub fn zipwriter_handle(
                     // create zip file if needed
                     zip_writer =
                         match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                            Ok(writer) => Some(writer),
+                            Ok((writer, batch_outpath)) => {
+                                current_batch_path = Some(batch_outpath);
+                                Some(writer)
+                            }
                             Err(e) => {
                                 let _ = error_sender.send(e).await;
                                 return;
@@ -1140,8 +1145,14 @@ pub fn zipwriter_handle(
                         .async_write_sigs_to_zip(zip_writer, &mut md5sum_occurrences)
                         .await
                     {
-                        Ok(_) => {
+                        Ok(true) => {
                             wrote_sigs = true;
+                            // Add all records from buildcoll manifest
+                            zip_manifest.extend_from_manifest(&buildcoll.manifest);
+                            count += 1
+                        }
+                        Ok(false) => {
+                            continue; // No new signatures written, skip to next
                         }
                         Err(e) => {
                             let error = e.context("Error processing signature");
@@ -1150,14 +1161,10 @@ pub fn zipwriter_handle(
                             }
                         }
                     }
-                    // Add all records from buildcoll manifest
-                    zip_manifest.extend_from_manifest(&buildcoll.manifest);
-                    // each buildcoll has accession
-                    acc_count += 1;
                 }
 
                 // if batch size is non-zero and is reached, close the current zip
-                if batch_size > 0 && acc_count >= batch_size {
+                if batch_size > 0 && count >= batch_size {
                     if let Some(mut zip_writer) = zip_writer.take() {
                         if let Err(e) = zip_manifest
                             .async_write_manifest_to_zip(&mut zip_writer)
@@ -1171,16 +1178,20 @@ pub fn zipwriter_handle(
                             return;
                         }
                     }
-                    eprintln!("finished batch {}", batch_index);
+                    eprintln!(
+                        "finished batch {}: wrote to '{}'",
+                        batch_index,
+                        current_batch_path.as_ref().unwrap()
+                    );
                     // Start a new batch
                     batch_index += 1;
-                    acc_count = 0;
+                    count = 0;
                     zip_manifest.clear();
                     zip_writer = None; // reset zip_writer so a new zip will be created when needed
                 }
             }
 
-            if acc_count > 0 {
+            if count > 0 {
                 // write the final manifest
                 if let Some(mut zip_writer) = zip_writer.take() {
                     if let Err(e) = zip_manifest
@@ -1196,6 +1207,12 @@ pub fn zipwriter_handle(
                         let _ = error_sender.send(error).await;
                         return;
                     }
+                    // notify about final batch
+                    eprintln!(
+                        "finished batch {}: wrote to '{}'",
+                        batch_index,
+                        current_batch_path.as_ref().unwrap()
+                    );
                 }
             }
             if !wrote_sigs {

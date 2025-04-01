@@ -910,7 +910,8 @@ impl BuildCollection {
         &mut self, // need mutable to update records
         zip_writer: &mut ZipFileWriter<Compat<File>>,
         md5sum_occurrences: &mut HashMap<String, usize>,
-    ) -> Result<()> {
+    ) -> Result<bool> {
+        let mut wrote_any = false;
         // iterate over both records and signatures
         for (record, sig) in self.iter_mut() {
             // skip any empty sig templates (no sequence added)
@@ -960,9 +961,11 @@ impl BuildCollection {
                 .write_entry_whole(builder, &gzipped_buffer)
                 .await
                 .map_err(|e| anyhow!("Error writing zip entry for signature: {}", e))?;
+
+            wrote_any = true;
         }
 
-        Ok(())
+        Ok(wrote_any)
     }
 }
 
