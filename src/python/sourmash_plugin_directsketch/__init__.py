@@ -301,7 +301,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument(
             "--force",
             action="store_true",
-            help="Skip input rows with empty or improper URLs.",
+            help="Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(

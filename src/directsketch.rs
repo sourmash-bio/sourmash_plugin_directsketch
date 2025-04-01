@@ -1152,10 +1152,6 @@ pub async fn gbsketch(
         "api_key": if !api_key.is_empty() { Some(api_key) } else { None }
     });
 
-    // NTP: debug output only, remove later
-    let json_string = serde_json::to_string_pretty(&post_params)?;
-    eprintln!("Request Parameters (JSON):\n{}", json_string);
-
     // dl + parse dehydrated file
     let download_links = match download_parse_dehydrated_zip_with_retry(
         &client,
@@ -1175,8 +1171,6 @@ pub async fn gbsketch(
         }
     };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
-    // NTP TEMP: Output the parsed results
-    eprintln!("Download Links: {:?}", download_links);
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
