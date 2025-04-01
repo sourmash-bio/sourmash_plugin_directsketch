@@ -394,9 +394,11 @@ pub fn load_accession_info(
                     url_failed += 1;
                     continue;
                 } else {
-                    return Err(anyhow!( // Propagate the error if not forcing
+                    return Err(anyhow!(
+                        // Propagate the error if not forcing
                         "No valid URLs found in 'url' field for accession '{}': {}",
-                        acc, e
+                        acc,
+                        e
                     ));
                 }
             }
