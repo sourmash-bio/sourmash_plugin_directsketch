@@ -986,21 +986,30 @@ fn get_current_directory() -> Result<PathBuf> {
 // Load existing batch files into MultiCollection, skipping corrupt files
 async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection, usize)> {
     // Remove the .zip extension to get the base name
-    let outpath_base = outpath.with_extension("");
+    let filename = outpath.file_name().unwrap();
+    let (base, suffix) = if filename.ends_with(".sig.zip") {
+        (filename.strip_suffix(".sig.zip").unwrap(), "sig.zip")
+    } else if filename.ends_with(".zip") {
+        (filename.strip_suffix(".zip").unwrap(), "zip")
+    } else {
+        return Err(anyhow::anyhow!(
+            "Output path must end with .zip or .sig.zip"
+        ));
+    };
 
-    // Regex to match the exact zip filename and its batches (e.g., "outpath.zip", "outpath.1.zip", "outpath.2.zip", etc.)
+    // Regex to match the exact zip filename and its batches (e.g., "outpath.zip" --> "outpath.N.zip"; "outpath.sig.zip" --> "outpath.N.sig.zip", etc.)
     let zip_file_pattern = Regex::new(&format!(
-        r"^{}(?:\.(\d+))?\.zip$",
-        regex::escape(outpath_base.file_name().unwrap())
-    ))
-    .unwrap();
+        r"^{}(?:\.(\d+))?\.{}$",
+        regex::escape(base),
+        regex::escape(suffix)
+    ))?;
 
     // Initialize a vector to store valid collections
     let mut collections = Vec::new();
     let mut highest_batch = 0; // Track the highest batch number
 
     // find parent dir (or use current dir)
-    let dir = outpath_base
+    let dir = outpath
         .parent()
         .filter(|p| !p.as_os_str().is_empty()) // Ensure the parent is not empty
         .map(|p| p.to_path_buf()) // Use the parent if it's valid
@@ -1090,12 +1099,23 @@ async fn create_or_get_zip_file(
         outpath.clone()
     } else {
         // Otherwise, modify outpath to include the batch index
-        let outpath_base = outpath.with_extension(""); // remove .zip extension
-        outpath_base.with_file_name(format!(
-            "{}.{}.zip",
-            outpath_base.file_stem().unwrap(),
-            batch_index
-        ))
+        let filename = outpath.file_name().unwrap();
+
+        let new_filename = if filename.ends_with(".sig.zip") {
+            let base = filename.strip_suffix(".sig.zip").unwrap();
+            format!("{}.{}.sig.zip", base, batch_index)
+        } else if filename.ends_with(".zip") {
+            let base = filename.strip_suffix(".zip").unwrap();
+            format!("{}.{}.zip", base, batch_index)
+        } else {
+            // This shouldn't happen due to earlier checks, but handle it just in case
+            return Err(anyhow::anyhow!("Output path must end with .zip"));
+        };
+
+        outpath
+            .parent()
+            .unwrap_or(camino::Utf8Path::new(""))
+            .join(new_filename)
     };
 
     let file = File::create(&batch_outpath)
