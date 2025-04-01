@@ -1231,3 +1231,26 @@ def test_gbsketch_max_n_downloads(runtmp, capfd):
     assert "using 30 simultaneous downloads, 3 retries" in captured.out
     assert "Successfully downloaded and parsed dehydrated zipfile. Now processing accessions." in captured.err
 
+
+def test_gbsketch_verbose(runtmp, capfd):
+    #test verbose reporting
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    assert  os.environ["NCBI_API_KEY"] == ""
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail, "--verbose",
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert "Starting accession 1/2 (50%) - moltype: DNA" in captured.out
+    assert "Starting accession 1/2 (50%) - moltype: protein" in captured.out
+    assert "Starting accession 2/2 (100%) - moltype: DNA" in captured.out
+

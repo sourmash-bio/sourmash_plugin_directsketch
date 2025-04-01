@@ -130,6 +130,7 @@ options:
                         API Key for NCBI REST API. Alternatively, set NCBI_API_KEY environmental variable. If provided, will be used when downloading the initial dehyrated file.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
+  -v, --verbose         print progress for every download.
 ```
 
 ## `urlsketch`
@@ -199,6 +200,7 @@ options:
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
+  -v, --verbose         print progress for every download.
 ```
 
 ## Code of Conduct

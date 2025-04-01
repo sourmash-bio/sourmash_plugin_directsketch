@@ -141,6 +141,12 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             action="store_true",
             help="Download and sketch proteome (protein) files only.",
         )
+        group.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="print progress for every download.",
+        )
 
     def main(self, args):
         print_version()
@@ -200,6 +206,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.batch_size,
             args.n_simultaneous_downloads,
             args.api_key,
+            args.verbose,
             args.output,
         )
 
@@ -316,6 +323,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             action="store_true",
             help="Download and sketch proteome (protein) files only.",
         )
+        group.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="print progress for every download.",
+        )
 
     def main(self, args):
         print_version()
@@ -360,6 +373,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.batch_size,
             args.n_simultaneous_downloads,
             args.force,
+            args.verbose,
             args.output,
             args.checksum_fail,
         )

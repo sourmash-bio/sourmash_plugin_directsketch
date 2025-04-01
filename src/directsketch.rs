@@ -1042,6 +1042,7 @@ pub async fn gbsketch(
     batch_size: u32,
     n_permits: usize,
     api_key: String,
+    verbose: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1323,13 +1324,14 @@ pub async fn gbsketch(
             tokio::spawn(async move {
                 let _permit = semaphore_clone.acquire().await;
                 // progress report when the permit is available and processing begins
-                if (i + 1) % reporting_threshold == 0 {
+                if verbose || (i + 1) % reporting_threshold == 0 {
                     let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
                     println!(
-                        "Starting accession {}/{} ({}%)",
+                        "Starting accession {}/{} ({}%) - moltype: {}",
                         (i + 1),
                         n_accs,
-                        percent_processed
+                        percent_processed,
+                        accinfo.moltype
                     );
                 }
 
@@ -1409,6 +1411,7 @@ pub async fn urlsketch(
     batch_size: u32,
     n_permits: usize,
     force: bool,
+    verbose: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1588,13 +1591,14 @@ pub async fn urlsketch(
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
             // progress report when the permit is available and processing begins
-            if (i + 1) % reporting_threshold == 0 {
+            if verbose || (i + 1) % reporting_threshold == 0 {
                 let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
                 println!(
-                    "Starting accession {}/{} ({}%)",
+                    "Starting accession {}/{} ({}%) - moltype: {}",
                     (i + 1),
                     n_accs,
-                    percent_processed
+                    percent_processed,
+                    accinfo.moltype
                 );
             }
             // Perform download and sketch
