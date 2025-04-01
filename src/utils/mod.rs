@@ -66,6 +66,7 @@ impl GenBankFileType {
         format!("{}{}", full_name, self.suffix())
     }
 
+    #[allow(dead_code)]
     pub fn filename_to_write(&self, accession: &str) -> String {
         match self {
             GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
@@ -85,6 +86,7 @@ impl GenBankFileType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn moltype(&self) -> String {
         match self {
             GenBankFileType::Genomic => "DNA".to_string(),
@@ -502,6 +504,7 @@ pub struct FailedDownload {
     range: String,
 }
 
+#[allow(dead_code)]
 impl FailedDownload {
     /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
     pub fn from_gbassembly(
