@@ -1254,3 +1254,40 @@ def test_gbsketch_verbose(runtmp, capfd):
     assert "Starting accession 1/2 (50%) - moltype: protein" in captured.out
     assert "Starting accession 2/2 (100%) - moltype: DNA" in captured.out
 
+
+def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        fail_lines = failF.readlines()
+        assert len(fail_lines) == 2
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
+        assert acc == "GCA_000175535.1"
+        assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+        assert moltype == "protein"
+        assert download_filename == "GCA_000175535.1_protein.faa.gz"
+        assert url == ""
+        assert range == ""
+    assert not runtmp.last_result.out # stdout should be empty
+
+    out2 = runtmp.output('failed-retry.zip')
+    fail2 = runtmp.output('fail2.csv')
+
+    # since the protein file doesn't exist at NCBI, we won't be able to find any links in the downloaded dehydrated zip.
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', failed, '-o', out2,
+                    '--failed', fail2, '-r', '1',
+                    '-p', "protein,k=10,scaled=200")
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Last error: Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?" in captured.err
