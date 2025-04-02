@@ -1,6 +1,7 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
+use futures::stream::{self, StreamExt};
 use needletail::parse_fastx_reader;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
@@ -11,13 +12,12 @@ use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::create_dir_all;
 use std::io::{Cursor, Read, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
 use tokio::sync::{oneshot, Semaphore};
 use tokio::task::spawn_blocking;
-use tokio_stream::StreamExt;
 use tokio_util::compat::Compat;
 use tokio_util::io::SyncIoBridge;
 use zip::read::ZipArchive;
@@ -1074,7 +1074,7 @@ pub async fn gbsketch(
     proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
-    n_permits: usize,
+    concurrency_limit: usize,
     api_key: String,
     verbose: bool,
     output_sigs: Option<String>,
@@ -1148,7 +1148,6 @@ pub async fn gbsketch(
     handles.push(checksum_failures_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
@@ -1205,9 +1204,6 @@ pub async fn gbsketch(
             bail!("No signatures to build.")
         }
     }
-    // report every 1 percent (or every 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
-
     // what files do we want to download?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
 
@@ -1238,6 +1234,7 @@ pub async fn gbsketch(
     });
 
     // dl + parse dehydrated file
+    py.check_signals()?; // If interrupted, return an Err automatically
     let download_links = match download_parse_dehydrated_zip_with_retry(
         &client,
         post_url,
@@ -1257,81 +1254,49 @@ pub async fn gbsketch(
     };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
 
-    for (i, accinfo) in accession_info.into_iter().enumerate() {
-        py.check_signals()?; // If interrupted, return an Err automatically
-
-        let mut sigs = sig_templates.clone();
-
-        // filter template sigs based on existing sigs
-        if filter {
-            if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                // If the key exists, filter template sigs
-                sigs.filter_by_manifest(existing_manifest);
-            }
-        }
-
-        // collect info for this accession into vector of accessiondata
-        let mut acc_data = Vec::<AccessionData>::new();
-        let mut download_failures = Vec::<FailedDownload>::new();
+    let mut acc_data = Vec::<AccessionData>::new();
+    let mut download_failures = Vec::<FailedDownload>::new();
+    // collect accession info, fetch links into flat vector of AccessionData
+    // to do -> could definitely clean this up - not sure we need to build AccessionData for each.
+    // current benefit of doing it this way is that we can reuse the processing function for both gbsketch and urlsketch
+    for accinfo in accession_info {
+        py.check_signals()?; // If interrupted, return an Err
 
         for ftype in &file_types {
-            if ftype == &GenBankFileType::Genomic {
-                let genomic_filename = format!("{}_genomic.fna.gz", accinfo.accession);
-                let genomic_url = download_links
-                    .get(&genomic_filename)
-                    .and_then(|url| Url::parse(url).ok());
+            let (filename, moltype) = match ftype {
+                GenBankFileType::Genomic => (
+                    format!("{}_genomic.fna.gz", accinfo.accession),
+                    InputMolType::Dna,
+                ),
+                GenBankFileType::Protein => (
+                    format!("{}_protein.faa.gz", accinfo.accession),
+                    InputMolType::Protein,
+                ),
+            };
 
-                if let Some(genomic_url) = genomic_url {
-                    let genomic_url_info = vec![UrlInfo::new(genomic_url, None, None)];
+            let maybe_url = download_links
+                .get(&filename)
+                .and_then(|url| Url::parse(url).ok());
 
-                    let genomic_accinfo = AccessionData::new(
+            match maybe_url {
+                Some(url) => {
+                    acc_data.push(AccessionData::new(
                         accinfo.accession.clone(),
                         accinfo.name.clone(),
-                        InputMolType::Dna,
-                        genomic_url_info,
-                        Some(genomic_filename),
-                    );
-                    acc_data.push(genomic_accinfo);
-                } else {
-                    // Build a placeholder AccessionData and convert to FailedDownload
-                    let placeholder_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Dna,
-                        vec![],
-                        Some(genomic_filename),
-                    );
-                    download_failures
-                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                        moltype,
+                        vec![UrlInfo::new(url, None, None)],
+                        Some(filename),
+                    ));
                 }
-            } else if ftype == &GenBankFileType::Protein {
-                let protein_filename = format!("{}_protein.faa.gz", accinfo.accession);
-                let protein_url = download_links
-                    .get(&protein_filename)
-                    .and_then(|url| Url::parse(url).ok());
-
-                if let Some(protein_url) = protein_url {
-                    let protein_url_info = vec![UrlInfo::new(protein_url, None, None)];
-
-                    let protein_accinfo = AccessionData::new(
+                None => {
+                    let placeholder = AccessionData::new(
                         accinfo.accession.clone(),
                         accinfo.name.clone(),
-                        InputMolType::Protein,
-                        protein_url_info,
-                        Some(protein_filename),
-                    );
-                    acc_data.push(protein_accinfo);
-                } else {
-                    // Build a placeholder AccessionData and convert to FailedDownload
-                    let placeholder_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Protein,
+                        moltype,
                         vec![],
-                        Some(protein_filename),
+                        Some(filename),
                     );
-                    download_failures
-                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                    download_failures.push(FailedDownload::from_accession_data(&placeholder));
                 }
             }
         }
@@ -1343,45 +1308,77 @@ pub async fn gbsketch(
                 let _ = error_sender.send(e.into()).await;
             }
         }
+    }
+    // here we now have all info to write intermediate (e.g. urlsketch) file with fetch links.
 
-        for accinfo in acc_data {
+    // get total number of downloads (rather than total number of acc)
+    let n_downloads = acc_data.len();
+    // report every 1 percent (or every 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
+
+    // these now need to be Arc to be shared across async tasks
+    let download_counter = Arc::new(AtomicUsize::new(0));
+    let existing_records_map = Arc::new(existing_records_map);
+    let sig_templates = Arc::new(sig_templates);
+
+    let send_sigs_arc = Arc::new(send_sigs);
+    let send_failed_arc = Arc::new(send_failed);
+    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
+    let error_sender_arc = Arc::new(error_sender);
+
+    stream::iter(acc_data)
+        .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
             // clone remaining utilities
-            let semaphore_clone = Arc::clone(&semaphore);
-            let client_clone = Arc::clone(&client);
-            let send_sigs = send_sigs.clone();
-            let send_failed = send_failed.clone();
-            let checksum_send_failed = send_failed_checksums.clone();
+            // let client_clone = Arc::clone(&client);
+            let client = client.clone();
+            let send_sigs = send_sigs_arc.clone();
+            let send_failed = send_failed_arc.clone();
+            let checksum_send_failed = send_failed_checksums_arc.clone();
             let download_path_clone = download_path.clone(); // Clone the path for each task
-            let send_errors = error_sender.clone();
-            let ftype_sigs = sigs.clone();
+            let send_errors = error_sender_arc.clone();
+            let download_counter = download_counter.clone();
+            // for sig filtering
+            let existing_records_map = existing_records_map.clone();
+            let sig_templates = sig_templates.clone();
 
-            // to do: try replacing semaphore with .for_each_concurrent(Some(max_concurrency), |accinfo| async move { (using tokio stream)
-            // tokio_stream::iter(acc_data)
-            //.for_each_concurrent(Some(concurrency_limit), |accinfo| async move {
-            // accession processing
-            // }
-            // .await;
-            tokio::spawn(async move {
-                let _permit = semaphore_clone.acquire().await;
-                // progress report when the permit is available and processing begins
-                if verbose || (i + 1) % reporting_threshold == 0 {
-                    let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+            async move {
+                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    eprintln!("Caught Python interrupt: {}", e);
+                    return; // or return early from the task
+                }
+                let mut sigs = (*sig_templates).clone();
+
+                // filter template sigs based on existing sigs
+                if filter {
+                    if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
+                        // If the key exists, filter template sigs
+                        sigs.filter_by_manifest(existing_manifest);
+                    }
+                }
+
+                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+                // progress report when processing begins
+                if verbose || (download_index) % reporting_threshold == 0 {
+                    let percent_processed =
+                        (((download_index) as f64 / n_downloads as f64) * 100.0).round();
                     println!(
-                        "Starting accession {}/{} ({}%) - moltype: {}",
-                        (i + 1),
-                        n_accs,
+                        "Starting download {}/{} ({}%) - accession: '{}', moltype: {}",
+                        (download_index),
+                        n_downloads,
                         percent_processed,
+                        accinfo.accession,
                         accinfo.moltype
                     );
                 }
 
                 let result = stream_and_process_with_retry(
-                    &client_clone,
+                    &client,
                     accinfo,
                     &download_path_clone,
                     Some(retry_times),
                     keep_fastas,
-                    ftype_sigs,
+                    sigs,
                     download_only,
                     true,
                 )
@@ -1412,14 +1409,10 @@ pub async fn gbsketch(
                     }
                 }
                 drop(send_errors);
-            });
-        }
-    }
-    // drop senders as we're done sending data
-    drop(send_sigs);
-    drop(send_failed);
-    drop(send_failed_checksums);
-    drop(error_sender);
+            }
+        })
+        .await; // Wait for all tasks to complete
+
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {

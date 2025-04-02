@@ -1250,9 +1250,9 @@ def test_gbsketch_verbose(runtmp, capfd):
     print(captured.out)
     print(captured.err)
 
-    assert "Starting accession 1/2 (50%) - moltype: DNA" in captured.out
-    assert "Starting accession 1/2 (50%) - moltype: protein" in captured.out
-    assert "Starting accession 2/2 (100%) - moltype: DNA" in captured.out
+    assert "Starting download 1/3 (33%) - accession: 'GCA_000961135.2', moltype: DNA" in captured.out
+    assert "Starting download 2/3 (67%) - accession: 'GCA_000961135.2', moltype: protein" in captured.out
+    assert "Starting download 3/3 (100%) - accession: 'GCA_000175535.1', moltype: DNA" in captured.out
 
 
 def test_gbsketch_from_gbsketch_failed(runtmp, capfd):

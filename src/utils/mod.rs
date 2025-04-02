@@ -46,8 +46,6 @@ impl std::str::FromStr for InputMolType {
 pub enum GenBankFileType {
     Genomic,
     Protein,
-    AssemblyReport,
-    Checksum,
 }
 
 impl GenBankFileType {
@@ -55,35 +53,12 @@ impl GenBankFileType {
         match self {
             GenBankFileType::Genomic => "_genomic.fna.gz",
             GenBankFileType::Protein => "_protein.faa.gz",
-            GenBankFileType::AssemblyReport => "_assembly_report.txt",
-            GenBankFileType::Checksum => "md5checksums.txt",
         }
-    }
-
-    //use for checksums
-    #[allow(dead_code)]
-    pub fn server_filename(&self, full_name: &str) -> String {
-        format!("{}{}", full_name, self.suffix())
     }
 
     #[allow(dead_code)]
     pub fn filename_to_write(&self, accession: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
-        match self {
-            GenBankFileType::Checksum => base_url
-                .join(&format!("{}/{}", full_name, self.suffix()))
-                .unwrap(),
-            _ => base_url
-                .join(&format!("{}/{}{}", full_name, full_name, self.suffix()))
-                .unwrap(),
-        }
+        format!("{}{}", accession, self.suffix())
     }
 
     #[allow(dead_code)]
@@ -91,7 +66,6 @@ impl GenBankFileType {
         match self {
             GenBankFileType::Genomic => "DNA".to_string(),
             GenBankFileType::Protein => "protein".to_string(),
-            _ => "".to_string(),
         }
     }
 }
