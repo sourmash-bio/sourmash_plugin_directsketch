@@ -1,15 +1,16 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
 use camino::Utf8PathBuf as PathBuf;
+use needletail::parse_fastx_reader;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
 use reqwest::{header::HeaderMap, Client};
+use serde_json::json;
 use sourmash::collection::Collection;
-use std::borrow::Cow;
 use std::cmp::max;
 use std::collections::HashMap;
-use std::fs::{self, create_dir_all};
-use std::io::{Cursor, Read, Seek};
+use std::fs::create_dir_all;
+use std::io::{Cursor, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
@@ -22,118 +23,11 @@ use pyo3::prelude::*;
 
 use crate::utils::{
     load_accession_info, load_gbassembly_info, AccessionData, FailedChecksum, FailedDownload,
-    GBAssemblyData, GenBankFileType, InputMolType, MultiCollection,
+    GenBankFileType, InputMolType, MultiCollection, UrlInfo,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
 use reqwest::Url;
-
-async fn find_genome_directory(
-    client: &Client,
-    db: &str,
-    number_path: &str,
-    accession: &str,
-    acc_number: &str,
-    version: &str,
-) -> Result<(Url, String)> {
-    let base_url = format!(
-        "https://ftp.ncbi.nlm.nih.gov/genomes/all/{}/{}",
-        db, number_path
-    );
-    let directory_response = client.get(&base_url).send().await?;
-
-    if !directory_response.status().is_success() {
-        return Err(anyhow!(
-            "Failed to open genome directory: HTTP {}, {}",
-            directory_response.status(),
-            directory_response
-                .status()
-                .canonical_reason()
-                .unwrap_or("Unknown reason")
-        ));
-    }
-    let text = directory_response.text().await?;
-    let link_regex = Regex::new(r#"<a href="([^"]+)/""#)?;
-
-    for cap in link_regex.captures_iter(&text) {
-        let name = &cap[1];
-
-        // Use acc numerical identifier and version as expected pattern
-        let expected_pattern = format!("{}.{}", acc_number, version);
-
-        // Check if directory name contains contains the right acc number and version
-        if name.contains(&expected_pattern) {
-            let url = format!("{}/{}", base_url, name).parse()?;
-            return Ok((url, name.to_string()));
-        }
-    }
-    Err(anyhow!(
-        "No matching directory found for accession {}",
-        accession
-    ))
-}
-
-async fn fetch_genbank_filename(
-    client: &Client,
-    accession: &str,
-    url: Option<Url>,
-) -> Result<(Url, String)> {
-    let (db, acc) = accession
-        .trim()
-        .split_once('_')
-        .ok_or_else(|| anyhow!("Invalid accession format"))?;
-    let (acc_number, version) = acc.split_once('.').unwrap_or((acc, "1"));
-    let number_path = acc_number
-        .chars()
-        .collect::<Vec<_>>()
-        .chunks(3)
-        .map(|chunk| chunk.iter().collect::<String>())
-        .collect::<Vec<_>>()
-        .join("/");
-
-    let (url, name) = if let Some(url) = url {
-        let url_parts: Vec<&str> = url
-            .path_segments()
-            .ok_or_else(|| anyhow!("Failed to extract path segments from URL"))?
-            .collect();
-        let name = url_parts
-            .last()
-            .ok_or_else(|| anyhow!("Failed to extract name from URL"))?
-            .to_string();
-        (url, name)
-    } else {
-        find_genome_directory(client, db, &number_path, accession, acc_number, version).await?
-    };
-
-    Ok((url, name))
-}
-
-fn parse_md5sum_txt(content: &[u8]) -> Result<HashMap<String, String>> {
-    let mut checksums: HashMap<String, String> = HashMap::new();
-
-    // Convert content to a UTF-8 string
-    let content_str =
-        std::str::from_utf8(content).context("Failed to convert checksum file to UTF-8")?;
-
-    // Iterate over each line in the checksum file
-    for line in content_str.lines() {
-        let parts: Vec<&str> = line.splitn(2, ' ').collect();
-        if parts.len() == 2 {
-            // Trim the filename to remove any leading whitespace
-            let filename = parts[1].trim_start();
-
-            if filename.ends_with("genomic.fna") {
-                checksums.insert("DNA".to_string(), parts[0].to_string());
-            } else if filename.ends_with("protein.faa") {
-                checksums.insert("protein".to_string(), parts[0].to_string());
-            }
-        } else {
-            return Err(anyhow!("Invalid checksum file"));
-        }
-    }
-
-    Ok(checksums)
-}
 
 // download and return data directly instead of saving to file
 async fn download_with_retry(
@@ -196,45 +90,224 @@ async fn download_with_retry(
     }))
 }
 
-async fn rest_api_download_with_retry(
+async fn try_remove_file(path: &PathBuf) {
+    if path.exists() {
+        if let Err(e) = tokio::fs::remove_file(path).await {
+            eprintln!("Failed to remove file {}: {e}", path);
+        }
+    }
+}
+
+/// Processes FASTX records from the provided data slice. Writes FASTA entries if a file is given
+/// and adds sequences to signatures in the provided `BuildCollection`.
+/// Note, if internal checksum (e.g. CRC32) or decompression issues occur, it will return an error.
+pub async fn process_fastx(
+    data: &[u8],
+    mut file: Option<&mut File>,
+    sigs: &mut BuildCollection, // will be empty collection if download_only
+    moltype: &str,
+    name: String,
+    filename: String,
+    range: Option<(usize, usize)>,
+) -> Result<()> {
+    let cursor = Cursor::new(data);
+    let mut fastx_reader = parse_fastx_reader(cursor)
+        .context("Failed to parse FASTX data (possibly CRC32 or decompression issue)")?;
+
+    while let Some(record) = fastx_reader.next() {
+        let record = record.context("Failed to read FASTX record")?;
+        let subseq = extract_range_from_record(&record, range)?;
+
+        // Optionally write the sequence in FASTA format
+        if let Some(ref mut file) = file {
+            let fasta_entry = format!(
+                ">{}\n{}\n",
+                String::from_utf8_lossy(record.id()),
+                String::from_utf8_lossy(&subseq)
+            );
+            file.write_all(fasta_entry.as_bytes())
+                .await
+                .context("Failed to write FASTA entry")?;
+        }
+
+        // Add the sequence to all matching records/signatures. Will not impact empty collection.
+        sigs.add_sequence(moltype, &subseq)?;
+    }
+
+    // Update the sig/manifest info once per call. Will not impact empty collection.
+    sigs.update_info(name, filename);
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn download_and_process_with_retry(
+    client: &Client,
+    accinfo: AccessionData,
+    location: &PathBuf,
+    retry: Option<u32>,
+    keep_fastas: bool,
+    mut sigs: BuildCollection,
+    download_only: bool,
+    write_checksum_fail: bool,
+) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+    let retry_count = retry.unwrap_or(3);
+    let mut download_failures = Vec::new();
+    let mut checksum_failures = Vec::new();
+    let empty_coll = BuildCollection::new();
+
+    let name = accinfo.name.clone();
+    let accession = accinfo.accession.clone();
+    let download_filename = accinfo.download_filename.clone().unwrap_or_default();
+    let moltype = accinfo.moltype.clone();
+    let filename = download_filename.clone();
+    let merged_sample = accinfo.url_info.len() > 1;
+
+    // Open file (if applicable) once, and append to it for merged samples
+    let mut file: Option<File> = if keep_fastas {
+        open_file_for_writing(location, Some(&download_filename)).await?
+    } else {
+        None
+    };
+
+    for uinfo in &accinfo.url_info {
+        let url = &uinfo.url;
+        let expected_md5 = &uinfo.md5sum;
+        let range = uinfo.range;
+
+        let mut attempts_left = retry_count;
+        let mut last_error: Option<anyhow::Error> = None;
+
+        while attempts_left > 0 {
+            let response = match client.get(url.clone()).send().await {
+                Ok(resp) if resp.status().is_success() => resp,
+                Ok(resp) => {
+                    last_error = Some(anyhow!("HTTP error {} from {}", resp.status(), url));
+                    attempts_left -= 1;
+                    continue;
+                }
+                Err(e) => {
+                    last_error = Some(anyhow!(e).context("Failed to send request"));
+                    attempts_left -= 1;
+                    continue;
+                }
+            };
+
+            match response.bytes().await {
+                Ok(data) => {
+                    // Attempt to parse and process FASTX
+                    let f = file.as_mut();
+                    let process_result = process_fastx(
+                        &data,
+                        f,
+                        &mut sigs,
+                        moltype.as_str(),
+                        name.clone(),
+                        filename.clone(),
+                        range,
+                    )
+                    .await;
+
+                    if let Err(e) = process_result {
+                        last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
+                        if keep_fastas {
+                            let path = location.join(&download_filename);
+                            try_remove_file(&path).await;
+                        }
+                        attempts_left -= 1;
+                        continue;
+                    }
+                    break; // success, break retry loop
+                }
+
+                Err(e) => {
+                    last_error = Some(anyhow!(e).context("Failed to read response body"));
+                    attempts_left -= 1;
+                }
+            }
+        }
+
+        // If we exhausted retries for this URL
+        if attempts_left == 0 {
+            let err_msg = last_error
+                .as_ref()
+                .map(ToString::to_string)
+                .unwrap_or_else(|| "Unknown failure".to_string());
+
+            if err_msg.contains("CRC") || err_msg.contains("decompression") {
+                if write_checksum_fail {
+                    checksum_failures.push(FailedChecksum::new(
+                        accession.clone(),
+                        name.clone(),
+                        moltype.to_string(),
+                        None,
+                        Some(download_filename.clone()),
+                        Some(url.clone()),
+                        expected_md5.clone(),
+                        err_msg.clone(),
+                    ));
+                }
+
+                // Mark the whole merged sample as failed, in addition to writing the checksum failure
+                if merged_sample {
+                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                }
+            } else {
+                download_failures.push(FailedDownload::from_accession_data(&accinfo));
+            }
+
+            // If any download completely fails, we should stop processing further URLs (rather than getting incomplete merged sigs/files)
+            return Ok((empty_coll, download_failures, checksum_failures));
+        }
+    }
+
+    sigs.update_info(name, filename);
+
+    Ok((sigs, download_failures, checksum_failures))
+}
+
+pub async fn download_parse_dehydrated_zip_with_retry(
     client: &Client,
     url: Url,
     headers: HeaderMap,
-    params: HashMap<&'static str, Cow<'static, str>>,
+    params: serde_json::Value,
     retry_count: u32,
-) -> Result<(
-    Option<Vec<u8>>,         // genomic_data
-    Option<Vec<u8>>,         // protein_data
-    HashMap<String, String>, // Parsed MD5 checksums
-)> {
+) -> Result<
+    HashMap<String, String>, // Direct download links
+> {
     let mut attempts = retry_count;
     let mut last_error: Option<anyhow::Error> = None;
 
     while attempts > 0 {
-        // Perform the GET request
+        attempts -= 1;
+
         let response = client
-            .get(url.clone())
+            .post(url.clone())
             .headers(headers.clone())
-            .query(&params)
+            .json(&params)
             .send()
             .await;
 
         match response {
-            Ok(resp) if resp.status().is_success() => {
-                let bytes = resp
-                    .bytes()
-                    .await
-                    .context("Failed to read bytes from response")?;
-
-                let cursor = Cursor::new(bytes);
-                // Try processing the ZIP archive
-                match process_zip_sync(cursor) {
-                    Ok(result) => return Ok(result), // Success: Return the processed result
-                    Err(e) => {
-                        last_error = Some(e); // Capture the error and retry
+            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
+                Ok(bytes) => match parse_dehydrated_files(&bytes) {
+                    Ok(links) => {
+                        if links.is_empty() {
+                            last_error = Some(anyhow!(
+                                        "Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?"
+                                    ));
+                        } else {
+                            return Ok(links);
+                        }
                     }
+                    Err(e) => {
+                        last_error = Some(e.into());
+                    }
+                },
+                Err(e) => {
+                    last_error = Some(e.into());
                 }
-            }
+            },
             Ok(resp) => {
                 last_error = Some(anyhow!(
                     "Server error status code {}: {}. Retrying...",
@@ -243,33 +316,30 @@ async fn rest_api_download_with_retry(
                 ));
             }
             Err(e) => {
-                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
+                last_error = Some(e.into());
             }
         }
-
-        attempts -= 1;
+        if attempts > 0 {
+            eprintln!("Retrying... ({} attempts left)", attempts);
+        }
     }
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "Failed to download file after {} retries: {}",
-            url,
-            retry_count
-        )
-    }))
+
+    Err(anyhow!(
+        "Failed to download and parse dehydrated ZIP file after {} attempts: {}\n  Last error: {}",
+        retry_count,
+        url,
+        last_error
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "Unknown".to_string())
+    ))
 }
 
-#[allow(clippy::type_complexity)]
-fn process_zip_sync<R: Read + Seek>(
-    reader: R,
-) -> Result<(
-    Option<Vec<u8>>,         // Genomic data
-    Option<Vec<u8>>,         // Protein data
-    HashMap<String, String>, // Parsed MD5 checksums
-)> {
+pub fn parse_dehydrated_files(zip_data: &[u8]) -> Result<HashMap<String, String>> // Direct download links
+{
+    let reader = Cursor::new(zip_data);
     let mut zip = ZipArchive::new(reader).context("Failed to read ZIP archive")?;
-    let mut genomic_data = None;
-    let mut protein_data = None;
-    let mut checksum_d = HashMap::new();
+
+    let mut download_links = HashMap::new();
 
     for i in 0..zip.len() {
         let mut file = zip
@@ -277,178 +347,47 @@ fn process_zip_sync<R: Read + Seek>(
             .context("Failed to access file in ZIP archive")?;
         let file_name = file.name().to_string();
 
-        if file_name.ends_with("md5sum.txt") {
+        if file_name.ends_with("fetch.txt") {
             let mut content = Vec::new();
             file.read_to_end(&mut content)
                 .context(format!("Failed to read contents of {}", file_name))?;
-            checksum_d = parse_md5sum_txt(&content)?;
-        } else if file_name.ends_with("genomic.fna") {
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)
-                .context(format!("Failed to read contents of {}", file_name))?;
-            genomic_data = Some(content);
-        } else if file_name.ends_with("protein.faa") {
-            let mut content = Vec::new();
-            file.read_to_end(&mut content)
-                .context(format!("Failed to read contents of {}", file_name))?;
-            protein_data = Some(content);
+            download_links = parse_fetch_txt(&content)?;
         }
     }
 
-    Ok((genomic_data, protein_data, checksum_d))
+    Ok(download_links)
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn dl_sketch_assembly_accession_ncbi_api(
-    client: &Client,
-    accinfo: GBAssemblyData,
-    location: &PathBuf,
-    n_retries: u32,
-    keep_fastas: bool,
-    mut sigs: BuildCollection,
-    file_types: Vec<GenBankFileType>,
-    download_only: bool,
-    base_url: &str,
-    headers: HeaderMap,
-    params: HashMap<&'static str, Cow<'static, str>>,
-) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
-    let empty_coll = BuildCollection::new();
-    let mut download_failures = Vec::<FailedDownload>::new();
-    let mut checksum_failures = Vec::<FailedChecksum>::new();
+fn parse_fetch_txt(content: &[u8]) -> Result<HashMap<String, String>> {
+    let mut download_links = HashMap::new();
 
-    let name = accinfo.name.clone();
-    let accession = accinfo.accession.clone();
+    let content_str =
+        std::str::from_utf8(content).context("Failed to convert fetch file to UTF-8")?;
 
-    let url = Url::parse(&format!("{}/{}/download", base_url, accession))?;
+    for line in content_str.lines() {
+        let columns: Vec<&str> = line.split_whitespace().collect();
+        if columns.len() >= 3 {
+            let url = columns[0].to_string();
+            let file_path = columns[2].trim_start();
 
-    let (mut genome_data, mut protein_data, checksum_d) =
-        match rest_api_download_with_retry(client, url, headers, params, n_retries).await {
-            Ok(result) => result,
-            Err(_e) => {
-                eprintln!(
-                    "Error downloading NCBI ZIP file for accession '{}'. Writing to failures file.",
-                    accession
-                );
-                for file_type in &file_types {
-                    // try to get url
-                    let mut url = None;
-                    if let Ok((base_url, full_name)) =
-                        fetch_genbank_filename(client, accession.as_str(), None).await
-                    {
-                        let formatted_url =
-                            format!("{}/{}{}", base_url, full_name, file_type.suffix());
-                        url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
-                    }
-                    for file_type in &file_types {
-                        let file_name = file_type.filename_to_write(&accession);
-                        let failed_download = FailedDownload::from_gbassembly(
-                            accession.clone(),
-                            name.clone(),
-                            file_type.moltype(),
-                            None,
-                            Some(file_name), // intended download filename
-                            url.clone(),     // URL of the file
-                            None,            // No range
-                        );
-                        download_failures.push(failed_download);
-                    }
-                }
-                return Ok((empty_coll, download_failures, checksum_failures));
-            }
-        };
-    // check md5sums; write and/or sketch each file
-    for file_type in file_types {
-        let file_name = file_type.filename_to_write(&accession);
-        let (data, expected_md5) = match file_type.moltype().as_str() {
-            "DNA" => (genome_data.take(), checksum_d.get("DNA")), // Take ownership of genome_data
-            "protein" => (protein_data.take(), checksum_d.get("protein")), // Take ownership of protein_data
-            _ => {
-                eprintln!("Unsupported moltype: {}", file_type.moltype());
-                (None, None)
-            }
-        };
+            // Extract accession from the file path and normalize the filename
+            if let Some((_, rest)) = file_path.split_once("data/") {
+                if let Some((accession, filename)) = rest.split_once('/') {
+                    let normalized_filename = if filename == "protein.faa" {
+                        format!("{}_protein.faa.gz", accession)
+                    } else if filename.ends_with("genomic.fna") {
+                        format!("{}_genomic.fna.gz", accession)
+                    } else {
+                        continue;
+                    };
 
-        if let Some(data) = data {
-            // Calculate MD5 hash for the data
-            let computed_md5 = format!("{:x}", md5::compute(&data));
-
-            // Verify checksum
-            if let Some(expected_md5) = expected_md5 {
-                if &computed_md5 != expected_md5 {
-                    let error_message = format!(
-                        "Checksum mismatch for {}: Expected {}, Got {}",
-                        file_name, expected_md5, computed_md5
-                    );
-                    // Skip processing for checksum failures
-                    let checksum_mismatch: FailedChecksum = FailedChecksum::new(
-                        accession.clone(),
-                        name.clone(),
-                        file_type.moltype(),
-                        None,
-                        Some(file_name.clone()),
-                        None, // To do -- get ftp link from here?
-                        Some(expected_md5.clone()),
-                        error_message.clone(),
-                    );
-                    checksum_failures.push(checksum_mismatch);
-                    continue;
-                }
-            } else {
-                eprintln!("No expected checksum found for {}", file_name);
-            }
-
-            if keep_fastas {
-                let path = location.join(&file_name);
-                fs::write(&path, &data).context("Failed to write data to file")?;
-            }
-
-            if !download_only {
-                match file_type {
-                    GenBankFileType::Genomic => {
-                        sigs.build_sigs_from_data(
-                            data, // Ownership is passed here
-                            "DNA",
-                            name.clone(),
-                            file_name.clone(),
-                            None,
-                        )?;
-                    }
-                    GenBankFileType::Protein => {
-                        sigs.build_sigs_from_data(
-                            data, // Ownership is passed here
-                            "protein",
-                            name.clone(),
-                            file_name.clone(),
-                            None,
-                        )?;
-                    }
-                    _ => {}
+                    download_links.insert(normalized_filename, url);
                 }
             }
-        } else {
-            // try to get url for use with urlsketch later
-            let mut url = None;
-            if let Ok((base_url, full_name)) =
-                fetch_genbank_filename(client, accession.as_str(), None).await
-            {
-                let formatted_url = format!("{}/{}{}", base_url, full_name, file_type.suffix());
-                url = Some(Url::parse(&formatted_url).context("Failed to parse URL")?);
-            }
-            // no data --> failed download
-            let failed_download = FailedDownload::from_gbassembly(
-                accession.clone(),
-                name.clone(),
-                file_type.moltype(),
-                expected_md5.map(|x| x.to_string()), // single MD5 checksum
-                Some(file_name),                     // intended download filename
-                url,                                 // URL of the file
-                None,                                // No range
-            );
-            download_failures.push(failed_download);
         }
     }
 
-    Ok((sigs, download_failures, checksum_failures))
+    Ok(download_links)
 }
 
 /// Extracts the specified range from sequences in data and writes to the file in FASTA format.
@@ -545,8 +484,6 @@ async fn dl_sketch_url(
     retry: Option<u32>,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    _genomes_only: bool,
-    _proteomes_only: bool,
     download_only: bool,
     write_checksum_fail: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
@@ -663,21 +600,31 @@ fn get_current_directory() -> Result<PathBuf> {
 // Load existing batch files into MultiCollection, skipping corrupt files
 async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection, usize)> {
     // Remove the .zip extension to get the base name
-    let outpath_base = outpath.with_extension("");
+    let filename = outpath.file_name().unwrap();
+    let (base, suffix) = if filename.ends_with(".sig.zip") {
+        (filename.strip_suffix(".sig.zip").unwrap(), "sig.zip")
+    } else if filename.ends_with(".zip") {
+        (filename.strip_suffix(".zip").unwrap(), "zip")
+    } else {
+        return Err(anyhow::anyhow!(
+            "Output path must end with .zip or .sig.zip"
+        ));
+    };
 
-    // Regex to match the exact zip filename and its batches (e.g., "outpath.zip", "outpath.1.zip", "outpath.2.zip", etc.)
+    // Regex to match the exact zip filename and its batches (e.g., "outpath.zip" --> "outpath.N.zip"; "outpath.sig.zip" --> "outpath.N.sig.zip", etc.)
+    // Also match .incomplete so we can delete these.
     let zip_file_pattern = Regex::new(&format!(
-        r"^{}(?:\.(\d+))?\.zip$",
-        regex::escape(outpath_base.file_name().unwrap())
-    ))
-    .unwrap();
+        r"^{}(?:\.(\d+))?\.{}(?:\.incomplete)?$",
+        regex::escape(base),
+        regex::escape(suffix)
+    ))?;
 
     // Initialize a vector to store valid collections
     let mut collections = Vec::new();
     let mut highest_batch = 0; // Track the highest batch number
 
     // find parent dir (or use current dir)
-    let dir = outpath_base
+    let dir = outpath
         .parent()
         .filter(|p| !p.as_os_str().is_empty()) // Ensure the parent is not empty
         .map(|p| p.to_path_buf()) // Use the parent if it's valid
@@ -731,6 +678,19 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
         if let Some(file_name) = entry_path.file_name() {
             // Check if the file matches the base zip file or any batched zip file (outpath.zip, outpath.1.zip, etc.)
             if let Some(captures) = zip_file_pattern.captures(file_name) {
+                // remove any incomplete batches
+                if file_name.ends_with(".incomplete") {
+                    eprintln!("Removing incomplete zip file: '{}'", file_name);
+                    if let Err(e) = tokio::fs::remove_file(&entry_path).await {
+                        eprintln!(
+                            "Warning: Failed to remove incomplete file '{}': {:?}",
+                            file_name, e
+                        );
+                    }
+                    continue;
+                }
+
+                // try to load a valid zip file
                 Collection::from_zipfile(&entry_path)
                     .map(|collection| {
                         collections.push(collection);
@@ -761,24 +721,40 @@ async fn create_or_get_zip_file(
     outpath: &PathBuf,
     batch_size: usize,
     batch_index: usize,
-) -> Result<ZipFileWriter<Compat<File>>, anyhow::Error> {
+) -> Result<(ZipFileWriter<Compat<File>>, PathBuf, PathBuf)> {
     let batch_outpath = if batch_size == 0 {
         // If batch size is zero, use provided outpath (contains .zip extension)
         outpath.clone()
     } else {
         // Otherwise, modify outpath to include the batch index
-        let outpath_base = outpath.with_extension(""); // remove .zip extension
-        outpath_base.with_file_name(format!(
-            "{}.{}.zip",
-            outpath_base.file_stem().unwrap(),
-            batch_index
-        ))
-    };
-    let file = File::create(&batch_outpath)
-        .await
-        .with_context(|| format!("Failed to create file: {:?}", batch_outpath))?;
+        let filename = outpath.file_name().unwrap();
 
-    Ok(ZipFileWriter::with_tokio(file))
+        let new_filename = if filename.ends_with(".sig.zip") {
+            let base = filename.strip_suffix(".sig.zip").unwrap();
+            format!("{}.{}.sig.zip", base, batch_index)
+        } else if filename.ends_with(".zip") {
+            let base = filename.strip_suffix(".zip").unwrap();
+            format!("{}.{}.zip", base, batch_index)
+        } else {
+            // This shouldn't happen due to earlier checks, but handle it just in case
+            return Err(anyhow::anyhow!("Output path must end with .zip"));
+        };
+
+        outpath
+            .parent()
+            .unwrap_or(camino::Utf8Path::new(""))
+            .join(new_filename)
+    };
+    let temp_outpath = batch_outpath.with_extension(format!(
+        "{}.incomplete",
+        batch_outpath.extension().unwrap_or_default()
+    ));
+
+    let file = File::create(&temp_outpath)
+        .await
+        .with_context(|| format!("Failed to create file: {:?}", temp_outpath))?;
+
+    Ok((ZipFileWriter::with_tokio(file), temp_outpath, batch_outpath))
 }
 
 pub fn zipwriter_handle(
@@ -792,8 +768,10 @@ pub fn zipwriter_handle(
         let mut md5sum_occurrences = HashMap::new();
         let mut zip_manifest = BuildManifest::new();
         let mut wrote_sigs = false;
-        let mut acc_count = 0; // count the number of accessions (or urls, in urlsketch)
+        let mut count = 0; // count the number of accessions/downloaded files sketched
         let mut zip_writer = None;
+        let mut current_temp_path: Option<PathBuf> = None;
+        let mut current_batch_path: Option<PathBuf> = None;
 
         if let Some(outpath) = output_sigs {
             let outpath: PathBuf = outpath.into();
@@ -803,7 +781,11 @@ pub fn zipwriter_handle(
                     // create zip file if needed
                     zip_writer =
                         match create_or_get_zip_file(&outpath, batch_size, batch_index).await {
-                            Ok(writer) => Some(writer),
+                            Ok((writer, temp_outpath, final_outpath)) => {
+                                current_temp_path = Some(temp_outpath);
+                                current_batch_path = Some(final_outpath);
+                                Some(writer)
+                            }
                             Err(e) => {
                                 let _ = error_sender.send(e).await;
                                 return;
@@ -817,8 +799,14 @@ pub fn zipwriter_handle(
                         .async_write_sigs_to_zip(zip_writer, &mut md5sum_occurrences)
                         .await
                     {
-                        Ok(_) => {
+                        Ok(true) => {
                             wrote_sigs = true;
+                            // Add all records from buildcoll manifest
+                            zip_manifest.extend_from_manifest(&buildcoll.manifest);
+                            count += 1
+                        }
+                        Ok(false) => {
+                            continue; // No new signatures written, skip to next
                         }
                         Err(e) => {
                             let error = e.context("Error processing signature");
@@ -827,14 +815,10 @@ pub fn zipwriter_handle(
                             }
                         }
                     }
-                    // Add all records from buildcoll manifest
-                    zip_manifest.extend_from_manifest(&buildcoll.manifest);
-                    // each buildcoll has accession
-                    acc_count += 1;
                 }
 
                 // if batch size is non-zero and is reached, close the current zip
-                if batch_size > 0 && acc_count >= batch_size {
+                if batch_size > 0 && count >= batch_size {
                     if let Some(mut zip_writer) = zip_writer.take() {
                         if let Err(e) = zip_manifest
                             .async_write_manifest_to_zip(&mut zip_writer)
@@ -848,16 +832,35 @@ pub fn zipwriter_handle(
                             return;
                         }
                     }
-                    eprintln!("finished batch {}", batch_index);
+                    // rename temp to final
+                    if let Some(temp_path) = current_temp_path.take() {
+                        let final_path = current_batch_path.as_ref().unwrap();
+                        if let Err(e) = tokio::fs::rename(&temp_path, final_path).await {
+                            let _ = error_sender
+                                .send(anyhow::anyhow!(
+                                    "Failed to rename {:?} to {:?}: {}",
+                                    temp_path,
+                                    final_path,
+                                    e
+                                ))
+                                .await;
+                            return;
+                        }
+                    }
+                    eprintln!(
+                        "finished batch {}: wrote to '{}'",
+                        batch_index,
+                        current_batch_path.as_ref().unwrap()
+                    );
                     // Start a new batch
                     batch_index += 1;
-                    acc_count = 0;
+                    count = 0;
                     zip_manifest.clear();
                     zip_writer = None; // reset zip_writer so a new zip will be created when needed
                 }
             }
 
-            if acc_count > 0 {
+            if count > 0 {
                 // write the final manifest
                 if let Some(mut zip_writer) = zip_writer.take() {
                     if let Err(e) = zip_manifest
@@ -873,6 +876,27 @@ pub fn zipwriter_handle(
                         let _ = error_sender.send(error).await;
                         return;
                     }
+                    // rename temp to final
+                    if let Some(temp_path) = current_temp_path.take() {
+                        let final_path = current_batch_path.as_ref().unwrap();
+                        if let Err(e) = tokio::fs::rename(&temp_path, final_path).await {
+                            let _ = error_sender
+                                .send(anyhow::anyhow!(
+                                    "Failed to rename {:?} to {:?}: {}",
+                                    temp_path,
+                                    final_path,
+                                    e
+                                ))
+                                .await;
+                            return;
+                        }
+                    }
+                    // notify about final batch
+                    eprintln!(
+                        "finished batch {}: wrote to '{}'",
+                        batch_index,
+                        current_batch_path.as_ref().unwrap()
+                    );
                 }
             }
             if !wrote_sigs {
@@ -1006,6 +1030,7 @@ pub async fn gbsketch(
     batch_size: u32,
     n_permits: usize,
     api_key: String,
+    verbose: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1089,13 +1114,12 @@ pub async fn gbsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
-    let headers = HeaderMap::new();
-    let mut params: HashMap<&'static str, Cow<'static, str>> = HashMap::new();
-    if !api_key.is_empty() {
-        params.insert("api_key", Cow::Owned(api_key.to_string()));
-    }
-    let base_url = "https://api.ncbi.nlm.nih.gov/datasets/v2/genome/accession/";
 
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse()?);
+    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
+
+    // build sketch params
     if download_only {
         if genomes_only {
             eprintln!("Downloading genomes only.");
@@ -1140,18 +1164,52 @@ pub async fn gbsketch(
 
     // what files do we want to download?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+
+    let mut annotation_types = vec!["SEQUENCE_REPORT"];
+
     if genomes_only {
-        params.insert("include_annotation_type", Cow::Borrowed("GENOME_FASTA"));
+        annotation_types.push("GENOME_FASTA");
         file_types = vec![GenBankFileType::Genomic];
     } else if proteomes_only {
-        params.insert("include_annotation_type", Cow::Borrowed("PROT_FASTA"));
+        annotation_types.push("PROT_FASTA");
         file_types = vec![GenBankFileType::Protein];
     } else {
-        params.insert(
-            "include_annotation_type",
-            Cow::Borrowed("GENOME_FASTA,PROT_FASTA"),
-        );
+        annotation_types.push("GENOME_FASTA");
+        annotation_types.push("PROT_FASTA");
     }
+
+    // get accessions for retrieval
+    let accessions: Vec<String> = accession_info
+        .iter()
+        .map(|accinfo| accinfo.accession.clone())
+        .collect();
+
+    let post_params = json!({
+        "accessions": accessions,
+        "include_annotation_type": annotation_types,
+        "hydrated": "DATA_REPORT_ONLY",
+        "api_key": if !api_key.is_empty() { Some(api_key) } else { None }
+    });
+
+    // dl + parse dehydrated file
+    let download_links = match download_parse_dehydrated_zip_with_retry(
+        &client,
+        post_url,
+        headers,
+        post_params,
+        retry_times,
+    )
+    .await
+    {
+        Ok(links) => links,
+        Err(e) => {
+            bail!(
+                "Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting.\n Reason:\n{}",
+                e
+            );
+        }
+    };
+    eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
 
     for (i, accinfo) in accession_info.into_iter().enumerate() {
         py.check_signals()?; // If interrupted, return an Err automatically
@@ -1166,72 +1224,144 @@ pub async fn gbsketch(
             }
         }
 
-        // clone remaining utilities
-        let semaphore_clone = Arc::clone(&semaphore);
-        let client_clone = Arc::clone(&client);
-        let send_sigs = send_sigs.clone();
-        let send_failed = send_failed.clone();
-        let checksum_send_failed = send_failed_checksums.clone();
-        let download_path_clone = download_path.clone(); // Clone the path for each task
-        let send_errors = error_sender.clone();
-        let headers = headers.clone();
-        let params = params.clone();
-        let ftypes = file_types.clone();
+        // collect info for this accession into vector of accessiondata
+        let mut acc_data = Vec::<AccessionData>::new();
+        let mut download_failures = Vec::<FailedDownload>::new();
 
-        tokio::spawn(async move {
-            let _permit = semaphore_clone.acquire().await;
-            // progress report when the permit is available and processing begins
-            if (i + 1) % reporting_threshold == 0 {
-                let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-                println!(
-                    "Starting accession {}/{} ({}%)",
-                    (i + 1),
-                    n_accs,
-                    percent_processed
-                );
+        for ftype in &file_types {
+            if ftype == &GenBankFileType::Genomic {
+                let genomic_filename = format!("{}_genomic.fna.gz", accinfo.accession);
+                let genomic_url = download_links
+                    .get(&genomic_filename)
+                    .and_then(|url| Url::parse(url).ok());
+
+                if let Some(genomic_url) = genomic_url {
+                    let genomic_url_info = vec![UrlInfo::new(genomic_url, None, None)];
+
+                    let genomic_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Dna,
+                        genomic_url_info,
+                        Some(genomic_filename),
+                    );
+                    acc_data.push(genomic_accinfo);
+                } else {
+                    // Build a placeholder AccessionData and convert to FailedDownload
+                    let placeholder_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Dna,
+                        vec![],
+                        Some(genomic_filename),
+                    );
+                    download_failures
+                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                }
+            } else if ftype == &GenBankFileType::Protein {
+                let protein_filename = format!("{}_protein.faa.gz", accinfo.accession);
+                let protein_url = download_links
+                    .get(&protein_filename)
+                    .and_then(|url| Url::parse(url).ok());
+
+                if let Some(protein_url) = protein_url {
+                    let protein_url_info = vec![UrlInfo::new(protein_url, None, None)];
+
+                    let protein_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Protein,
+                        protein_url_info,
+                        Some(protein_filename),
+                    );
+                    acc_data.push(protein_accinfo);
+                } else {
+                    // Build a placeholder AccessionData and convert to FailedDownload
+                    let placeholder_accinfo = AccessionData::new(
+                        accinfo.accession.clone(),
+                        accinfo.name.clone(),
+                        InputMolType::Protein,
+                        vec![],
+                        Some(protein_filename),
+                    );
+                    download_failures
+                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
+                }
             }
-            // Perform download and sketch
-            let result = dl_sketch_assembly_accession_ncbi_api(
-                &client_clone,
-                accinfo.clone(),
-                &download_path_clone,
-                retry_times,
-                keep_fastas,
-                sigs,
-                ftypes,
-                download_only,
-                base_url,
-                headers,
-                params,
-            )
-            .await;
-            match result {
-                Ok((coll, failed_downloads, failed_checksums)) => {
-                    if !coll.is_empty() {
-                        if let Err(e) = send_sigs.send(coll).await {
-                            eprintln!("Failed to send signatures: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
+        }
+
+        // if we failed to get a download link, write to download failures
+        for fail in &download_failures {
+            if let Err(e) = send_failed.send(fail.clone()).await {
+                eprintln!("Failed to send missing download failure info: {}", e);
+                let _ = error_sender.send(e.into()).await;
+            }
+        }
+
+        for accinfo in acc_data {
+            // clone remaining utilities
+            let semaphore_clone = Arc::clone(&semaphore);
+            let client_clone = Arc::clone(&client);
+            let send_sigs = send_sigs.clone();
+            let send_failed = send_failed.clone();
+            let checksum_send_failed = send_failed_checksums.clone();
+            let download_path_clone = download_path.clone(); // Clone the path for each task
+            let send_errors = error_sender.clone();
+            let ftype_sigs = sigs.clone();
+
+            tokio::spawn(async move {
+                let _permit = semaphore_clone.acquire().await;
+                // progress report when the permit is available and processing begins
+                if verbose || (i + 1) % reporting_threshold == 0 {
+                    let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
+                    println!(
+                        "Starting accession {}/{} ({}%) - moltype: {}",
+                        (i + 1),
+                        n_accs,
+                        percent_processed,
+                        accinfo.moltype
+                    );
+                }
+
+                let result = download_and_process_with_retry(
+                    &client_clone,
+                    accinfo,
+                    &download_path_clone,
+                    Some(retry_times),
+                    keep_fastas,
+                    ftype_sigs,
+                    download_only,
+                    true,
+                )
+                .await;
+                match result {
+                    Ok((coll, failed_downloads, failed_checksums)) => {
+                        if !coll.is_empty() {
+                            if let Err(e) = send_sigs.send(coll).await {
+                                eprintln!("Failed to send signatures: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                        for fail in failed_downloads {
+                            if let Err(e) = send_failed.send(fail).await {
+                                eprintln!("Failed to send failed download info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
+                        }
+                        for fail in failed_checksums {
+                            if let Err(e) = checksum_send_failed.send(fail).await {
+                                eprintln!("Failed to send failed checksum info: {}", e);
+                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
+                            }
                         }
                     }
-                    for fail in failed_downloads {
-                        if let Err(e) = send_failed.send(fail).await {
-                            eprintln!("Failed to send failed download info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
-                    }
-                    for fail in failed_checksums {
-                        if let Err(e) = checksum_send_failed.send(fail).await {
-                            eprintln!("Failed to send failed checksum info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
+                    Err(e) => {
+                        let _ = send_errors.send(e).await;
                     }
                 }
-                Err(e) => {
-                    let _ = send_errors.send(e).await;
-                }
-            }
-            drop(send_errors);
-        });
+                drop(send_errors);
+            });
+        }
     }
     // drop senders as we're done sending data
     drop(send_sigs);
@@ -1268,6 +1398,8 @@ pub async fn urlsketch(
     download_only: bool,
     batch_size: u32,
     n_permits: usize,
+    force: bool,
+    verbose: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1350,7 +1482,7 @@ pub async fn urlsketch(
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas)?;
+    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
@@ -1447,13 +1579,14 @@ pub async fn urlsketch(
         tokio::spawn(async move {
             let _permit = semaphore_clone.acquire().await;
             // progress report when the permit is available and processing begins
-            if (i + 1) % reporting_threshold == 0 {
+            if verbose || (i + 1) % reporting_threshold == 0 {
                 let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
                 println!(
-                    "Starting accession {}/{} ({}%)",
+                    "Starting accession {}/{} ({}%) - moltype: {}",
                     (i + 1),
                     n_accs,
-                    percent_processed
+                    percent_processed,
+                    accinfo.moltype
                 );
             }
             // Perform download and sketch
@@ -1464,8 +1597,6 @@ pub async fn urlsketch(
                 Some(retry_times),
                 keep_fastas,
                 sigs,
-                genomes_only,
-                proteomes_only,
                 download_only,
                 write_checksum_fail,
             )

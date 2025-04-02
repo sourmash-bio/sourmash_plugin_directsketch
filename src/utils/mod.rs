@@ -8,20 +8,24 @@ use tokio::io::AsyncWriteExt;
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum InputMolType {
     Dna,
     Protein,
 }
 
-impl InputMolType {}
+impl InputMolType {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            InputMolType::Dna => "DNA",
+            InputMolType::Protein => "protein",
+        }
+    }
+}
 
 impl fmt::Display for InputMolType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            InputMolType::Dna => write!(f, "DNA"),
-            InputMolType::Protein => write!(f, "protein"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -62,6 +66,7 @@ impl GenBankFileType {
         format!("{}{}", full_name, self.suffix())
     }
 
+    #[allow(dead_code)]
     pub fn filename_to_write(&self, accession: &str) -> String {
         match self {
             GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
@@ -81,6 +86,7 @@ impl GenBankFileType {
         }
     }
 
+    #[allow(dead_code)]
     pub fn moltype(&self) -> String {
         match self {
             GenBankFileType::Genomic => "DNA".to_string(),
@@ -91,7 +97,7 @@ impl GenBankFileType {
 }
 
 #[allow(dead_code)]
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AccessionData {
     pub accession: String,
     pub name: String,
@@ -100,11 +106,35 @@ pub struct AccessionData {
     pub download_filename: Option<String>, // Need to require this if --keep-fastas are used
 }
 
-#[derive(Clone)]
+impl AccessionData {
+    pub fn new(
+        accession: String,
+        name: String,
+        moltype: InputMolType,
+        url_info: Vec<UrlInfo>,
+        download_filename: Option<String>,
+    ) -> Self {
+        AccessionData {
+            accession,
+            name,
+            moltype,
+            url_info,
+            download_filename,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub struct UrlInfo {
     pub url: reqwest::Url,
     pub md5sum: Option<String>,
     pub range: Option<(usize, usize)>,
+}
+
+impl UrlInfo {
+    pub fn new(url: reqwest::Url, md5sum: Option<String>, range: Option<(usize, usize)>) -> Self {
+        UrlInfo { url, md5sum, range }
+    }
 }
 
 #[derive(Clone)]
@@ -299,6 +329,7 @@ fn parse_ranges(
 pub fn load_accession_info(
     input_csv: String,
     keep_fasta: bool,
+    force: bool,
 ) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
@@ -306,6 +337,7 @@ pub fn load_accession_info(
     let mut duplicate_count = 0;
     let mut md5sum_count = 0; // Counter for entries with MD5sum
                               // to do - maybe use HashSet for accessions too to avoid incomplete dupes
+    let mut url_failed = 0;
     let mut rdr = csv::Reader::from_path(input_csv)?;
 
     // Check column names
@@ -354,13 +386,24 @@ pub fn load_accession_info(
         // Parse URLs
         let url_result = parse_urls(record.get(5));
         let urls = match url_result {
-            Ok(urls) => {
-                if urls.is_empty() {
-                    return Err(anyhow!("No valid URLs found in 'url' field"));
+            Ok(urls) => urls,
+            Err(e) => {
+                if force {
+                    eprintln!(
+                        "Warning: No valid URLs found in 'url' field for accession '{}'.",
+                        acc
+                    );
+                    url_failed += 1;
+                    continue;
+                } else {
+                    return Err(anyhow!(
+                        // Propagate the error if not forcing
+                        "No valid URLs found in 'url' field for accession '{}': {}",
+                        acc,
+                        e
+                    ));
                 }
-                urls
             }
-            Err(e) => return Err(e), // Propagate the error if parsing fails
         };
 
         // Parse MD5sums (optional)
@@ -398,6 +441,9 @@ pub fn load_accession_info(
     // Print warning if there were duplicated rows.
     if duplicate_count > 0 {
         println!("Warning: {} duplicated rows were skipped.", duplicate_count);
+    }
+    if url_failed > 0 {
+        println!("Warning: Failed to get URLs from {} rows.", url_failed);
     }
     println!(
         "Loaded {} rows (including {} rows with MD5sum).",
@@ -458,6 +504,7 @@ pub struct FailedDownload {
     range: String,
 }
 
+#[allow(dead_code)]
 impl FailedDownload {
     /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
     pub fn from_gbassembly(
