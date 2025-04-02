@@ -10,13 +10,16 @@ use sourmash::collection::Collection;
 use std::cmp::max;
 use std::collections::HashMap;
 use std::fs::create_dir_all;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::Semaphore;
+use tokio::io::{duplex, AsyncWriteExt, BufWriter};
+use tokio::sync::{oneshot, Semaphore};
+use tokio::task::spawn_blocking;
+use tokio_stream::StreamExt;
 use tokio_util::compat::Compat;
+use tokio_util::io::SyncIoBridge;
 use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
@@ -98,20 +101,37 @@ async fn try_remove_file(path: &PathBuf) {
     }
 }
 
-/// Processes FASTX records from the provided data slice. Writes FASTA entries if a file is given
+fn open_file_for_writing_blocking(
+    path: &PathBuf,
+    name: Option<&str>,
+) -> Result<Option<std::fs::File>> {
+    use std::fs::OpenOptions;
+    if let Some(name) = name {
+        let full_path = path.join(name);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(full_path)
+            .context("Failed to open file for writing")?;
+        Ok(Some(file))
+    } else {
+        Ok(None)
+    }
+}
+
+/// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
 /// Note, if internal checksum (e.g. CRC32) or decompression issues occur, it will return an error.
-pub async fn process_fastx(
-    data: &[u8],
-    mut file: Option<&mut File>,
-    sigs: &mut BuildCollection, // will be empty collection if download_only
+pub fn process_fastx_from_reader<R: std::io::Read + Send + 'static>(
+    reader: R,
+    mut file: Option<std::fs::File>,
+    mut sigs: BuildCollection,
     moltype: &str,
     name: String,
     filename: String,
     range: Option<(usize, usize)>,
-) -> Result<()> {
-    let cursor = Cursor::new(data);
-    let mut fastx_reader = parse_fastx_reader(cursor)
+) -> Result<BuildCollection> {
+    let mut fastx_reader = parse_fastx_reader(reader)
         .context("Failed to parse FASTX data (possibly CRC32 or decompression issue)")?;
 
     while let Some(record) = fastx_reader.next() {
@@ -126,7 +146,6 @@ pub async fn process_fastx(
                 String::from_utf8_lossy(&subseq)
             );
             file.write_all(fasta_entry.as_bytes())
-                .await
                 .context("Failed to write FASTA entry")?;
         }
 
@@ -136,19 +155,18 @@ pub async fn process_fastx(
 
     // Update the sig/manifest info once per call. Will not impact empty collection.
     sigs.update_info(name, filename);
-
-    Ok(())
+    Ok(sigs)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn download_and_process_with_retry(
+pub async fn stream_and_process_with_retry(
     client: &Client,
     accinfo: AccessionData,
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    download_only: bool,
+    _download_only: bool,
     write_checksum_fail: bool,
 ) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3);
@@ -163,9 +181,9 @@ pub async fn download_and_process_with_retry(
     let filename = download_filename.clone();
     let merged_sample = accinfo.url_info.len() > 1;
 
-    // Open file (if applicable) once, and append to it for merged samples
-    let mut file: Option<File> = if keep_fastas {
-        open_file_for_writing(location, Some(&download_filename)).await?
+    let mut file: Option<std::fs::File> = if keep_fastas {
+        // This function must return std::fs::File, not tokio::fs::File
+        open_file_for_writing_blocking(location, Some(&download_filename))?
     } else {
         None
     };
@@ -193,35 +211,63 @@ pub async fn download_and_process_with_retry(
                 }
             };
 
-            match response.bytes().await {
-                Ok(data) => {
-                    // Attempt to parse and process FASTX
-                    let f = file.as_mut();
-                    let process_result = process_fastx(
-                        &data,
-                        f,
-                        &mut sigs,
-                        moltype.as_str(),
-                        name.clone(),
-                        filename.clone(),
-                        range,
-                    )
-                    .await;
+            let (mut writer, reader) = duplex(1024 * 1024);
+            let (tx, rx) = oneshot::channel();
 
-                    if let Err(e) = process_result {
-                        last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
-                        if keep_fastas {
-                            let path = location.join(&download_filename);
-                            try_remove_file(&path).await;
+            let moltype_cloned = moltype.as_str();
+            let name_cloned = name.clone();
+            let filename_cloned = filename.clone();
+            let file_taken = file.take();
+            let sigs_taken = std::mem::take(&mut sigs);
+
+            let reader = SyncIoBridge::new(reader);
+            spawn_blocking(move || {
+                let result = process_fastx_from_reader(
+                    reader,
+                    file_taken,
+                    sigs_taken,
+                    moltype_cloned,
+                    name_cloned,
+                    filename_cloned,
+                    range,
+                );
+                let _ = tx.send(result);
+            });
+
+            let mut stream = response.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(bytes) => {
+                        if let Err(e) = writer.write_all(&bytes).await {
+                            last_error = Some(anyhow!(e).context("Failed to stream FASTX data"));
+                            break;
                         }
-                        attempts_left -= 1;
-                        continue;
                     }
-                    break; // success, break retry loop
+                    Err(e) => {
+                        last_error = Some(anyhow!(e).context("Failed to read response chunk"));
+                        break;
+                    }
                 }
+            }
 
-                Err(e) => {
-                    last_error = Some(anyhow!(e).context("Failed to read response body"));
+            writer.shutdown().await.ok();
+
+            match rx.await {
+                Ok(Ok(updated_sigs)) => {
+                    sigs = updated_sigs;
+                    break;
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
+                    attempts_left -= 1;
+                    if keep_fastas {
+                        let path = location.join(&download_filename);
+                        try_remove_file(&path).await;
+                    }
+                }
+                Err(_) => {
+                    last_error = Some(anyhow!("Processing task failed or was cancelled"));
                     attempts_left -= 1;
                 }
             }
@@ -1309,6 +1355,12 @@ pub async fn gbsketch(
             let send_errors = error_sender.clone();
             let ftype_sigs = sigs.clone();
 
+            // to do: try replacing semaphore with .for_each_concurrent(Some(max_concurrency), |accinfo| async move { (using tokio stream)
+            // tokio_stream::iter(acc_data)
+            //.for_each_concurrent(Some(concurrency_limit), |accinfo| async move {
+            // accession processing
+            // }
+            // .await;
             tokio::spawn(async move {
                 let _permit = semaphore_clone.acquire().await;
                 // progress report when the permit is available and processing begins
@@ -1323,7 +1375,7 @@ pub async fn gbsketch(
                     );
                 }
 
-                let result = download_and_process_with_retry(
+                let result = stream_and_process_with_retry(
                     &client_clone,
                     accinfo,
                     &download_path_clone,
