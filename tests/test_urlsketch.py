@@ -395,6 +395,63 @@ def test_urlsketch_missing_output(runtmp):
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
 
 
+def test_urlsketch_empty_url_fail(runtmp, capfd):
+    # modify the acc file to have an empty URL
+    acc_csv = get_test_data('acc-url.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        for line in lines:
+            # if this acc exist in line, write an line with empty URL instead
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz', '')  # add empty URL
+                print(mod_line)
+                outF.write(mod_line)
+            else:
+                outF.write(line)
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    # this should fail since the URL is empty
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert "Error: No valid URLs found in 'url' field for accession 'GCA_000175535.1': Empty URL entry found in 'url' field" in capfd.readouterr().err
+
+
+def test_urlsketch_empty_url_force(runtmp, capfd):
+    # modify the acc file to have an empty URL
+    acc_csv = get_test_data('acc-url.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        for line in lines:
+            # if this acc exist in line, write an line with empty URL instead
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz', '')  # add empty URL
+                outF.write(mod_line)
+            else:
+                outF.write(line)
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '1', '--force',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    assert os.path.exists(output)
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Warning: No valid URLs found in 'url' field for accession 'GCA_000175535.1'" in captured.err
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+
+    assert len(sigs) == 1
+
+
 def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
@@ -415,7 +472,7 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
-        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert url == ""
         assert range == ""
     assert not runtmp.last_result.out # stdout should be empty
 
@@ -426,26 +483,18 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
 
         runtmp.sourmash('scripts', 'urlsketch', failed, '-o', out2,
                     '--failed', fail2, '-r', '1',
-                    '-p', "protein,k=10,scaled=200")
+                    '-p', "protein,k=10,scaled=200", '--force')
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
+    assert "Warning: No valid URLs found in 'url' field for accession 'GCA_000175535.1'." in captured.err
     assert "Error: No signatures written, exiting." in captured.err
 
-    # since no protein file exists, fail2 should just be the same as failed
+    # since the protein file URL was empty, this will now be an emtpy failure file
     assert os.path.exists(fail2)
-    with open(fail2, 'r') as failF:
-        header = next(failF).strip()
+    with open(fail2, 'r') as fail2F:
+        header = next(fail2F).strip()
         assert header == "accession,name,moltype,md5sum,download_filename,url,range"
-        for line in failF:
-            print(line)
-            acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
-            assert acc == "GCA_000175535.1"
-            assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
-            assert moltype == "protein"
-            assert download_filename == "GCA_000175535.1_protein.faa.gz"
-            assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
-            assert range == ""
 
 
 def test_zip_file_permissions(runtmp):
@@ -706,6 +755,67 @@ def test_urlsketch_simple_batch_restart(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
   
+    expected_siginfo = {
+        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+        (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
+        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+    }
+
+    all_siginfo = set()
+    for out_file in [out1, out2, out3]:
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Verify that the loaded signatures match the expected signatures, order-independent
+    assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+
+
+def test_urlsketch_simple_batch_restart_incomplete(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+    out2_tmp = runtmp.output('simple.2.zip.incomplete')  # temporary file to simulate an incomplete batch
+    out2 = runtmp.output('simple.2.zip')
+    out3 = runtmp.output('simple.3.zip')
+    out4 = runtmp.output('simple.4.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    # need to actually rename it first, so it will match sig that would have been written
+
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+    # Simulate an incomplete batch by creating a temporary zip file
+    with open(out2_tmp, 'wb') as f:
+        f.write(b"This is an incomplete zip file!")  # not a valid zip
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '5', '-n', "1", '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert os.path.exists(out3)
+    assert not os.path.exists(out4)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Removing incomplete zip file: 'simple.2.zip.incomplete'" in captured.err
+
     expected_siginfo = {
         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
         (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
@@ -1502,3 +1612,47 @@ def test_urlsketch_merged_ranged_fail(runtmp):
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
             assert range == "1-50000;50000-100000"
+
+
+def test_urlsketch_max_n_downloads(runtmp, capfd):
+    #check that we can use 30 simultaneous downloads
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    assert  os.environ["NCBI_API_KEY"] == ""
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert "using 30 simultaneous downloads, 3 retries" in captured.out
+
+
+def test_urlsketch_verbose(runtmp, capfd):
+    #test verbose reporting
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    assert  os.environ["NCBI_API_KEY"] == ""
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail, "--verbose",
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert "Starting accession 1/3 (33%) - moltype: DNA" in captured.out
+    assert "Starting accession 2/3 (67%) - moltype: protein" in captured.out
+    assert "Starting accession 3/3 (100%) - moltype: DNA" in captured.out

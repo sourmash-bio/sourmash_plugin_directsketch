@@ -72,7 +72,7 @@ def test_gbsketch_simple(runtmp, capfd):
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
-        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert url == ""
         assert range == ""
 
 
@@ -113,7 +113,7 @@ def test_gbsketch_simple_default_failed(runtmp, capfd):
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
-        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert url == ""
         assert range == ""
 
 
@@ -502,7 +502,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
         lines = inF.readlines()
         outF.write(lines[0])  # write the header line
         for line in lines:
-            # if this acc exist in line, copy it and write
+            # if this acc exist in line, write bad acc instead
             if "GCA_000175535.1" in line:
                 mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
                 print(mod_line)
@@ -520,7 +520,7 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
-    assert "Error: No signatures written, exiting." in captured.err
+    assert "Error: Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting." in captured.err
 
 
 def test_gbsketch_version_bug(runtmp):
@@ -661,12 +661,12 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
         assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
         assert moltype == "protein"
         assert download_filename == "GCA_000175535.1_protein.faa.gz"
-        assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_protein.faa.gz"
+        assert url == ""
         assert range == ""
 
 
-def test_gbsketch_simple_batched_single(runtmp, capfd):
-    # make sure both sigs associated with same acc end up in same zip
+def test_gbsketch_simple_batched_single_acc(runtmp, capfd):
+    # DNA and protein sigs for a single accession will be in separate zips now :shrug:
     acc_csv = get_test_data('acc.csv')
     acc1 = runtmp.output('acc1.csv')
     # open acc.csv with csv dictreader and keep accession= GCA_000961135.2 line
@@ -683,6 +683,7 @@ def test_gbsketch_simple_batched_single(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
 
     sig1 = get_test_data('GCA_000961135.2.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.protein.sig.gz')
@@ -710,6 +711,10 @@ def test_gbsketch_simple_batched_single(runtmp, capfd):
     sigs = list(idx.signatures())
     for sig in sigs:
         all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+    idx2 = sourmash.load_file_as_index(out2)
+    sigs2 = list(idx2.signatures())
+    for sig in sigs2:
+        all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
 
     # Assert that all expected signatures are found
     assert all_siginfo == expected_siginfo
@@ -734,7 +739,7 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
-                    '--batch-size', '1')
+                    '--batch-size', '2')
 
     assert os.path.exists(out1)
     assert os.path.exists(out2)
@@ -778,6 +783,67 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     out2 = runtmp.output('simple.2.zip')
     out3 = runtmp.output('simple.3.zip')
 
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert os.path.exists(out3)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    # # we created this one with sig cat
+    idx = sourmash.load_file_as_index(out1)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 2
+    for sig in sigs:
+        assert sig.name == ss2.name
+        assert sig.md5sum() in [ss2.md5sum(), ss3.md5sum()]
+
+    # # these were created with gbsketch
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+    }
+
+    # Collect actual signature information from gbsketch zip batches
+    all_siginfo = set()
+    for out_file in [out2, out3]:
+        print( f"Loading signatures from {out_file}...")
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found (ignoring order)
+    assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batch_restart_sig_zip(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.sig.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.sig.zip')
+    out2 = runtmp.output('simple.2.sig.zip')
+    out3 = runtmp.output('simple.3.sig.zip')
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
@@ -821,6 +887,75 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     # Collect actual signature information from gbsketch zip batches
     all_siginfo = set()
     for out_file in [out2, out3]:
+        print( f"Loading signatures from {out_file}...")
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found (ignoring order)
+    assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batch_restart_incomplete_sig_zip(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.sig.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.sig.zip')
+    out2 = runtmp.output('simple.2.sig.zip')
+    out2_incomplete = runtmp.output('simple.2.sig.zip.incomplete')
+    out3 = runtmp.output('simple.3.sig.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    # why does this need ksize =30 and not ksize = 10!???
+    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+    with open(out2_incomplete, 'w') as f:
+        pass  # create an empty out2 to simulate an incomplete batch
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert os.path.exists(out3)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    print(captured.out)
+
+    assert "Removing incomplete zip file: 'simple.2.sig.zip.incomplete'" in captured.err
+
+    # # we created this one with sig cat
+    idx = sourmash.load_file_as_index(out1)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 2
+    for sig in sigs:
+        assert sig.name == ss2.name
+        assert sig.md5sum() in [ss2.md5sum(), ss3.md5sum()]
+
+    # # these were created with gbsketch
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+        (ss4.name, ss4.md5sum(), ss4.minhash.moltype),
+    }
+
+    # Collect actual signature information from gbsketch zip batches
+    all_siginfo = set()
+    for out_file in [out2, out3]:
+        print( f"Loading signatures from {out_file}...")
         idx = sourmash.load_file_as_index(out_file)
         sigs = list(idx.signatures())
         for sig in sigs:
@@ -1075,8 +1210,8 @@ def test_gbsketch_simple_skipmer(runtmp, capfd):
                             ), f"Moltype mismatch: {siginfo['molecule']}"
 
 
-def test_gbsketch_n_downloads_fail(runtmp):
-    #check that n <=3 if no API key
+def test_gbsketch_max_n_downloads(runtmp, capfd):
+    #check that we can use 30 simultaneous downloads
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -1084,39 +1219,75 @@ def test_gbsketch_n_downloads_fail(runtmp):
 
     assert  os.environ["NCBI_API_KEY"] == ""
 
-    with pytest.raises(utils.SourmashCommandFailed):
-        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '4', '--checksum-fail', ch_fail,
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
     print(runtmp.last_result.out)
     print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
 
-    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" in runtmp.last_result.err
+    assert "using 30 simultaneous downloads, 3 retries" in captured.out
+    assert "Successfully downloaded and parsed dehydrated zipfile. Now processing accessions." in captured.err
 
 
-def test_gbsketch_n_downloads_api_key_fail(runtmp):
+def test_gbsketch_verbose(runtmp, capfd):
+    #test verbose reporting
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
-    with pytest.raises(utils.SourmashCommandFailed):
-        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '12', '--api-key', '1234', '--checksum-fail', ch_fail,
-                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
-    print(runtmp.last_result.err)
-    assert "invalid choice:" in runtmp.last_result.err
+    assert  os.environ["NCBI_API_KEY"] == ""
 
-def test_gbsketch_n_downloads_api_key(runtmp):
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail, "--verbose",
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert "Starting accession 1/2 (50%) - moltype: DNA" in captured.out
+    assert "Starting accession 1/2 (50%) - moltype: protein" in captured.out
+    assert "Starting accession 2/2 (100%) - moltype: DNA" in captured.out
+
+
+def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-n', '9', '--api-key', '1234', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
-    print(runtmp.last_result.err)
 
-    assert os.path.exists(output)
-    assert "Error: please provide an API Key to use n_simultaneous_downloads > 3" not in runtmp.last_result.err
+    assert os.path.exists(failed)
+    with open(failed, 'r') as failF:
+        fail_lines = failF.readlines()
+        assert len(fail_lines) == 2
+        assert fail_lines[0] == "accession,name,moltype,md5sum,download_filename,url,range\n"
+        acc, name, moltype, md5sum, download_filename, url, range = fail_lines[1].strip().split(',')
+        assert acc == "GCA_000175535.1"
+        assert name == "GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
+        assert moltype == "protein"
+        assert download_filename == "GCA_000175535.1_protein.faa.gz"
+        assert url == ""
+        assert range == ""
+    assert not runtmp.last_result.out # stdout should be empty
+
+    out2 = runtmp.output('failed-retry.zip')
+    fail2 = runtmp.output('fail2.csv')
+
+    # since the protein file doesn't exist at NCBI, we won't be able to find any links in the downloaded dehydrated zip.
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', failed, '-o', out2,
+                    '--failed', fail2, '-r', '1',
+                    '-p', "protein,k=10,scaled=200")
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Last error: Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?" in captured.err
