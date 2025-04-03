@@ -1,5 +1,6 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
+use camino::Utf8Path;
 use camino::Utf8PathBuf as PathBuf;
 use futures::stream::{self, StreamExt};
 use needletail::parse_fastx_reader;
@@ -959,6 +960,28 @@ pub fn zipwriter_handle(
     })
 }
 
+// sync CSV writer
+pub fn write_csv_to_path<T: ToCsvRow>(records: &[T], output_path: &Utf8Path) -> Result<()> {
+    if let Some(parent) = output_path.parent() {
+        create_dir_all(parent.as_std_path())
+            .with_context(|| format!("Failed to create parent directory: {}", parent))?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(output_path.as_std_path())
+        .with_context(|| format!("Failed to open file at {}", output_path))?;
+
+    file.write_all(T::csv_header().as_bytes())?;
+    for record in records {
+        file.write_all(record.csv_record().as_bytes())?;
+    }
+
+    Ok(())
+}
+
 pub fn csv_writer_handle<T: ToCsvRow + Send + 'static>(
     output_path: String,
     mut receiver: tokio::sync::mpsc::Receiver<T>,
@@ -1128,6 +1151,7 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
+    write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1268,8 +1292,11 @@ pub async fn gbsketch(
 
     // get accessions for retrieval
     // Open the file containing the accessions synchronously
-    let (mut accession_info, n_accs) =
-        load_gbsketch_info(input_csv, include_genome_files, include_protein_files)?;
+    let (mut accession_info, n_accs) = load_gbsketch_info(
+        input_csv.clone(),
+        include_genome_files,
+        include_protein_files,
+    )?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
@@ -1353,9 +1380,18 @@ pub async fn gbsketch(
     // only retain AccessionData entries that have valid URLs
     accession_info.retain(|a| !a.url_info.is_empty());
 
-    // here we now have all info to write intermediate (e.g. urlsketch) file with fetch links.
-    // to do: allow option to write urlsketch file from AccessionData entries
-    // OR, just write this file as a .urlsketch file, then clean up after we finish?
+    // optionally write urlsketch csv with all available download links
+    if write_urlsketch_csv {
+        let urlsketch_path = PathBuf::from(format!("{}.urlsketch.csv", input_csv));
+        if let Err(e) = write_csv_to_path(&accession_info, &urlsketch_path) {
+            eprintln!("Failed to write urlsketch csv with download links: {:#}", e);
+        } else {
+            eprintln!(
+                "Wrote urlsketch csv with download links to {}",
+                urlsketch_path
+            );
+        }
+    }
 
     // these now need to be Arc to be shared across async tasks
     let download_counter = Arc::new(AtomicUsize::new(0));

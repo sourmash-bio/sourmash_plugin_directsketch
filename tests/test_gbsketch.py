@@ -1291,3 +1291,54 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     print(captured.out)
     print(captured.err)
     assert "Last error: Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?" in captured.err
+
+
+def test_gbsketch_write_urlsketch_csv(runtmp, capfd):
+    #test verbose reporting
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+    urlsketch_csv = runtmp.output(f'{acc_csv}.urlsketch.csv')
+
+    assert  os.environ["NCBI_API_KEY"] == ""
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-n', '30', '--checksum-fail', ch_fail, "--verbose",
+                    '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
+                    '--write-urlsketch-csv')
+    print(runtmp.last_result.out)
+    print(runtmp.last_result.err)
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+
+    assert os.path.exists(urlsketch_csv), f"URL sketch CSV not found: {urlsketch_csv}"
+    with open(urlsketch_csv, 'r') as f:
+        reader = csv.DictReader(f)
+        rows = list(reader)
+        assert len(rows) == 3  # 3 entries (excluding the header)
+
+        # Check one full line
+        first_row = rows[0]
+        assert first_row["accession"] == "GCA_000961135.2"
+        assert first_row["name"] == "GCA_000961135.2 Candidatus Aramenus sulfurataquae isolate AZ1-454"
+        assert first_row["moltype"] == "DNA"
+        assert first_row["download_filename"] == "GCA_000961135.2_genomic.fna.gz"
+        assert first_row["url"] == "https://api.ncbi.nlm.nih.gov/datasets/fetch_h/R2V0UmVtb3RlRGF0YWZpbGU/eNqTyuXKzktOytROKymw0tdPT83Lz00t1k_MydF3d3bUNzAw0Lc0M9Q3NDYF8eOBfCAXyNMzincM9gWzy4zwSMWDTcxM1kvLS9RLrzJgtGAEADqOH0U"
+
+        second_row = rows[1]
+        assert second_row["accession"] == "GCA_000961135.2"
+        assert second_row["moltype"] == "protein"
+        assert second_row["url"].startswith('https://api.ncbi.nlm.nih.gov/datasets/fetch')
+        third_row = rows[2]
+        assert third_row["accession"] == "GCA_000175535.1"
+        assert third_row['moltype'] == "DNA"
+        assert third_row["url"].startswith('https://api.ncbi.nlm.nih.gov/datasets/fetch')
+        # Print all rows for debugging
+        for row in rows:
+            print(row)
+
+    assert "Starting download 1/3 (33%) - accession: 'GCA_000961135.2', moltype: DNA" in captured.out
+    assert "Starting download 2/3 (67%) - accession: 'GCA_000961135.2', moltype: protein" in captured.out
+    assert "Starting download 3/3 (100%) - accession: 'GCA_000175535.1', moltype: DNA" in captured.out

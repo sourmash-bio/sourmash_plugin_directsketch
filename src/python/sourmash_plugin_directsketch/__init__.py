@@ -128,6 +128,17 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             default=None,
             help="API Key for NCBI REST API. Alternatively, set NCBI_API_KEY environmental variable. If provided, will be used when downloading the initial dehyrated file.",
         )
+        p.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="print progress for every download.",
+        )
+        p.add_argument(
+            "--write-urlsketch-csv",
+            action="store_true",
+            help="Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.",
+        )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
             "-g",
@@ -140,12 +151,6 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             "--proteomes-only",
             action="store_true",
             help="Download and sketch proteome (protein) files only.",
-        )
-        group.add_argument(
-            "-v",
-            "--verbose",
-            action="store_true",
-            help="print progress for every download.",
         )
 
     def main(self, args):
@@ -207,6 +212,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.api_key,
             args.verbose,
+            args.write_urlsketch_csv,
             args.output,
         )
 
