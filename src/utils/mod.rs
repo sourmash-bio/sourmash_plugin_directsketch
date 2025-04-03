@@ -159,6 +159,12 @@ impl TempFastaFile {
         let tmp_path = location.join(format!("{filename}.incomplete"));
         let final_path = location.join(filename);
 
+        // Ensure all necessary subdirs exist
+        if let Some(parent) = tmp_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create parent directories for {:?}", parent))?;
+        }
+
         let file = OpenOptions::new()
             .create(true)
             .write(true)

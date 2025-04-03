@@ -289,7 +289,7 @@ pub async fn stream_and_process_with_retry(
                     break;
                 }
                 Ok(Err(e)) => {
-                    last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
+                    last_error = Some(anyhow!(e));
                     attempts_left -= 1;
                     if let Some(fasta) = &temp_fasta {
                         fasta.cleanup().await;
@@ -309,10 +309,19 @@ pub async fn stream_and_process_with_retry(
         if attempts_left == 0 {
             let err_msg = last_error
                 .as_ref()
-                .map(ToString::to_string)
+                .map(|e| format!("{:?}", e)) // show full error chain
                 .unwrap_or_else(|| "Unknown failure".to_string());
 
-            if err_msg.contains("CRC") || err_msg.contains("decompression") {
+            // print final error message to stderr
+            eprintln!(
+                "Error while processing accession '{}' - moltype '{}': {}",
+                accession, moltype, err_msg
+            );
+
+            if err_msg.contains("CRC")
+                || err_msg.contains("MD5")
+                || err_msg.contains("decompression")
+            {
                 if write_checksum_fail {
                     checksum_failures.push(FailedChecksum::new(
                         accession.clone(),

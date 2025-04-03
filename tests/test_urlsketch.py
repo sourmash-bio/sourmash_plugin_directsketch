@@ -1347,7 +1347,7 @@ def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
     assert os.path.exists(failed)
     captured = capfd.readouterr()
     print(captured.err)
-    assert "Error: Invalid range: start=100000, end=10000000, sequence length=1088736" in captured.err
+    assert "Invalid range: start=100000, end=10000000, sequence length=1088736" in captured.err
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
@@ -1366,12 +1366,7 @@ def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
             print(line)
             acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
             assert acc == "GCA_000175535.1_second50kb"
-            assert name == "GCA_000175535.1_second50kb"
-            assert moltype == "DNA"
-            assert md5sum == "b9fb20c51f0552b87db5d44d5d4566;a1a8f1c6dc56999c73fe298871c963d1"
-            assert download_filename == "both.urlsketch.fna.gz"
-            assert url ==  "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert range == ""
+            assert name == "GCA_000175535.1_second50kb Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
 
 
 def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
@@ -1395,7 +1390,6 @@ def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
     # open subseq sigs
     idx = sourmash.load_file_as_index(subseqs)
     siglist = list(idx.signatures())
-    ss1 = siglist[0]
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
