@@ -240,6 +240,9 @@ pub async fn stream_and_process_with_retry(
             let mut stream = response.bytes_stream();
 
             while let Some(chunk) = stream.next().await {
+                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    return Err(anyhow::anyhow!("Caught Python interrupt: {}", e));
+                }
                 match chunk {
                     Ok(bytes) => {
                         if let Err(e) = writer.write_all(&bytes).await {
@@ -1387,7 +1390,7 @@ pub async fn gbsketch(
             eprintln!("Failed to write urlsketch csv with download links: {:#}", e);
         } else {
             eprintln!(
-                "Wrote urlsketch csv with download links to {}",
+                "Wrote urlsketch csv with download links to '{}'",
                 urlsketch_path
             );
         }

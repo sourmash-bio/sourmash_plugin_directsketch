@@ -39,7 +39,9 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 ### Memory Requirements
 
-Directsketch downloads the full file(s), checks the `md5sum` if provided, then sketches the data (for `gbsketch`, we instead check the `crc32` checksums contained in gzipped FASTA files). **You will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 10). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory or decrease `n`. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
+`gbsketch` streams the downloaded data, sketching/writing as it goes. It does not check an `md5sum`, but does check the internal `crc32` checksums available in the gzipped FASTA files to make sure we obtained the full download. For now, `urlsketch` downloads the full file(s), checks the `md5sum` if provided, then sketches the data.
+
+**For `urlsketch` only, you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 10). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory or decrease `n`. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
 
 ### Rerunning failures
 
@@ -95,7 +97,8 @@ summary of sketches:
 Full Usage:
 
 ```
-usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] [--failed FAILED] [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES] [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [-a API_KEY] [-g | -m]
+usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] [--failed FAILED] [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES]
+                 [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [-a API_KEY] [-v] [--write-urlsketch-csv] [-g | -m]
                  input_csv
 
 download and sketch GenBank assembly datasets
@@ -112,7 +115,8 @@ options:
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to restart sketching from scratch. Default: write all sigs to single zipfile.
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to restart
+                        sketching from scratch. Default: write all sigs to single zipfile.
   -k, --keep-fasta      Write FASTA files. Default: do not write FASTA files.
   --download-only       Download FASTAS but do not sketch. Requires '--keep-fasta'. By default this downloads both genomes and proteomes.
   --failed FAILED       CSV of failed accessions and download links (should be mostly protein).
@@ -128,9 +132,11 @@ options:
                         Number of files to download simultaneously (1-30; default=10). Note that simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.
   -a API_KEY, --api-key API_KEY
                         API Key for NCBI REST API. Alternatively, set NCBI_API_KEY environmental variable. If provided, will be used when downloading the initial dehyrated file.
+  -v, --verbose         print progress for every download.
+  --write-urlsketch-csv
+                        Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
-  -v, --verbose         print progress for every download.
 ```
 
 ## `urlsketch`
