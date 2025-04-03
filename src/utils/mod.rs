@@ -3,7 +3,6 @@ use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
 use std::fmt;
-use tokio::io::AsyncWriteExt;
 
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
@@ -114,7 +113,7 @@ impl ToCsvRow for AccessionData {
             "{},{},{},{},{},{},{}\n",
             self.accession,
             self.name,
-            self.moltype.to_string(),
+            self.moltype,
             md5sum,
             self.download_filename.clone().unwrap_or_default(),
             url,
