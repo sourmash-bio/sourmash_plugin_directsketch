@@ -1567,7 +1567,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
             assert expected_md5 == "b2"
-            assert reason == "MD5 hash does not match. Expected: 'b2'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
+            assert reason == "MD5 checksum mismatch (expected: b2 - got: a1a8f1c6dc56999c73fe298871c963d1)"
 
 
 def test_urlsketch_merged_ranged_fail(runtmp):
@@ -1653,6 +1653,6 @@ def test_urlsketch_verbose(runtmp, capfd):
     print(captured.out)
     print(captured.err)
 
-    assert "Starting accession 1/3 (33%) - moltype: DNA" in captured.out
-    assert "Starting accession 2/3 (67%) - moltype: protein" in captured.out
-    assert "Starting accession 3/3 (100%) - moltype: DNA" in captured.out
+    assert "Starting download 1/3 (33%) - accession: 'GCA_000961135.2', moltype: DNA" in captured.out
+    assert "Starting download 2/3 (67%) - accession: 'GCA_000961135.2', moltype: protein" in captured.out
+    assert "Starting download 3/3 (100%) - accession: 'GCA_000175535.1', moltype: DNA" in captured.out
