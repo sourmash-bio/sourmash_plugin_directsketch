@@ -26,8 +26,8 @@ use zip::read::ZipArchive;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, FailedDownload,
-    InputMolType, MultiCollection,
+    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, InputMolType,
+    MultiCollection, ToDownloadCsvRow,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -169,7 +169,7 @@ pub async fn stream_and_process_with_retry(
     mut sigs: BuildCollection,
     _download_only: bool,
     write_checksum_fail: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3);
     let mut download_failures = Vec::new();
     let mut checksum_failures = Vec::new();
@@ -298,10 +298,10 @@ pub async fn stream_and_process_with_retry(
 
                 // Mark the whole merged sample as failed, in addition to writing the checksum failure
                 if merged_sample {
-                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                    download_failures.push(accinfo);
                 }
             } else {
-                download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                download_failures.push(accinfo);
             }
 
             // If any download completely fails, we should stop processing further URLs (rather than getting incomplete merged sigs/files)
@@ -534,10 +534,10 @@ async fn dl_sketch_url(
     mut sigs: BuildCollection,
     download_only: bool,
     write_checksum_fail: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let empty_coll = BuildCollection::new();
-    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut download_failures = Vec::<AccessionData>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name.clone();
@@ -621,10 +621,10 @@ async fn dl_sketch_url(
                     // The checksum failures file is mostly for debugging, while the failure csv
                     // can be used to re-run urlsketch.
                     if merged_sample {
-                        download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                        download_failures.push(accinfo);
                     }
                 } else {
-                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                    download_failures.push(accinfo);
                 }
                 // Clear signatures and return immediately on failure
                 return Ok((empty_coll, download_failures, checksum_failures));
@@ -961,7 +961,7 @@ pub fn zipwriter_handle(
 
 pub fn failures_handle(
     failed_csv: String,
-    mut recv_failed: tokio::sync::mpsc::Receiver<FailedDownload>,
+    mut recv_failed: tokio::sync::mpsc::Receiver<AccessionData>,
     error_sender: tokio::sync::mpsc::Sender<Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
@@ -971,7 +971,7 @@ pub fn failures_handle(
 
                 // Write CSV header
                 if let Err(e) = writer
-                    .write_all(FailedDownload::csv_header().as_bytes())
+                    .write_all(AccessionData::csv_header().as_bytes())
                     .await
                 {
                     let error = Error::new(e).context("Failed to write headers");
@@ -979,11 +979,14 @@ pub fn failures_handle(
                     return;
                 }
                 while let Some(failed_download) = recv_failed.recv().await {
-                    // Write the FailedDownload to the CSV writer
-                    if let Err(e) = failed_download.to_writer(&mut writer).await {
+                    // Write the failed AccessionData to the CSV writer
+                    if let Err(e) = writer
+                        .write_all(failed_download.csv_record().as_bytes())
+                        .await
+                    {
+                        // If writing fails, send the error to the error channel
                         let error = Error::new(e).context("Failed to write record");
                         let _ = error_sender.send(error).await;
-                        continue;
                     }
                 }
 
@@ -1075,7 +1078,7 @@ pub async fn process_accession_stream(
     download_only: bool,
     filter: bool,
     send_sigs: Arc<Sender<BuildCollection>>,
-    send_failed: Arc<Sender<FailedDownload>>,
+    send_failed: Arc<Sender<AccessionData>>,
     send_failed_checksums: Arc<Sender<FailedChecksum>>,
     error_sender: Arc<Sender<anyhow::Error>>,
     verbose: bool,
@@ -1217,7 +1220,7 @@ pub async fn gbsketch(
     }
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
@@ -1355,7 +1358,7 @@ pub async fn gbsketch(
     };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
 
-    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut download_failures = Vec::<AccessionData>::new();
 
     // Now attach URLs to each accession info
     for accinfo in &mut accession_info {
@@ -1377,7 +1380,7 @@ pub async fn gbsketch(
                             dl_filename, e
                         );
                     }
-                    download_failures.push(FailedDownload::from_accession_data(accinfo));
+                    download_failures.push(accinfo.clone());
                 }
             },
             None => {
@@ -1387,7 +1390,7 @@ pub async fn gbsketch(
                         dl_filename
                     );
                 }
-                download_failures.push(FailedDownload::from_accession_data(accinfo));
+                download_failures.push(accinfo.clone());
             }
         }
         // if we failed to get a download link, write to download failures
@@ -1509,7 +1512,7 @@ pub async fn urlsketch(
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
