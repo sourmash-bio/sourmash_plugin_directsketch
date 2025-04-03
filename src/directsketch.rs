@@ -18,7 +18,7 @@ use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::Sender;
-use tokio::sync::{oneshot, Semaphore};
+use tokio::sync::oneshot;
 use tokio::task::spawn_blocking;
 use tokio_util::compat::Compat;
 use tokio_util::io::SyncIoBridge;
@@ -208,7 +208,10 @@ pub async fn stream_and_process_with_retry(
             let moltype_cloned = moltype.as_str();
             let name_cloned = name.clone();
             let filename_cloned = filename.clone();
-            let file_taken = file.take();
+            let file_taken = match &file {
+                Some(f) => Some(f.try_clone()?),
+                None => None,
+            };
             let sigs_taken = std::mem::take(&mut sigs);
 
             let reader = SyncIoBridge::new(reader);
@@ -256,6 +259,23 @@ pub async fn stream_and_process_with_retry(
 
             writer.shutdown().await.ok();
 
+            if let (Some(expected_md5), Some(hasher)) = (expected_md5.as_ref(), hasher) {
+                let computed_md5 = format!("{:x}", hasher.compute());
+
+                if &computed_md5 != expected_md5 {
+                    last_error = Some(anyhow!(
+                        "MD5 checksum mismatch (expected: {} - got: {})",
+                        expected_md5,
+                        computed_md5
+                    ));
+                    // Clean up temporary FASTA if needed
+                    if let Some(fasta) = &temp_fasta {
+                        fasta.cleanup().await;
+                    }
+                    attempts_left -= 1;
+                    continue; // retry
+                }
+            }
             if cancel_token.is_cancelled() {
                 return Err(anyhow!("Cancelled before starting new URL"));
             }
@@ -1063,6 +1083,7 @@ pub async fn process_accession_stream(
     error_sender: Arc<Sender<anyhow::Error>>,
     verbose: bool,
     cancel_token: CancellationToken,
+    write_checksum_fail: bool,
 ) -> Result<()> {
     // get total number of downloads (not acc)
     let n_downloads = acc_data.len();
@@ -1120,7 +1141,7 @@ pub async fn process_accession_stream(
                     keep_fastas,
                     sigs,
                     download_only,
-                    true,
+                    write_checksum_fail,
                     cancel_token.clone(),
                 )
                 .await
@@ -1442,6 +1463,7 @@ pub async fn gbsketch(
         error_sender_arc,
         verbose,
         cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
+        true, // write_checksum_fail flag to indicate we want to write failed checksums
     )
     .await?;
 
@@ -1474,7 +1496,7 @@ pub async fn urlsketch(
     proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
-    n_permits: usize,
+    concurrency_limit: usize,
     force: bool,
     verbose: bool,
     output_sigs: Option<String>,
@@ -1482,8 +1504,9 @@ pub async fn urlsketch(
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let mut batch_index = 1;
-    let mut existing_recordsmap: HashMap<String, BuildManifest> = HashMap::new();
+    let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
     let mut filter = false;
+    // if writing sigs, prepare output and look for existing sig batches
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
         let outpath = PathBuf::from(output_sigs);
@@ -1496,7 +1519,7 @@ pub async fn urlsketch(
         let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
         // Check if there are any existing batches to process
         if !existing_sigs.is_empty() {
-            existing_recordsmap = existing_sigs.build_recordsmap();
+            existing_records_map = existing_sigs.build_recordsmap();
 
             batch_index = max_existing_batch_index + 1;
             eprintln!(
@@ -1547,13 +1570,16 @@ pub async fn urlsketch(
     }
 
     let critical_error_flag = Arc::new(AtomicBool::new(false));
+    // tracker for keyboard interrupt
+    let cancel_token = CancellationToken::new();
+
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
     handles.push(error_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
+    // let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
@@ -1565,6 +1591,7 @@ pub async fn urlsketch(
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
+
     let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
     let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
 
@@ -1606,110 +1633,37 @@ pub async fn urlsketch(
         }
     }
 
-    // report every 1 percent (or every 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
+    let download_counter = Arc::new(AtomicUsize::new(0));
+    let existing_records_map = Arc::new(existing_records_map);
+    let sig_templates = Arc::new(sig_templates);
 
-    for (i, accinfo) in accession_info.into_iter().enumerate() {
-        py.check_signals()?; // If interrupted, return an Err automatically
-        let mut sigs = sig_templates.clone();
+    let send_sigs_arc = Arc::new(send_sigs);
+    let send_failed_arc = Arc::new(send_failed);
+    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
+    let error_sender_arc = Arc::new(error_sender);
 
-        // filter template sigs based on existing sigs
-        if filter {
-            if let Some(existing_manifest) = existing_recordsmap.get(&accinfo.name) {
-                // If the key exists, filter template sigs
-                sigs.filter_by_manifest(existing_manifest);
-            }
-        }
-        // eliminate sigs that won't be added to based on moltype
-        // this assumes no translation --> modify as needed if adding that.
-        if accinfo.moltype == InputMolType::Dna {
-            sigs.select(&dna_multiselection)?;
-        } else {
-            sigs.select(&protein_multiselection)?;
-        }
-        if sigs.is_empty() && !download_only {
-            continue;
-        }
+    process_accession_stream(
+        accession_info,
+        concurrency_limit,
+        download_counter,
+        existing_records_map,
+        sig_templates,
+        client,
+        download_path,
+        retry_times,
+        keep_fastas,
+        download_only,
+        filter,
+        send_sigs_arc,
+        send_failed_arc,
+        send_failed_checksums_arc,
+        error_sender_arc,
+        verbose,
+        cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
+        write_failed_checksums, // write_checksum_fail flag to indicate whether we want to write failed checksums
+    )
+    .await?;
 
-        // eliminate sigs that won't be added to based on moltype
-        // this assumes no translation --> modify as needed if adding that.
-        if accinfo.moltype == InputMolType::Dna {
-            sigs.select(&dna_multiselection)?;
-        } else {
-            sigs.select(&protein_multiselection)?;
-        }
-        if sigs.is_empty() && !download_only {
-            continue;
-        }
-
-        let semaphore_clone = Arc::clone(&semaphore);
-        let client_clone = Arc::clone(&client);
-        let send_sigs = send_sigs.clone();
-        let send_failed = send_failed.clone();
-        let checksum_send_failed = send_failed_checksums.clone();
-        let download_path_clone = download_path.clone(); // Clone the path for each task
-        let send_errors = error_sender.clone();
-        let write_checksum_fail = write_failed_checksums;
-
-        tokio::spawn(async move {
-            let _permit = semaphore_clone.acquire().await;
-            // progress report when the permit is available and processing begins
-            if verbose || (i + 1) % reporting_threshold == 0 {
-                let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-                println!(
-                    "Starting accession {}/{} ({}%) - moltype: {}",
-                    (i + 1),
-                    n_accs,
-                    percent_processed,
-                    accinfo.moltype
-                );
-            }
-            // Perform download and sketch
-            let result = dl_sketch_url(
-                &client_clone,
-                accinfo.clone(),
-                &download_path_clone,
-                Some(retry_times),
-                keep_fastas,
-                sigs,
-                download_only,
-                write_checksum_fail,
-            )
-            .await;
-            match result {
-                Ok((sigs, failed_downloads, failed_checksums)) => {
-                    if !sigs.is_empty() {
-                        if let Err(e) = send_sigs.send(sigs).await {
-                            eprintln!("Failed to send signatures: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
-                    }
-                    for fail in failed_downloads {
-                        if let Err(e) = send_failed.send(fail).await {
-                            eprintln!("Failed to send failed download info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
-                    }
-                    // if write_failed_checksums {
-                    for fail in failed_checksums {
-                        if let Err(e) = checksum_send_failed.send(fail).await {
-                            eprintln!("Failed to send failed checksum info: {}", e);
-                            let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                        }
-                    }
-                }
-                Err(e) => {
-                    let _ = send_errors.send(e).await;
-                }
-            }
-            drop(send_errors);
-        });
-    }
-    // drop senders as we're done sending data
-    drop(send_sigs);
-    drop(send_failed);
-    drop(error_sender);
-    drop(send_failed_checksums);
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {
