@@ -316,6 +316,12 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             action="store_true",
             help="Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.",
         )
+        p.add_argument(
+            "-v",
+            "--verbose",
+            action="store_true",
+            help="print progress for every download.",
+        )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
             "-g",
@@ -328,12 +334,6 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             "--proteomes-only",
             action="store_true",
             help="Download and sketch proteome (protein) files only.",
-        )
-        group.add_argument(
-            "-v",
-            "--verbose",
-            action="store_true",
-            help="print progress for every download.",
         )
 
     def main(self, args):
