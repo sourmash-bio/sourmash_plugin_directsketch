@@ -1,12 +1,11 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
-use camino::Utf8Path;
-use camino::Utf8PathBuf as PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use futures::stream::{self, StreamExt};
 use needletail::parse_fastx_reader;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
-use reqwest::{header::HeaderMap, Client};
+use reqwest::{header::HeaderMap, Client, Url};
 use serde_json::json;
 use sourmash::collection::Collection;
 use std::cmp::max;
@@ -15,7 +14,7 @@ use std::fs::create_dir_all;
 use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
-use tokio::fs::{File, OpenOptions};
+use tokio::fs::File;
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
@@ -28,73 +27,11 @@ use zip::read::ZipArchive;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, InputMolType,
-    MultiCollection, TempFastaFile, ToCsvRow,
+    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, MultiCollection,
+    TempFastaFile, ToCsvRow,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
-use reqwest::Url;
-
-// download and return data directly instead of saving to file
-async fn download_with_retry(
-    client: &Client,
-    url: &Url,
-    expected_md5: Option<&str>,
-    retry_count: u32,
-) -> Result<Vec<u8>> {
-    let mut attempts = retry_count;
-    let mut last_error: Option<anyhow::Error> = None;
-
-    while attempts > 0 {
-        let response = client.get(url.clone()).send().await;
-
-        match response {
-            Ok(resp) if resp.status().is_success() => {
-                let data = resp
-                    .bytes()
-                    .await
-                    .context("Failed to read bytes from response")?;
-
-                if let Some(md5) = expected_md5 {
-                    let computed_hash = format!("{:x}", md5::compute(&data));
-                    if computed_hash == md5 {
-                        return Ok(data.to_vec());
-                    } else {
-                        last_error = Some(anyhow!(
-                            "MD5 hash does not match. Expected: '{}'; Found: '{}'",
-                            md5,
-                            computed_hash
-                        ));
-                    }
-                } else {
-                    return Ok(data.to_vec()); // If no expected MD5 is provided, just return the data
-                }
-            }
-            Ok(resp) => {
-                last_error = Some(anyhow!(
-                    "Server error status code {}: {}. Retrying...",
-                    resp.status(),
-                    url
-                ));
-            }
-            Err(e) => {
-                last_error = Some(anyhow!("Failed to download file: {}. Error: {}.", url, e));
-            }
-        }
-
-        attempts -= 1;
-        if attempts == 0 {
-            break;
-        }
-    }
-    Err(last_error.unwrap_or_else(|| {
-        anyhow!(
-            "Failed to download file after {} retries: {}",
-            url,
-            retry_count
-        )
-    }))
-}
 
 /// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
@@ -139,7 +76,7 @@ pub fn process_fastx_from_reader<R: std::io::Read + Send + 'static>(
 pub async fn stream_and_process_with_retry(
     client: &Client,
     accinfo: AccessionData,
-    location: &PathBuf,
+    location: &Utf8PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
     mut sigs: BuildCollection,
@@ -164,7 +101,7 @@ pub async fn stream_and_process_with_retry(
     let merged_sample = accinfo.url_info.len() > 1;
 
     let mut temp_fasta: Option<TempFastaFile> = None;
-    let mut file: Option<std::fs::File> = if keep_fastas {
+    let file: Option<std::fs::File> = if keep_fastas {
         let (fasta_file, handle) = TempFastaFile::new(location, &download_filename)?;
         temp_fasta = Some(fasta_file);
         Some(handle)
@@ -388,7 +325,7 @@ pub async fn download_parse_dehydrated_zip_with_retry(
                         }
                     }
                     Err(e) => {
-                        last_error = Some(e.into());
+                        last_error = Some(e);
                     }
                 },
                 Err(e) => {
@@ -477,37 +414,6 @@ fn parse_fetch_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     Ok(download_links)
 }
 
-/// Extracts the specified range from sequences in data and writes to the file in FASTA format.
-async fn process_and_write_range(
-    data: &[u8],
-    file: &mut File,
-    range: Option<(usize, usize)>,
-) -> Result<()> {
-    let cursor = Cursor::new(data);
-    let mut fastx_reader =
-        needletail::parse_fastx_reader(cursor).context("Failed to parse FASTA/FASTQ data")?;
-
-    while let Some(record) = fastx_reader.next() {
-        let record = record.context("Failed to read record")?;
-        let sequence_to_write = extract_range_from_record(&record, range)
-            .context("Failed to extract range from record")?;
-
-        // Use the `id` and `seq` fields directly to construct the FASTA entry
-        let fasta_entry = format!(
-            ">{}\n{}\n",
-            String::from_utf8_lossy(record.id()),
-            String::from_utf8_lossy(&sequence_to_write)
-        );
-
-        // Write the FASTA entry to the file
-        file.write_all(fasta_entry.as_bytes())
-            .await
-            .context("Failed to write FASTA entry to file")?;
-    }
-
-    Ok(())
-}
-
 /// Extracts a range from a `SequenceRecord`. Returns the specified sequence slice as a `Vec<u8>`.
 fn extract_range_from_record(
     record: &SequenceRecord,
@@ -530,162 +436,15 @@ fn extract_range_from_record(
     }
 }
 
-/// Opens a file for writing, creating necessary directories and truncating it if it exists.
-/// Returns an `Option<File>` if a filename is provided, or `None` if the filename is `None`.
-async fn open_file_for_writing(
-    location: &PathBuf,
-    filename: Option<&String>,
-) -> Result<Option<File>> {
-    if let Some(download_filename) = filename {
-        let path = location.join(download_filename);
-
-        // Create subdirectories if needed
-        if let Some(parent) = path.parent() {
-            create_dir_all(parent).with_context(|| {
-                format!(
-                    "Failed to create directories for download filename path {}",
-                    &path
-                )
-            })?;
-        }
-
-        // Open the file in write mode (truncate if it exists)
-        let file = OpenOptions::new()
-            .create(true) // Create the file if it doesn't exist
-            .write(true) // Enable write mode
-            .truncate(true) // Clear existing content
-            .open(&path)
-            .await
-            .with_context(|| format!("Failed to open file at {}", path))?;
-        Ok(Some(file))
-    } else {
-        Ok(None)
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-async fn dl_sketch_url(
-    client: &Client,
-    accinfo: AccessionData,
-    location: &PathBuf,
-    retry: Option<u32>,
-    keep_fastas: bool,
-    mut sigs: BuildCollection,
-    download_only: bool,
-    write_checksum_fail: bool,
-) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
-    let retry_count = retry.unwrap_or(3); // Default retry count
-    let empty_coll = BuildCollection::new();
-    let mut download_failures = Vec::<AccessionData>::new();
-    let mut checksum_failures = Vec::<FailedChecksum>::new();
-
-    let name = accinfo.name.clone();
-    let accession = accinfo.accession.clone();
-    let download_filename = &accinfo.download_filename;
-    let filename = download_filename.clone().unwrap_or("".to_string());
-    let moltype = &accinfo.moltype;
-
-    let mut file: Option<File> = if keep_fastas {
-        open_file_for_writing(location, download_filename.as_ref()).await?
-    } else {
-        None
-    };
-
-    // are we merging files?
-    let merged_sample: bool = accinfo.url_info.len() > 1;
-    for uinfo in &accinfo.url_info {
-        let url = &uinfo.url;
-        let expected_md5 = &uinfo.md5sum;
-        let range = uinfo.range;
-        match download_with_retry(client, url, expected_md5.as_deref(), retry_count).await {
-            Ok(data) => {
-                // Write to file if keep_fastas is true and a file is open
-                // note, if multiple urls are provided, this will append to the same file
-                if let Some(file) = file.as_mut() {
-                    if range.is_some() {
-                        process_and_write_range(&data, file, range)
-                            .await
-                            .context("Failed to process and write range to file")?;
-                    } else {
-                        // Write the entire data if no range is provided
-                        file.write_all(&data)
-                            .await
-                            .context("Failed to write data to file")?;
-                    }
-                }
-
-                if !download_only {
-                    // sketch data
-
-                    match moltype {
-                        InputMolType::Dna => {
-                            sigs.build_sigs_from_data(
-                                data,
-                                "DNA",
-                                name.clone(),
-                                filename.clone(),
-                                range,
-                            )?;
-                        }
-                        InputMolType::Protein => {
-                            sigs.build_sigs_from_data(
-                                data,
-                                "protein",
-                                name.clone(),
-                                filename.clone(),
-                                range,
-                            )?;
-                        }
-                    };
-                }
-            }
-            Err(err) => {
-                let error_message = err.to_string();
-                // did we have a checksum error or a download error?
-                // here --> keep track of accession errors + filetype
-                if error_message.contains("MD5 hash does not match") && write_checksum_fail {
-                    let checksum_mismatch: FailedChecksum = FailedChecksum::new(
-                        accession.clone(),
-                        name.clone(),
-                        moltype.to_string(),
-                        None,
-                        download_filename.clone(),
-                        Some(url.clone()),
-                        expected_md5.clone(),
-                        error_message.clone(),
-                    );
-                    checksum_failures.push(checksum_mismatch);
-                    // if this is a merged sample, the checksum failure is only for one part of it.
-                    // also write a download failure, which is the full entry.
-                    // The checksum failures file is mostly for debugging, while the failure csv
-                    // can be used to re-run urlsketch.
-                    if merged_sample {
-                        download_failures.push(accinfo);
-                    }
-                } else {
-                    download_failures.push(accinfo);
-                }
-                // Clear signatures and return immediately on failure
-                return Ok((empty_coll, download_failures, checksum_failures));
-            }
-        }
-    }
-
-    // Update signature info
-    sigs.update_info(name, filename);
-
-    Ok((sigs, download_failures, checksum_failures))
-}
-
-fn get_current_directory() -> Result<PathBuf> {
+fn get_current_directory() -> Result<Utf8PathBuf> {
     let current_dir =
         std::env::current_dir().context("Failed to retrieve the current working directory")?;
-    PathBuf::try_from(current_dir)
+    Utf8PathBuf::try_from(current_dir)
         .map_err(|_| anyhow::anyhow!("Current directory is not valid UTF-8"))
 }
 
 // Load existing batch files into MultiCollection, skipping corrupt files
-async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection, usize)> {
+async fn load_existing_zip_batches(outpath: &Utf8PathBuf) -> Result<(MultiCollection, usize)> {
     // Remove the .zip extension to get the base name
     let filename = outpath.file_name().unwrap();
     let (base, suffix) = if filename.ends_with(".sig.zip") {
@@ -734,13 +493,13 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
         .filter(|parent| parent.as_std_path().exists())
         .map(|_| outpath.clone())
         .unwrap_or_else(|| {
-            PathBuf::from_path_buf(current_dir.join(outpath.as_std_path()))
+            Utf8PathBuf::from_path_buf(current_dir.join(outpath.as_std_path()))
                 .expect("Failed to convert to Utf8PathBuf")
         });
 
     // Scan through all files in the directory
     while let Some(entry) = dir_entries.next_entry().await? {
-        let entry_path: PathBuf = entry.path().try_into()?;
+        let entry_path: Utf8PathBuf = entry.path().try_into()?;
         // Skip the `outpath` itself to loading, as we just overwrite this file for now (not append)
         // TO DO: if we can append to the original output file, we can include this and then just add new signatures
 
@@ -752,7 +511,7 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
             .filter(|parent| parent.as_std_path().exists())
             .map(|_| entry_path.clone())
             .unwrap_or_else(|| {
-                PathBuf::from_path_buf(current_dir.join(entry_path.as_std_path()))
+                Utf8PathBuf::from_path_buf(current_dir.join(entry_path.as_std_path()))
                     .expect("Failed to convert to Utf8PathBuf")
             });
 
@@ -805,10 +564,10 @@ async fn load_existing_zip_batches(outpath: &PathBuf) -> Result<(MultiCollection
 
 /// create zip file depending on batch size and index.
 async fn create_or_get_zip_file(
-    outpath: &PathBuf,
+    outpath: &Utf8PathBuf,
     batch_size: usize,
     batch_index: usize,
-) -> Result<(ZipFileWriter<Compat<File>>, PathBuf, PathBuf)> {
+) -> Result<(ZipFileWriter<Compat<File>>, Utf8PathBuf, Utf8PathBuf)> {
     let batch_outpath = if batch_size == 0 {
         // If batch size is zero, use provided outpath (contains .zip extension)
         outpath.clone()
@@ -857,11 +616,11 @@ pub fn zipwriter_handle(
         let mut wrote_sigs = false;
         let mut count = 0; // count the number of accessions/downloaded files sketched
         let mut zip_writer = None;
-        let mut current_temp_path: Option<PathBuf> = None;
-        let mut current_batch_path: Option<PathBuf> = None;
+        let mut current_temp_path: Option<Utf8PathBuf> = None;
+        let mut current_batch_path: Option<Utf8PathBuf> = None;
 
         if let Some(outpath) = output_sigs {
-            let outpath: PathBuf = outpath.into();
+            let outpath: Utf8PathBuf = outpath.into();
 
             while let Some(mut buildcoll) = recv_sigs.recv().await {
                 if zip_writer.is_none() {
@@ -1081,7 +840,7 @@ pub async fn process_accession_stream(
     existing_records_map: Arc<HashMap<String, BuildManifest>>,
     sig_templates: Arc<BuildCollection>,
     client: Arc<Client>,
-    download_path: PathBuf,
+    download_path: Utf8PathBuf,
     retry_times: u32,
     keep_fastas: bool,
     download_only: bool,
@@ -1207,7 +966,7 @@ pub async fn gbsketch(
     // if writing sigs, prepare output and look for existing sig batches
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
-        let outpath = PathBuf::from(output_sigs);
+        let outpath = Utf8PathBuf::from(output_sigs);
 
         // Check if the extension is "zip"
         if outpath.extension().map_or(true, |ext| ext != "zip") {
@@ -1232,7 +991,7 @@ pub async fn gbsketch(
     }
 
     // set up fasta download path
-    let download_path = PathBuf::from(fasta_location);
+    let download_path = Utf8PathBuf::from(fasta_location);
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
@@ -1433,7 +1192,7 @@ pub async fn gbsketch(
 
     // optionally write urlsketch csv with all available download links
     if write_urlsketch_csv {
-        let urlsketch_path = PathBuf::from(format!("{}.urlsketch.csv", input_csv));
+        let urlsketch_path = Utf8PathBuf::from(format!("{}.urlsketch.csv", input_csv));
         if let Err(e) = write_csv_to_path(&accession_info, &urlsketch_path) {
             eprintln!("Failed to write urlsketch csv with download links: {:#}", e);
         } else {
@@ -1494,7 +1253,7 @@ pub async fn gbsketch(
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub async fn urlsketch(
-    py: Python,
+    _py: Python,
     input_csv: String,
     param_str: String,
     failed_csv: String,
@@ -1518,7 +1277,7 @@ pub async fn urlsketch(
     // if writing sigs, prepare output and look for existing sig batches
     if let Some(ref output_sigs) = output_sigs {
         // Create outpath from output_sigs
-        let outpath = PathBuf::from(output_sigs);
+        let outpath = Utf8PathBuf::from(output_sigs);
 
         // Check if the extension is "zip"
         if outpath.extension().map_or(true, |ext| ext != "zip") {
@@ -1543,7 +1302,7 @@ pub async fn urlsketch(
     }
 
     // set up fasta download path
-    let download_path = PathBuf::from(fasta_location);
+    let download_path = Utf8PathBuf::from(fasta_location);
     if !download_path.exists() {
         create_dir_all(&download_path)?;
     }
