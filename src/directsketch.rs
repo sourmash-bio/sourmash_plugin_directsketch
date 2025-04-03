@@ -1347,7 +1347,6 @@ pub async fn urlsketch(
     handles.push(error_handle);
 
     // Worker tasks
-    // let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
 
     // Open the file containing the accessions synchronously
