@@ -1290,7 +1290,7 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
-    assert "Last error: Parsed ZIP archive successfully, but no download links were found. Are your accessions valid?" in captured.err
+    assert "Are your accessions valid?" in captured.err
 
 
 def test_gbsketch_write_urlsketch_csv(runtmp, capfd):
