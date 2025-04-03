@@ -78,7 +78,7 @@ impl AccessionData {
     }
 }
 
-pub trait ToDownloadCsvRow {
+pub trait ToCsvRow {
     fn csv_record(&self) -> String;
     fn csv_header() -> &'static str;
 
@@ -101,7 +101,7 @@ pub trait ToDownloadCsvRow {
     }
 }
 
-impl ToDownloadCsvRow for AccessionData {
+impl ToCsvRow for AccessionData {
     fn csv_record(&self) -> String {
         let md5sum = Self::parse_to_separated_string(&self.url_info, |info| info.md5sum.clone());
         let url =
@@ -543,16 +543,22 @@ impl FailedChecksum {
             reason,
         }
     }
+}
 
-    /// Convert a `FailedChecksum` to a CSV-formatted string
-    pub fn to_csv_record(&self) -> String {
+impl ToCsvRow for FailedChecksum {
+    fn csv_record(&self) -> String {
         let md5sum_url_str = self
             .md5sum_url
             .as_ref()
-            .map(|u| u.to_string())
+            .map(ToString::to_string)
             .unwrap_or_default();
-
-        let url_str = self.url.as_ref().map(|u| u.to_string()).unwrap_or_default();
+        let url_str = self
+            .url
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let filename_str = self.download_filename.clone().unwrap_or_default();
+        let expected_md5 = self.expected_md5sum.clone().unwrap_or_default();
 
         format!(
             "{},{},{},{},{},{},{},{}\n",
@@ -560,24 +566,15 @@ impl FailedChecksum {
             self.name,
             self.moltype,
             md5sum_url_str,
-            self.download_filename.clone().unwrap_or_default(),
+            filename_str,
             url_str,
-            self.expected_md5sum.clone().unwrap_or_default(),
-            self.reason,
+            expected_md5,
+            self.reason
         )
     }
 
-    /// Get the CSV header for a `FailedChecksum`
-    pub fn csv_header() -> &'static str {
+    fn csv_header() -> &'static str {
         "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n"
-    }
-
-    /// Write a `FailedChecksum` to a CSV writer
-    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), std::io::Error> {
-        writer.write_all(self.to_csv_record().as_bytes()).await
     }
 }
 

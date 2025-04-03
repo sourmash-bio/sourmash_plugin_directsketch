@@ -27,7 +27,7 @@ use pyo3::prelude::*;
 
 use crate::utils::{
     load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, InputMolType,
-    MultiCollection, ToDownloadCsvRow,
+    MultiCollection, ToCsvRow,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -959,38 +959,29 @@ pub fn zipwriter_handle(
     })
 }
 
-pub fn failures_handle(
-    failed_csv: String,
-    mut recv_failed: tokio::sync::mpsc::Receiver<AccessionData>,
+pub fn csv_writer_handle<T: ToCsvRow + Send + 'static>(
+    output_path: String,
+    mut receiver: tokio::sync::mpsc::Receiver<T>,
     error_sender: tokio::sync::mpsc::Sender<Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match File::create(&failed_csv).await {
+        match File::create(&output_path).await {
             Ok(file) => {
                 let mut writer = BufWriter::new(file);
 
-                // Write CSV header
-                if let Err(e) = writer
-                    .write_all(AccessionData::csv_header().as_bytes())
-                    .await
-                {
+                if let Err(e) = writer.write_all(T::csv_header().as_bytes()).await {
                     let error = Error::new(e).context("Failed to write headers");
                     let _ = error_sender.send(error).await;
                     return;
                 }
-                while let Some(failed_download) = recv_failed.recv().await {
-                    // Write the failed AccessionData to the CSV writer
-                    if let Err(e) = writer
-                        .write_all(failed_download.csv_record().as_bytes())
-                        .await
-                    {
-                        // If writing fails, send the error to the error channel
+
+                while let Some(record) = receiver.recv().await {
+                    if let Err(e) = writer.write_all(record.csv_record().as_bytes()).await {
                         let error = Error::new(e).context("Failed to write record");
                         let _ = error_sender.send(error).await;
                     }
                 }
 
-                // Flush the writer
                 if let Err(e) = writer.flush().await {
                     let error = Error::new(e).context("Failed to flush writer");
                     let _ = error_sender.send(error).await;
@@ -1001,50 +992,7 @@ pub fn failures_handle(
                 let _ = error_sender.send(error).await;
             }
         }
-        drop(error_sender);
-    })
-}
 
-pub fn checksum_failures_handle(
-    checksum_failed_csv: String,
-    mut recv_failed: tokio::sync::mpsc::Receiver<FailedChecksum>,
-    error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        match File::create(&checksum_failed_csv).await {
-            Ok(file) => {
-                let mut writer = BufWriter::new(file);
-
-                // Attempt to write CSV headers
-                if let Err(e) = writer
-                    .write_all(FailedChecksum::csv_header().as_bytes())
-                    .await
-                {
-                    let error = Error::new(e).context("Failed to write headers");
-                    let _ = error_sender.send(error).await;
-                    return;
-                }
-
-                // Write each failed checksum record
-                while let Some(failed_checksum) = recv_failed.recv().await {
-                    if let Err(e) = failed_checksum.to_writer(&mut writer).await {
-                        let error = Error::new(e).context("Failed to write failed checksum record");
-                        let _ = error_sender.send(error).await;
-                        continue;
-                    }
-                }
-
-                // Attempt to flush the writer
-                if let Err(e) = writer.flush().await {
-                    let error = Error::new(e).context("Failed to flush failed checksum writer");
-                    let _ = error_sender.send(error).await;
-                }
-            }
-            Err(e) => {
-                let error = Error::new(e).context("Failed to create failed checksum file");
-                let _ = error_sender.send(error).await;
-            }
-        }
         drop(error_sender);
     })
 }
@@ -1237,8 +1185,8 @@ pub async fn gbsketch(
         error_sender.clone(),
     );
 
-    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
-    let checksum_failures_handle = checksum_failures_handle(
+    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
+    let checksum_failures_handle = csv_writer_handle(
         failed_checksums_csv,
         recv_failed_checksum,
         error_sender.clone(),
@@ -1529,15 +1477,13 @@ pub async fn urlsketch(
         error_sender.clone(),
     );
 
-    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
 
     let mut write_failed_checksums = false;
-    if let Some(ref failed_checksums) = failed_checksums_csv {
-        let checksum_failures_handle = checksum_failures_handle(
-            failed_checksums.clone(),
-            recv_failed_checksum,
-            error_sender.clone(),
-        );
+    if let Some(failed_checksums) = failed_checksums_csv {
+        let checksum_failures_handle =
+            csv_writer_handle(failed_checksums, recv_failed_checksum, error_sender.clone());
+
         write_failed_checksums = true;
         handles.push(checksum_failures_handle);
     }
