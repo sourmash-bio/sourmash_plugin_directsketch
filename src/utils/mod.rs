@@ -47,36 +47,6 @@ impl std::str::FromStr for InputMolType {
     }
 }
 
-#[allow(dead_code)]
-#[derive(PartialEq, Clone)]
-pub enum GenBankFileType {
-    Genomic,
-    Protein,
-}
-
-impl GenBankFileType {
-    pub fn suffix(&self) -> &'static str {
-        match self {
-            GenBankFileType::Genomic => "_genomic.fna.gz",
-            GenBankFileType::Protein => "_protein.faa.gz",
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn filename_to_write(&self, accession: &str) -> String {
-        format!("{}{}", accession, self.suffix())
-    }
-
-    #[allow(dead_code)]
-    pub fn moltype(&self) -> String {
-        match self {
-            GenBankFileType::Genomic => "DNA".to_string(),
-            GenBankFileType::Protein => "protein".to_string(),
-        }
-    }
-}
-
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AccessionData {
     pub accession: String,
@@ -119,12 +89,6 @@ impl UrlInfo {
     pub fn new(url: reqwest::Url, md5sum: Option<String>, range: Option<(usize, usize)>) -> Self {
         UrlInfo { url, md5sum, range }
     }
-}
-
-#[derive(Clone)]
-pub struct GBAssemblyData {
-    pub accession: String,
-    pub name: String,
 }
 
 pub fn load_gbsketch_info(
@@ -507,31 +471,7 @@ pub struct FailedDownload {
     range: String,
 }
 
-#[allow(dead_code)]
 impl FailedDownload {
-    /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
-    pub fn from_gbassembly(
-        accession: String,
-        name: String,
-        moltype: String,
-        md5sum: Option<String>,            // Single MD5 checksum
-        download_filename: Option<String>, // Download filename
-        url: Option<reqwest::Url>,         // URL for the file
-        range: Option<(usize, usize)>,     // Optional range for the download
-    ) -> Self {
-        Self {
-            accession,
-            name,
-            moltype,
-            md5sum: md5sum.unwrap_or_default(),
-            download_filename: download_filename.unwrap_or_default(),
-            url: url.map(|u| u.to_string()).unwrap_or_default(),
-            range: range
-                .map(|(start, end)| format!("{}-{}", start, end))
-                .unwrap_or_default(), // Format range or use ""
-        }
-    }
-
     fn parse_to_separated_string<T, F>(url_info: &[UrlInfo], mut extractor: F) -> String
     where
         F: FnMut(&UrlInfo) -> Option<T>,
