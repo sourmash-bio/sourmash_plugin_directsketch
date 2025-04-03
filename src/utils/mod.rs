@@ -1,8 +1,10 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
 use std::fmt;
+use std::fs::{File, OpenOptions};
 
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
@@ -136,6 +138,54 @@ pub struct UrlInfo {
 impl UrlInfo {
     pub fn new(url: reqwest::Url, md5sum: Option<String>, range: Option<(usize, usize)>) -> Self {
         UrlInfo { url, md5sum, range }
+    }
+}
+
+async fn try_remove_file(path: &Utf8Path) {
+    if path.exists() {
+        if let Err(e) = tokio::fs::remove_file(path.as_std_path()).await {
+            eprintln!("Failed to remove file {}: {e}", path);
+        }
+    }
+}
+
+pub struct TempFastaFile {
+    tmp_path: Utf8PathBuf,
+    final_path: Utf8PathBuf,
+}
+
+impl TempFastaFile {
+    pub fn new(location: &Utf8Path, filename: &str) -> Result<(Self, File)> {
+        let tmp_path = location.join(format!("{filename}.incomplete"));
+        let final_path = location.join(filename);
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .context("Failed to open temp FASTA file")?;
+
+        Ok((
+            Self {
+                tmp_path,
+                final_path,
+            },
+            file,
+        ))
+    }
+
+    pub fn finalize(self) -> Result<()> {
+        std::fs::rename(&self.tmp_path, &self.final_path).with_context(|| {
+            format!(
+                "Failed to rename {:?} to {:?}",
+                self.tmp_path, self.final_path
+            )
+        })
+    }
+
+    pub async fn cleanup(&self) {
+        let _ = try_remove_file(&self.tmp_path).await;
     }
 }
 

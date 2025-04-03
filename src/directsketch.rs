@@ -29,7 +29,7 @@ use pyo3::prelude::*;
 
 use crate::utils::{
     load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, InputMolType,
-    MultiCollection, ToCsvRow,
+    MultiCollection, TempFastaFile, ToCsvRow,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -94,32 +94,6 @@ async fn download_with_retry(
             retry_count
         )
     }))
-}
-
-async fn try_remove_file(path: &PathBuf) {
-    if path.exists() {
-        if let Err(e) = tokio::fs::remove_file(path).await {
-            eprintln!("Failed to remove file {}: {e}", path);
-        }
-    }
-}
-
-fn open_file_for_writing_blocking(
-    path: &PathBuf,
-    name: Option<&str>,
-) -> Result<Option<std::fs::File>> {
-    use std::fs::OpenOptions;
-    if let Some(name) = name {
-        let full_path = path.join(name);
-        let file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(full_path)
-            .context("Failed to open file for writing")?;
-        Ok(Some(file))
-    } else {
-        Ok(None)
-    }
 }
 
 /// Processes FASTX records from the stream. Writes FASTA entries if a file is given
@@ -189,9 +163,11 @@ pub async fn stream_and_process_with_retry(
     let filename = download_filename.clone();
     let merged_sample = accinfo.url_info.len() > 1;
 
+    let mut temp_fasta: Option<TempFastaFile> = None;
     let mut file: Option<std::fs::File> = if keep_fastas {
-        // This function must return std::fs::File, not tokio::fs::File
-        open_file_for_writing_blocking(location, Some(&download_filename))?
+        let (fasta_file, handle) = TempFastaFile::new(location, &download_filename)?;
+        temp_fasta = Some(fasta_file);
+        Some(handle)
     } else {
         None
     };
@@ -287,18 +263,23 @@ pub async fn stream_and_process_with_retry(
             match rx.await {
                 Ok(Ok(updated_sigs)) => {
                     sigs = updated_sigs;
+                    if let Some(fasta) = temp_fasta.take() {
+                        fasta.finalize()?;
+                    }
                     break;
                 }
                 Ok(Err(e)) => {
                     last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
                     attempts_left -= 1;
-                    if keep_fastas {
-                        let path = location.join(&download_filename);
-                        try_remove_file(&path).await;
+                    if let Some(fasta) = &temp_fasta {
+                        fasta.cleanup().await;
                     }
                 }
                 Err(_) => {
                     last_error = Some(anyhow!("Processing task failed or was cancelled"));
+                    if let Some(fasta) = &temp_fasta {
+                        fasta.cleanup().await;
+                    }
                     attempts_left -= 1;
                 }
             }
