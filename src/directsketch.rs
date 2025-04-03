@@ -22,6 +22,7 @@ use tokio::sync::{oneshot, Semaphore};
 use tokio::task::spawn_blocking;
 use tokio_util::compat::Compat;
 use tokio_util::io::SyncIoBridge;
+use tokio_util::sync::CancellationToken;
 use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
@@ -170,7 +171,12 @@ pub async fn stream_and_process_with_retry(
     mut sigs: BuildCollection,
     _download_only: bool,
     write_checksum_fail: bool,
+    cancel_token: CancellationToken,
 ) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
+    if cancel_token.is_cancelled() {
+        return Err(anyhow!("Aborting due to cancellation"));
+    }
+
     let retry_count = retry.unwrap_or(3);
     let mut download_failures = Vec::new();
     let mut checksum_failures = Vec::new();
@@ -191,6 +197,9 @@ pub async fn stream_and_process_with_retry(
     };
 
     for uinfo in &accinfo.url_info {
+        if cancel_token.is_cancelled() {
+            return Err(anyhow!("Cancelled before starting new URL"));
+        }
         let url = &uinfo.url;
         let expected_md5 = &uinfo.md5sum;
         let range = uinfo.range;
@@ -199,6 +208,9 @@ pub async fn stream_and_process_with_retry(
         let mut last_error: Option<anyhow::Error> = None;
 
         while attempts_left > 0 {
+            if cancel_token.is_cancelled() {
+                return Err(anyhow!("Cancelled before starting new URL"));
+            }
             let response = match client.get(url.clone()).send().await {
                 Ok(resp) if resp.status().is_success() => resp,
                 Ok(resp) => {
@@ -240,11 +252,20 @@ pub async fn stream_and_process_with_retry(
             let mut stream = response.bytes_stream();
 
             while let Some(chunk) = stream.next().await {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow!("Cancelled during response streaming"));
+                }
                 if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
-                    return Err(anyhow::anyhow!("Caught Python interrupt: {}", e));
+                    // exit if a Python interrupt signal is caught
+                    cancel_token.cancel();
+                    return Err(anyhow::anyhow!(
+                        "Caught Python interrupt: {}, shutting down gracefully",
+                        e
+                    ));
                 }
                 match chunk {
                     Ok(bytes) => {
+                        // "write" bytes into the in-memory stream
                         if let Err(e) = writer.write_all(&bytes).await {
                             last_error = Some(anyhow!(e).context("Failed to stream FASTX data"));
                             break;
@@ -258,6 +279,10 @@ pub async fn stream_and_process_with_retry(
             }
 
             writer.shutdown().await.ok();
+
+            if cancel_token.is_cancelled() {
+                return Err(anyhow!("Cancelled before starting new URL"));
+            }
 
             match rx.await {
                 Ok(Ok(updated_sigs)) => {
@@ -1056,6 +1081,7 @@ pub async fn process_accession_stream(
     send_failed_checksums: Arc<Sender<FailedChecksum>>,
     error_sender: Arc<Sender<anyhow::Error>>,
     verbose: bool,
+    cancel_token: CancellationToken,
 ) -> Result<()> {
     // get total number of downloads (not acc)
     let n_downloads = acc_data.len();
@@ -1073,9 +1099,14 @@ pub async fn process_accession_stream(
             let download_counter = download_counter.clone();
             let existing_records_map = existing_records_map.clone();
             let sig_templates = sig_templates.clone();
+            let cancel_token = cancel_token.clone();
 
             async move {
+                if cancel_token.is_cancelled() {
+                    return;
+                }
                 if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    cancel_token.cancel();
                     eprintln!("Caught Python interrupt: {}", e);
                     return;
                 }
@@ -1109,6 +1140,7 @@ pub async fn process_accession_stream(
                     sigs,
                     download_only,
                     true,
+                    cancel_token.clone(),
                 )
                 .await
                 {
@@ -1218,7 +1250,12 @@ pub async fn gbsketch(
         recv_failed_checksum,
         error_sender.clone(),
     );
+    // error tracker for no sigs written at all
     let critical_error_flag = Arc::new(AtomicBool::new(false));
+
+    // tracker for keyboard interrupt
+    let cancel_token = CancellationToken::new();
+
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
@@ -1423,6 +1460,7 @@ pub async fn gbsketch(
         send_failed_checksums_arc,
         error_sender_arc,
         verbose,
+        cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
     )
     .await?;
 
