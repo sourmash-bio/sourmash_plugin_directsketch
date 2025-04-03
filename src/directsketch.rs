@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
+use tokio::sync::mpsc::Sender;
 use tokio::sync::{oneshot, Semaphore};
 use tokio::task::spawn_blocking;
 use tokio_util::compat::Compat;
@@ -211,6 +212,7 @@ pub async fn stream_and_process_with_retry(
                 }
             };
 
+            // create tokio duplex stream for reading and writing
             let (mut writer, reader) = duplex(1024 * 1024);
             let (tx, rx) = oneshot::channel();
 
@@ -1059,6 +1061,104 @@ pub fn error_handler(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn process_accession_stream(
+    acc_data: Vec<AccessionData>,
+    concurrency_limit: usize,
+    download_counter: Arc<AtomicUsize>,
+    existing_records_map: Arc<HashMap<String, BuildManifest>>,
+    sig_templates: Arc<BuildCollection>,
+    client: Arc<Client>,
+    download_path: PathBuf,
+    retry_times: u32,
+    keep_fastas: bool,
+    download_only: bool,
+    filter: bool,
+    send_sigs: Arc<Sender<BuildCollection>>,
+    send_failed: Arc<Sender<FailedDownload>>,
+    send_failed_checksums: Arc<Sender<FailedChecksum>>,
+    error_sender: Arc<Sender<anyhow::Error>>,
+    verbose: bool,
+) -> Result<()> {
+    // get total number of downloads (not acc)
+    let n_downloads = acc_data.len();
+    // set reporting threshold to every 1 percent (or every 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
+
+    stream::iter(acc_data)
+        .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
+            let client = client.clone();
+            let send_sigs = send_sigs.clone();
+            let send_failed = send_failed.clone();
+            let send_failed_checksums = send_failed_checksums.clone();
+            let error_sender = error_sender.clone();
+            let download_path = download_path.clone();
+            let download_counter = download_counter.clone();
+            let existing_records_map = existing_records_map.clone();
+            let sig_templates = sig_templates.clone();
+
+            async move {
+                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    eprintln!("Caught Python interrupt: {}", e);
+                    return;
+                }
+
+                let mut sigs = (*sig_templates).clone();
+                // filter template sigs based on existing sigs
+                if filter {
+                    if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
+                        // If the key exists, filter template sigs
+                        sigs.filter_by_manifest(existing_manifest);
+                    }
+                }
+
+                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+                // progress report when processing begins for a download
+                if verbose || download_index % reporting_threshold == 0 {
+                    let percent = ((download_index as f64 / n_downloads as f64) * 100.0).round();
+                    println!(
+                        "Starting download {}/{} ({}%) - accession: '{}', moltype: {}",
+                        download_index, n_downloads, percent, accinfo.accession, accinfo.moltype
+                    );
+                }
+
+                match stream_and_process_with_retry(
+                    &client,
+                    accinfo,
+                    &download_path,
+                    Some(retry_times),
+                    keep_fastas,
+                    sigs,
+                    download_only,
+                    true,
+                )
+                .await
+                {
+                    Ok((coll, failed_downloads, failed_checksums)) => {
+                        if !coll.is_empty() {
+                            if let Err(e) = send_sigs.send(coll).await {
+                                let _ = error_sender.send(e.into()).await;
+                            }
+                        }
+                        for fail in failed_downloads {
+                            let _ = send_failed.send(fail).await;
+                        }
+                        for fail in failed_checksums {
+                            let _ = send_failed_checksums.send(fail).await;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = error_sender.send(e).await;
+                    }
+                }
+            }
+        })
+        .await;
+
+    Ok(())
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub async fn gbsketch(
@@ -1160,10 +1260,6 @@ pub async fn gbsketch(
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
 
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", "application/json".parse()?);
-    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
-
     // build sketch params
     if download_only {
         if genomes_only {
@@ -1204,6 +1300,12 @@ pub async fn gbsketch(
             bail!("No signatures to build.")
         }
     }
+
+    // gbsketch specific : set up the HTTP client and headers
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse()?);
+    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
+
     // what files do we want to download?
     let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
 
@@ -1311,11 +1413,6 @@ pub async fn gbsketch(
     }
     // here we now have all info to write intermediate (e.g. urlsketch) file with fetch links.
 
-    // get total number of downloads (rather than total number of acc)
-    let n_downloads = acc_data.len();
-    // report every 1 percent (or every 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
-
     // these now need to be Arc to be shared across async tasks
     let download_counter = Arc::new(AtomicUsize::new(0));
     let existing_records_map = Arc::new(existing_records_map);
@@ -1326,92 +1423,25 @@ pub async fn gbsketch(
     let send_failed_checksums_arc = Arc::new(send_failed_checksums);
     let error_sender_arc = Arc::new(error_sender);
 
-    stream::iter(acc_data)
-        .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
-            // clone remaining utilities
-            // let client_clone = Arc::clone(&client);
-            let client = client.clone();
-            let send_sigs = send_sigs_arc.clone();
-            let send_failed = send_failed_arc.clone();
-            let checksum_send_failed = send_failed_checksums_arc.clone();
-            let download_path_clone = download_path.clone(); // Clone the path for each task
-            let send_errors = error_sender_arc.clone();
-            let download_counter = download_counter.clone();
-            // for sig filtering
-            let existing_records_map = existing_records_map.clone();
-            let sig_templates = sig_templates.clone();
-
-            async move {
-                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
-                    eprintln!("Caught Python interrupt: {}", e);
-                    return; // or return early from the task
-                }
-                let mut sigs = (*sig_templates).clone();
-
-                // filter template sigs based on existing sigs
-                if filter {
-                    if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                        // If the key exists, filter template sigs
-                        sigs.filter_by_manifest(existing_manifest);
-                    }
-                }
-
-                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
-
-                // progress report when processing begins
-                if verbose || (download_index) % reporting_threshold == 0 {
-                    let percent_processed =
-                        (((download_index) as f64 / n_downloads as f64) * 100.0).round();
-                    println!(
-                        "Starting download {}/{} ({}%) - accession: '{}', moltype: {}",
-                        (download_index),
-                        n_downloads,
-                        percent_processed,
-                        accinfo.accession,
-                        accinfo.moltype
-                    );
-                }
-
-                let result = stream_and_process_with_retry(
-                    &client,
-                    accinfo,
-                    &download_path_clone,
-                    Some(retry_times),
-                    keep_fastas,
-                    sigs,
-                    download_only,
-                    true,
-                )
-                .await;
-                match result {
-                    Ok((coll, failed_downloads, failed_checksums)) => {
-                        if !coll.is_empty() {
-                            if let Err(e) = send_sigs.send(coll).await {
-                                eprintln!("Failed to send signatures: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                        for fail in failed_downloads {
-                            if let Err(e) = send_failed.send(fail).await {
-                                eprintln!("Failed to send failed download info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                        for fail in failed_checksums {
-                            if let Err(e) = checksum_send_failed.send(fail).await {
-                                eprintln!("Failed to send failed checksum info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = send_errors.send(e).await;
-                    }
-                }
-                drop(send_errors);
-            }
-        })
-        .await; // Wait for all tasks to complete
+    process_accession_stream(
+        acc_data,
+        concurrency_limit,
+        download_counter,
+        existing_records_map,
+        sig_templates,
+        client,
+        download_path,
+        retry_times,
+        keep_fastas,
+        download_only,
+        filter,
+        send_sigs_arc,
+        send_failed_arc,
+        send_failed_checksums_arc,
+        error_sender_arc,
+        verbose,
+    )
+    .await?;
 
     // Wait for all tasks to complete
     for handle in handles {
