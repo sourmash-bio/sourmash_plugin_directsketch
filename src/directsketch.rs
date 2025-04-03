@@ -9,7 +9,7 @@ use reqwest::{header::HeaderMap, Client};
 use serde_json::json;
 use sourmash::collection::Collection;
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::create_dir_all;
 use std::io::{Cursor, Read, Write};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -26,8 +26,8 @@ use zip::read::ZipArchive;
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, AccessionData, FailedChecksum, FailedDownload,
-    GenBankFileType, InputMolType, MultiCollection, UrlInfo,
+    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, FailedDownload,
+    InputMolType, MultiCollection,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -1250,12 +1250,6 @@ pub async fn gbsketch(
     // Worker tasks
     let client = Arc::new(Client::new());
 
-    // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_gbassembly_info(input_csv)?;
-    if n_accs == 0 {
-        bail!("No accessions to download and sketch.")
-    }
-
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
@@ -1306,27 +1300,32 @@ pub async fn gbsketch(
     headers.insert("Content-Type", "application/json".parse()?);
     let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
 
-    // what files do we want to download?
-    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
-
     let mut annotation_types = vec!["SEQUENCE_REPORT"];
 
+    let mut include_genome_files = true;
+    let mut include_protein_files = true;
     if genomes_only {
         annotation_types.push("GENOME_FASTA");
-        file_types = vec![GenBankFileType::Genomic];
+        include_protein_files = false; // only genomic files
     } else if proteomes_only {
         annotation_types.push("PROT_FASTA");
-        file_types = vec![GenBankFileType::Protein];
+        include_genome_files = false; // only protein files
     } else {
         annotation_types.push("GENOME_FASTA");
         annotation_types.push("PROT_FASTA");
     }
 
     // get accessions for retrieval
-    let accessions: Vec<String> = accession_info
-        .iter()
-        .map(|accinfo| accinfo.accession.clone())
-        .collect();
+    // Open the file containing the accessions synchronously
+    let (mut accession_info, n_accs) =
+        load_gbsketch_info(input_csv, include_genome_files, include_protein_files)?;
+    if n_accs == 0 {
+        bail!("No accessions to download and sketch.")
+    }
+    let accession_set: HashSet<String> =
+        accession_info.iter().map(|a| a.accession.clone()).collect();
+
+    let accessions: Vec<String> = accession_set.into_iter().collect();
 
     let post_params = json!({
         "accessions": accessions,
@@ -1356,53 +1355,41 @@ pub async fn gbsketch(
     };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
 
-    let mut acc_data = Vec::<AccessionData>::new();
     let mut download_failures = Vec::<FailedDownload>::new();
-    // collect accession info, fetch links into flat vector of AccessionData
-    // to do -> could definitely clean this up - not sure we need to build AccessionData for each.
-    // current benefit of doing it this way is that we can reuse the processing function for both gbsketch and urlsketch
-    for accinfo in accession_info {
+
+    // Now attach URLs to each accession info
+    for accinfo in &mut accession_info {
         py.check_signals()?; // If interrupted, return an Err
+        let dl_filename = accinfo
+            .download_filename
+            .as_ref()
+            .expect("download_filename should always be set");
 
-        for ftype in &file_types {
-            let (filename, moltype) = match ftype {
-                GenBankFileType::Genomic => (
-                    format!("{}_genomic.fna.gz", accinfo.accession),
-                    InputMolType::Dna,
-                ),
-                GenBankFileType::Protein => (
-                    format!("{}_protein.faa.gz", accinfo.accession),
-                    InputMolType::Protein,
-                ),
-            };
-
-            let maybe_url = download_links
-                .get(&filename)
-                .and_then(|url| Url::parse(url).ok());
-
-            match maybe_url {
-                Some(url) => {
-                    acc_data.push(AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        moltype,
-                        vec![UrlInfo::new(url, None, None)],
-                        Some(filename),
-                    ));
+        match download_links.get(dl_filename) {
+            Some(url_str) => match Url::parse(url_str) {
+                Ok(url) => {
+                    accinfo.attach_url(url);
                 }
-                None => {
-                    let placeholder = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        moltype,
-                        vec![],
-                        Some(filename),
+                Err(e) => {
+                    if verbose {
+                        eprintln!(
+                            "Failed to parse URL for file {}: {}. Writing to download_failures.",
+                            dl_filename, e
+                        );
+                    }
+                    download_failures.push(FailedDownload::from_accession_data(accinfo));
+                }
+            },
+            None => {
+                if verbose {
+                    eprintln!(
+                        "No download URL found for file: {}. Writing to download_failures.",
+                        dl_filename
                     );
-                    download_failures.push(FailedDownload::from_accession_data(&placeholder));
                 }
+                download_failures.push(FailedDownload::from_accession_data(accinfo));
             }
         }
-
         // if we failed to get a download link, write to download failures
         for fail in &download_failures {
             if let Err(e) = send_failed.send(fail.clone()).await {
@@ -1411,7 +1398,13 @@ pub async fn gbsketch(
             }
         }
     }
+
+    // only retain AccessionData entries that have valid URLs
+    accession_info.retain(|a| !a.url_info.is_empty());
+
     // here we now have all info to write intermediate (e.g. urlsketch) file with fetch links.
+    // to do: allow option to write urlsketch file from AccessionData entries
+    // OR, just write this file as a .urlsketch file, then clean up after we finish?
 
     // these now need to be Arc to be shared across async tasks
     let download_counter = Arc::new(AtomicUsize::new(0));
@@ -1424,7 +1417,7 @@ pub async fn gbsketch(
     let error_sender_arc = Arc::new(error_sender);
 
     process_accession_stream(
-        acc_data,
+        accession_info,
         concurrency_limit,
         download_counter,
         existing_records_map,

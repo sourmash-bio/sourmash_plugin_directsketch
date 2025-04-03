@@ -21,6 +21,12 @@ impl InputMolType {
             InputMolType::Protein => "protein",
         }
     }
+    pub fn default_filename(&self, accession: &str) -> String {
+        match self {
+            InputMolType::Dna => format!("{}_genomic.fna.gz", accession),
+            InputMolType::Protein => format!("{}_protein.faa.gz", accession),
+        }
+    }
 }
 
 impl fmt::Display for InputMolType {
@@ -96,6 +102,10 @@ impl AccessionData {
             download_filename,
         }
     }
+
+    pub fn attach_url(&mut self, url: Url) {
+        self.url_info.push(UrlInfo::new(url, None, None));
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -117,7 +127,11 @@ pub struct GBAssemblyData {
     pub name: String,
 }
 
-pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
+pub fn load_gbsketch_info(
+    input_csv: String,
+    include_genome_files: bool,
+    include_proteome_files: bool,
+) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
@@ -157,15 +171,14 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     for result in rdr.records() {
         let record = result?;
         let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
+        if !processed_rows.insert(row_string.clone()) {
             duplicate_count += 1;
             continue;
         }
-        processed_rows.insert(row_string.clone());
         row_count += 1;
 
         // require acc, name
-        let acc = record
+        let accession = record
             .get(0)
             .ok_or_else(|| anyhow!("Missing 'accession' field"))?
             .to_string();
@@ -175,10 +188,26 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             .to_string();
 
         // store accession data
-        results.push(GBAssemblyData {
-            accession: acc.to_string(),
-            name: name.to_string(),
-        });
+        if include_genome_files {
+            let moltype = InputMolType::Dna;
+            results.push(AccessionData::new(
+                accession.clone(),
+                name.clone(),
+                moltype.clone(),
+                vec![], // empty url for now
+                Some(moltype.default_filename(&accession)),
+            ));
+        }
+        if include_proteome_files {
+            let moltype = InputMolType::Protein;
+            results.push(AccessionData::new(
+                accession.clone(),
+                name,
+                moltype.clone(),
+                vec![], // empty url for now
+                Some(moltype.default_filename(&accession)),
+            ));
+        }
     }
 
     // Print warning if there were duplicated rows.
