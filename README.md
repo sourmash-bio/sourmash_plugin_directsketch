@@ -14,7 +14,7 @@ Commands:
 - `gbsketch` - download and sketch NCBI Assembly Datasets by accession
 - `urlsketch` - download and sketch directly from a url
 
-This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided or accessible, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's quite fast, but still under active development.
+This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's quite fast and still under active development.
 
 ## Installation
 
@@ -39,9 +39,7 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 ### Memory Requirements
 
-`gbsketch` streams the downloaded data, sketching/writing as it goes. It does not check an `md5sum`, but does check the internal `crc32` checksums available in the gzipped FASTA files to make sure we obtained the full download. For now, `urlsketch` downloads the full file(s), checks the `md5sum` if provided, then sketches the data.
-
-**For `urlsketch` only, you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 10). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory or decrease `n`. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
+Directsketch v0.6.0+ streams the downloaded data, sketching/writing as it goes. For gzipped files, it uses the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used ~2.5Gb data.
 
 ### Rerunning failures
 
@@ -204,9 +202,9 @@ options:
   -n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}, --n-simultaneous-downloads {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
                         Number of files to download simultaneously (1-30; default=10). Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
+  -v, --verbose         print progress for every download.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
-  -v, --verbose         print progress for every download.
 ```
 
 ## Code of Conduct
