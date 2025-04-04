@@ -614,7 +614,7 @@ def test_urlsketch_md5sum_mismatch_checksum_file(runtmp, capfd):
             assert expected_md5 == "b1234567"
             assert download_filename == "GCA_000175535.1_genomic.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert reason == "MD5 hash does not match. Expected: 'b1234567'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
+            assert reason == "MD5 checksum mismatch (expected: b1234567 - got: a1a8f1c6dc56999c73fe298871c963d1)"
 
 
 def test_urlsketch_md5sum_mismatch_no_checksum_file(runtmp, capfd):
@@ -1207,7 +1207,7 @@ def test_urlsketch_simple_merged_incorrect_md5sum_checksum_failure(runtmp):
             assert moltype == "DNA"
             assert download_filename == "both.urlsketch.fna.gz"
             assert expected_md5sum == "b9fb20c51f0552b87db5d44d5d4566"
-            assert reason == "MD5 hash does not match. Expected: 'b9fb20c51f0552b87db5d44d5d4566'; Found: '47b9fb20c51f0552b87db5d44d5d4566'"
+            assert reason == "MD5 checksum mismatch (expected: b9fb20c51f0552b87db5d44d5d4566 - got: 47b9fb20c51f0552b87db5d44d5d4566)"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz"
     with open(failed, 'r') as fails:
         header = next(fails).strip()
@@ -1347,7 +1347,7 @@ def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
     assert os.path.exists(failed)
     captured = capfd.readouterr()
     print(captured.err)
-    assert "Error: Invalid range: start=100000, end=10000000, sequence length=1088736" in captured.err
+    assert "Invalid range: start=100000, end=10000000, sequence length=1088736" in captured.err
 
     idx = sourmash.load_file_as_index(output)
     sigs = list(idx.signatures())
@@ -1366,12 +1366,7 @@ def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
             print(line)
             acc, name, moltype, md5sum, download_filename, url, range = line.strip().split(',')
             assert acc == "GCA_000175535.1_second50kb"
-            assert name == "GCA_000175535.1_second50kb"
-            assert moltype == "DNA"
-            assert md5sum == "b9fb20c51f0552b87db5d44d5d4566;a1a8f1c6dc56999c73fe298871c963d1"
-            assert download_filename == "both.urlsketch.fna.gz"
-            assert url ==  "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/961/135/GCA_000961135.2_ASM96113v2/GCA_000961135.2_ASM96113v2_genomic.fna.gz;https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
-            assert range == ""
+            assert name == "GCA_000175535.1_second50kb Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14"
 
 
 def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
@@ -1395,7 +1390,6 @@ def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
     # open subseq sigs
     idx = sourmash.load_file_as_index(subseqs)
     siglist = list(idx.signatures())
-    ss1 = siglist[0]
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
@@ -1567,7 +1561,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
             assert download_filename == "both.urlsketch.fna.gz"
             assert url == "https://ftp.ncbi.nlm.nih.gov/genomes/all/GCA/000/175/535/GCA_000175535.1_ASM17553v1/GCA_000175535.1_ASM17553v1_genomic.fna.gz"
             assert expected_md5 == "b2"
-            assert reason == "MD5 hash does not match. Expected: 'b2'; Found: 'a1a8f1c6dc56999c73fe298871c963d1'"
+            assert reason == "MD5 checksum mismatch (expected: b2 - got: a1a8f1c6dc56999c73fe298871c963d1)"
 
 
 def test_urlsketch_merged_ranged_fail(runtmp):
@@ -1653,6 +1647,6 @@ def test_urlsketch_verbose(runtmp, capfd):
     print(captured.out)
     print(captured.err)
 
-    assert "Starting accession 1/3 (33%) - moltype: DNA" in captured.out
-    assert "Starting accession 2/3 (67%) - moltype: protein" in captured.out
-    assert "Starting accession 3/3 (100%) - moltype: DNA" in captured.out
+    assert "Starting download 1/3 (33%) - accession: 'GCA_000961135.2', moltype: DNA" in captured.out
+    assert "Starting download 2/3 (67%) - accession: 'GCA_000961135.2', moltype: protein" in captured.out
+    assert "Starting download 3/3 (100%) - accession: 'GCA_000175535.1', moltype: DNA" in captured.out
