@@ -918,7 +918,8 @@ pub async fn process_accession_stream(
     retry_times: u32,
     keep_fastas: bool,
     download_only: bool,
-    filter: bool,
+    filter_sigs: bool,
+    no_overwrite_fasta: bool,
     send_sigs: Arc<Sender<BuildCollection>>,
     send_failed: Arc<Sender<AccessionData>>,
     send_failed_checksums: Arc<Sender<FailedChecksum>>,
@@ -970,7 +971,7 @@ pub async fn process_accession_stream(
                 }
 
                 // filter tells us whether or not we need to filter sigs
-                if filter {
+                if filter_sigs {
                     if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
                         sigs.filter_by_manifest(existing_manifest);
                     }
@@ -982,7 +983,7 @@ pub async fn process_accession_stream(
                     if keep_fastas {
                         let download_filename = accinfo.download_filename.as_deref().unwrap_or_default();
                         let fasta_final_path = download_path.join(download_filename);
-                        fasta_final_path.exists()
+                        no_overwrite_fasta && fasta_final_path.exists()
                     } else {
                         true
                     }
@@ -1133,6 +1134,7 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
+    no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1292,6 +1294,7 @@ pub async fn gbsketch(
         keep_fastas,
         download_only,
         filter,
+        no_overwrite_fasta,
         receivers.send_sigs,
         receivers.send_failed,
         receivers.send_failed_checksums,
@@ -1332,6 +1335,7 @@ pub async fn urlsketch(
     concurrency_limit: usize,
     force: bool,
     verbose: bool,
+    no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
@@ -1391,6 +1395,7 @@ pub async fn urlsketch(
         keep_fastas,
         download_only,
         filter,
+        no_overwrite_fasta,
         receivers.send_sigs,
         receivers.send_failed,
         receivers.send_failed_checksums,
