@@ -630,7 +630,7 @@ fn setup_channels_and_handlers(
     Arc<AtomicBool>, // critical_error_flag
     CancellationToken,
 ) {
-    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
+    // create channels. To do: might want to modify this buffer size.
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
     let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
     let (send_failed_checksums, recv_failed_checksum) =
