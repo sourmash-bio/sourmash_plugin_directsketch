@@ -932,6 +932,10 @@ pub async fn process_accession_stream(
     // set reporting threshold to every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
 
+    // skip counter
+    let skipped_unneeded = Arc::new(AtomicUsize::new(0));
+    let skipped_unneeded_for_tasks = skipped_unneeded.clone();
+
     stream::iter(acc_data)
         .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
             let client = client.clone();
@@ -944,6 +948,7 @@ pub async fn process_accession_stream(
             let existing_records_map = existing_records_map.clone();
             let sig_templates = sig_templates.clone();
             let cancel_token = cancel_token.clone();
+            let skipped_unneeded = skipped_unneeded_for_tasks.clone();
 
             async move {
                 if cancel_token.is_cancelled() {
@@ -955,16 +960,46 @@ pub async fn process_accession_stream(
                     return;
                 }
 
+                // record that we are starting logic for this download
+                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
                 let mut sigs = (*sig_templates).clone();
-                // filter template sigs based on existing sigs
+                // If sig_templates was empty to begin with (e.g., download_only mode), nothing will happen here
+                if let Ok(selection) = MultiSelection::from_input_moltype(accinfo.moltype.as_str()) {
+                    let _ = sigs.select(&selection);
+                }
+
+                // filter tells us whether or not we need to filter sigs
                 if filter {
                     if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                        // If the key exists, filter template sigs
                         sigs.filter_by_manifest(existing_manifest);
                     }
                 }
 
-                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let no_sigs = sigs.is_empty();
+
+                let should_skip = if no_sigs {
+                    if keep_fastas {
+                        let download_filename = accinfo.download_filename.as_deref().unwrap_or_default();
+                        let fasta_final_path = download_path.join(download_filename);
+                        fasta_final_path.exists()
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
+
+                if should_skip {
+                    skipped_unneeded.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' ({}): already sketched or no signatures to build.",
+                            accinfo.accession, accinfo.moltype
+                        );
+                    }
+                    return;
+                }
 
                 // progress report when processing begins for a download
                 if verbose || download_index % reporting_threshold == 0 {
@@ -1009,6 +1044,10 @@ pub async fn process_accession_stream(
         })
         .await;
 
+    let skipped = skipped_unneeded.load(Ordering::Relaxed);
+    if skipped > 0 {
+        eprintln!("Skipped {skipped} download(s) due to existing sketches and/or FASTA files.");
+    }
     Ok(())
 }
 
@@ -1074,66 +1113,6 @@ fn build_filtered_templates(
     }
 
     Ok(sig_templates)
-}
-
-pub fn filter_accessions_to_download(
-    original_acc_data: Vec<AccessionData>,
-    existing_records_map: &HashMap<String, BuildManifest>,
-    sig_templates: &BuildCollection,
-    download_path: &Utf8Path,
-    keep_fastas: bool,
-    filter: bool,
-) -> Result<(
-    Vec<AccessionData>,
-    Arc<AtomicUsize>, // skipped_empty_url
-    Arc<AtomicUsize>, // skipped_unneeded
-)> {
-    let skipped_empty_url = Arc::new(AtomicUsize::new(0));
-    let skipped_unneeded = Arc::new(AtomicUsize::new(0));
-    let mut filtered = Vec::new();
-
-    for accinfo in original_acc_data {
-        if accinfo.url_info.is_empty() {
-            skipped_empty_url.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-
-        // first, filter by input moltype to exclude any sigs we can't build anyway
-        let input_moltype = accinfo.moltype.as_str();
-        let selection = MultiSelection::from_input_moltype(input_moltype)?;
-        let mut sigs = sig_templates.clone();
-        sigs.select(&selection)?;
-
-        // now filter by existing sigs
-        if filter {
-            if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                sigs.filter_by_manifest(existing_manifest);
-            }
-        }
-
-        let already_sketched = sigs.is_empty();
-        let should_skip = if already_sketched {
-            if keep_fastas {
-                // check if the filename exists
-                let download_filename = accinfo.download_filename.as_deref().unwrap_or_default();
-                let fasta_final_path = download_path.join(download_filename);
-                fasta_final_path.exists()
-            } else {
-                true
-            }
-        } else {
-            false
-        };
-
-        if should_skip {
-            skipped_unneeded.fetch_add(1, Ordering::Relaxed);
-            continue;
-        }
-
-        filtered.push(accinfo);
-    }
-
-    Ok((filtered, skipped_empty_url, skipped_unneeded))
 }
 
 #[tokio::main]
@@ -1251,6 +1230,7 @@ pub async fn gbsketch(
 
     let mut download_failures = Vec::<AccessionData>::new();
 
+    let all_accs = accession_info.len();
     // Now attach URLs to each accession info
     for accinfo in &mut accession_info {
         py.check_signals()?; // If interrupted, return an Err
@@ -1273,26 +1253,16 @@ pub async fn gbsketch(
         }
     }
 
-    // filter accessions by 1.empty URLs (can't download) and 2. not needed (already sketched/downloaded)
-    let (accession_info, skipped_empty_url, skipped_unneeded) = filter_accessions_to_download(
-        accession_info,
-        &existing_records_map,
-        &sig_templates,
-        &download_path,
-        keep_fastas,
-        filter,
-    )?;
+    // retain only accessions without empty URLs (can't download)
+    accession_info.retain(|a| !a.url_info.is_empty());
 
-    let skipped_empty = skipped_empty_url.load(Ordering::Relaxed);
-    let skipped_unneeded = skipped_unneeded.load(Ordering::Relaxed);
+    if accession_info.is_empty() {
+        bail!("No valid download URLs found for any accessions. Exiting.");
+    }
+    let skipped_empty = all_accs - accession_info.len();
 
     if skipped_empty > 0 {
         eprintln!("Skipped {skipped_empty} download(s) due to missing download URLs.");
-    }
-    if skipped_unneeded > 0 {
-        eprintln!(
-            "Skipped {skipped_unneeded} download(s) due to existing sketches and/or FASTA files."
-        );
     }
 
     // optionally write urlsketch csv with available download links
@@ -1400,28 +1370,9 @@ pub async fn urlsketch(
     }
 
     // Open the file containing the accessions synchronously
-    let (mut accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
+    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
-    }
-
-    // filter any accessions that aren't needed (already sketched/downloaded)
-    if filter {
-        let (filtered, _, skipped_unneeded) = filter_accessions_to_download(
-            accession_info,
-            &existing_records_map,
-            &sig_templates,
-            &download_path,
-            keep_fastas,
-            filter,
-        )?;
-
-        accession_info = filtered;
-
-        let skipped_unneeded = skipped_unneeded.load(Ordering::Relaxed);
-        if skipped_unneeded > 0 {
-            eprintln!("Skipped {skipped_unneeded} download(s) due to existing sketches and/or FASTA files.");
-        }
     }
 
     let download_counter = Arc::new(AtomicUsize::new(0));
