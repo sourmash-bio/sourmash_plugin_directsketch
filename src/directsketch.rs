@@ -1287,83 +1287,38 @@ pub async fn urlsketch(
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let mut batch_index = 1;
-    let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
-    let mut filter = false;
-    // if writing sigs, prepare output and look for existing sig batches
-    if let Some(ref output_sigs) = output_sigs {
-        // Create outpath from output_sigs
-        let outpath = Utf8PathBuf::from(output_sigs);
-
-        // Check if the extension is "zip"
-        if outpath.extension().map_or(true, |ext| ext != "zip") {
-            bail!("Output must be a zip file.");
-        }
-        // find and read any existing sigs
-        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
-        // Check if there are any existing batches to process
-        if !existing_sigs.is_empty() {
-            existing_records_map = existing_sigs.build_recordsmap();
-
-            batch_index = max_existing_batch_index + 1;
-            eprintln!(
-                "Found {} existing zip batches. Starting new sig writing at batch {}",
-                max_existing_batch_index, batch_index
-            );
-            filter = true;
-        } else {
-            // No existing batches, skipping signature filtering
-            eprintln!("No existing signature batches found; building all signatures.");
-        }
-    }
+    let (existing_records_map, batch_index, filter) =
+        prepare_signature_output(&output_sigs).await?;
 
     // set up fasta download path
-    let download_path = Utf8PathBuf::from(fasta_location);
+    let download_path = Utf8PathBuf::from(&fasta_location);
     if !download_path.exists() {
-        create_dir_all(&download_path)?;
+        std::fs::create_dir_all(&download_path)?;
     }
 
-    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
-    let (send_failed_checksums, recv_failed_checksum) =
-        tokio::sync::mpsc::channel::<FailedChecksum>(4);
-    // Error channel for handling task errors
-    let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
-
-    // Set up collector/writing tasks
-    let mut handles = Vec::new();
-
-    let sig_handle = zipwriter_handle(
-        recv_sigs,
-        output_sigs,
+    let (receivers, critical_error_flag, cancel_token) = setup_channels_and_handlers(
+        failed_csv,
+        failed_checksums_csv,
+        output_sigs.clone(),
         batch_size,
         batch_index,
-        error_sender.clone(),
     );
 
-    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
-
-    let mut write_failed_checksums = false;
-    if let Some(failed_checksums) = failed_checksums_csv {
-        let checksum_failures_handle =
-            csv_writer_handle(failed_checksums, recv_failed_checksum, error_sender.clone());
-
-        write_failed_checksums = true;
-        handles.push(checksum_failures_handle);
-    }
-
-    let critical_error_flag = Arc::new(AtomicBool::new(false));
-    // tracker for keyboard interrupt
-    let cancel_token = CancellationToken::new();
-
-    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
-    handles.push(sig_handle);
-    handles.push(failures_handle);
-    handles.push(error_handle);
-
-    // Worker tasks
     let client = Arc::new(Client::new());
+
+    let mut sig_templates = BuildCollection::new();
+    let mut genomes_only = genomes_only;
+    let mut proteomes_only = proteomes_only;
+
+    if !download_only {
+        sig_templates = build_filtered_templates(
+            &param_str,
+            keep_fastas,
+            &mut genomes_only,
+            &mut proteomes_only,
+            download_only,
+        )?;
+    }
 
     // Open the file containing the accessions synchronously
     let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
@@ -1371,59 +1326,9 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    let mut sig_templates = BuildCollection::new();
-    let mut genomes_only = genomes_only;
-    let mut proteomes_only = proteomes_only;
-
-    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
-    let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
-
-    if download_only {
-        if genomes_only {
-            eprintln!("Downloading genomes only.");
-        } else if proteomes_only {
-            eprintln!("Downloading proteomes only.");
-        }
-    } else {
-        let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-        sig_templates = match sig_template_result {
-            Ok(sig_templates) => sig_templates,
-            Err(e) => {
-                bail!("Failed to parse params string: {}", e);
-            }
-        };
-        // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.anydna_size()? == 0 && !keep_fastas {
-            eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
-            proteomes_only = true;
-        }
-        // Check if we have protein signature templates not keep_fastas
-        if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
-            eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
-            genomes_only = true;
-        }
-        if genomes_only {
-            // select only DNA templates
-            sig_templates.select(&dna_multiselection)?;
-            eprintln!("Downloading and sketching genomes only.");
-        } else if proteomes_only {
-            // select only protein templates
-            sig_templates.select(&protein_multiselection)?;
-            eprintln!("Downloading and sketching proteomes only.");
-        }
-        if sig_templates.is_empty() && !download_only {
-            bail!("No signatures to build.")
-        }
-    }
-
     let download_counter = Arc::new(AtomicUsize::new(0));
     let existing_records_map = Arc::new(existing_records_map);
     let sig_templates = Arc::new(sig_templates);
-
-    let send_sigs_arc = Arc::new(send_sigs);
-    let send_failed_arc = Arc::new(send_failed);
-    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
-    let error_sender_arc = Arc::new(error_sender);
 
     process_accession_stream(
         accession_info,
@@ -1437,21 +1342,19 @@ pub async fn urlsketch(
         keep_fastas,
         download_only,
         filter,
-        send_sigs_arc,
-        send_failed_arc,
-        send_failed_checksums_arc,
-        error_sender_arc,
+        receivers.send_sigs,
+        receivers.send_failed,
+        receivers.send_failed_checksums,
+        receivers.error_sender,
         verbose,
         cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
-        write_failed_checksums, // write_checksum_fail flag to indicate whether we want to write failed checksums
+        receivers.write_failed_checksums, // flag to indicate whether we want to write failed checksums
     )
     .await?;
 
     // Wait for all tasks to complete
-    for handle in handles {
-        if let Err(e) = handle.await {
-            eprintln!("Handle join error: {}.", e);
-        }
+    for handle in receivers.handles {
+        let _ = handle.await;
     }
     // since the only critical error is not having written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
