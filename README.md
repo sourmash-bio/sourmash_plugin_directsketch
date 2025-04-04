@@ -14,7 +14,7 @@ Commands:
 - `gbsketch` - download and sketch NCBI Assembly Datasets by accession
 - `urlsketch` - download and sketch directly from a url
 
-This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's quite fast and still under active development.
+This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's under active development.
 
 ## Installation
 
@@ -33,17 +33,27 @@ conda install sourmash_plugin_directsketch
 
 ### Allowing restart with batching
 
-If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of sigs associated with each url provided. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
+If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. The batch size represents the number of files downloaded, so it is possible DNA and protein signatures of the same accession may be split across zipfiles. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
 
 To build a single database after batched sketching, you can use `sig cat` to build a single zipfile (`sourmash sig cat *.zip -o OUTPUT.sig.zip`) or `sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
 
+### Rerunning failures (with batching or not)
+
+We recommend you use the `--failed` file from `gbsketch` or `urlsketch` as new input to rerun only the failed downloads. This file contains the accessions that failed to download or sketch, along with their download links.
+
+*with batching*:
+- batched restart will read existing sketches and avoid rebuilding them. Please use the same output file name to detect batches from the prior run. For example, if you ran `gbsketch` with `--batch-size 1000` and it created `output.1.sig.zip`, `output.2.sig.zip`, etc., then running it again with the same `--output output.sig.zip --failed test.failed2.csv` will start from the next batch (e.g. `output.3.sig.zip`), and will only attempt to sketch the accessions not yet sketched. NOTE (v0.6): batch restart currently only applies to signatures. We do not yet check for existing file downloads, so if you are using `--keep-fasta`, be sure to use the `--failed` file as input to reruns, to avoid re-downloading existing FASTA files.
+
+*no batching*
+Since we cannot append to the existing output zipfile of signatures, please provide a different output file if re-running `gbsketch` or `urlsketch` and you want to avoid overwriting the previous run. For example, if your first run was `gbsketch input.csv -o output.sig.zip --failed test.failed.csv`, you can run: `gbsketch test.failed.csv -o output2.sig.zip  --failed test.failed2.csv `
+This will read the `test.failed.csv` file, and only attempt to download and sketch the accessions listed there. On success, can then combine the final output zipfiles using `sourmash sig cat`.
+
+
 ### Memory Requirements
 
-Directsketch v0.6.0+ streams the downloaded data, sketching/writing as it goes. For gzipped files, it uses the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used ~2.5Gb data.
+Directsketch v0.6+ streams the downloaded data, sketching and/or writing as it goes. For gzipped files, the library we use checks the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to avoid memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used ~2.5Gb data.
 
-### Rerunning failures
 
-If using batches, you can rerun the same command and any failed sketches will be retried. Alternatively, the `--failed` file from either `gbsketch` or `urlsketch` can be used as input into `gbsketch` or `urlsketch`. We cannot append to the existing output zipfile of signatures, so please provide a different output file if running `urlsketch` with the failure file.
 
 ### Using an NCBI API Key (gbsketch only)
 
