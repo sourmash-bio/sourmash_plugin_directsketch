@@ -167,6 +167,9 @@ pub async fn stream_and_process_with_retry(
 
             let mut stream = response.bytes_stream();
 
+            // if we have an expected md5sum, we need to calculate md5sum as we read the stream
+            let mut hasher = expected_md5.as_ref().map(|_| md5::Context::new());
+
             while let Some(chunk) = stream.next().await {
                 if cancel_token.is_cancelled() {
                     return Err(anyhow!("Cancelled during response streaming"));
@@ -181,6 +184,10 @@ pub async fn stream_and_process_with_retry(
                 }
                 match chunk {
                     Ok(bytes) => {
+                        // If we have an expected MD5, update the hasher
+                        if let Some(ref mut h) = hasher {
+                            h.consume(&bytes);
+                        }
                         // "write" bytes into the in-memory stream
                         if let Err(e) = writer.write_all(&bytes).await {
                             last_error = Some(anyhow!(e).context("Failed to stream FASTX data"));
