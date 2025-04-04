@@ -14,7 +14,7 @@ Commands:
 - `gbsketch` - download and sketch NCBI Assembly Datasets by accession
 - `urlsketch` - download and sketch directly from a url
 
-This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided or accessible, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's quite fast, but still under active development.
+This plugin is an attempt to improve sourmash database generation by downloading files, checking md5sum if provided, and sketching to a sourmash zipfile. FASTA/Q files can also be saved if desired. It's under active development.
 
 ## Installation
 
@@ -33,19 +33,20 @@ conda install sourmash_plugin_directsketch
 
 ### Allowing restart with batching
 
-If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. For `gbsketch`, the batch size represents the number of accessions included in each zip, with all signatures associated with an accession grouped within a single `zip`. For `urlsketch`, the batch size represents the number of sigs associated with each url provided. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
+If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. The batch size represents the number of files downloaded, so it is possible DNA and protein signatures of the same accession may be split across zipfiles. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
 
 To build a single database after batched sketching, you can use `sig cat` to build a single zipfile (`sourmash sig cat *.zip -o OUTPUT.sig.zip`) or `sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
 
+### Rerunning failures (with batching or not)
+
+**With batching**, you can use the same exact command to restart: directsketch will detect already-generated signatures and downloaded FASTAs and skip them. It will start writing signature from the next batch index, so if you last completed zipfile was `output.2.sig.zip`, running the command again with the same `--output output.sig.zip` will start from `output.3.sig.zip`. Incomplete zipfiles (marked as `.incomplete`) will be deleted.
+
+**Without batching**, the existing signature zipfile will be unreadable and marked as `.incomplete`. You can restart by using the same input csv file, but if you are using `--keep-fasta`, you can add the option `--no-overwrite-fasta` to avoid overwriting any completed FASTA files. Incomplete fasta files are marked with the `.incomplete` extension and will be re-downloaded. If sketching, the incomplete zipfile will be deleted upon re-run, and we will still re-download all fasta files needed to generate sketches.
+
 ### Memory Requirements
 
-`gbsketch` streams the downloaded data, sketching/writing as it goes. It does not check an `md5sum`, but does check the internal `crc32` checksums available in the gzipped FASTA files to make sure we obtained the full download. For now, `urlsketch` downloads the full file(s), checks the `md5sum` if provided, then sketches the data.
+Directsketch v0.6+ streams the downloaded data, sketching and/or writing as it goes. For gzipped files, the library we use checks the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to avoid memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used ~2.5Gb data.
 
-**For `urlsketch` only, you will need enough memory to hold files associated with `n` accessions in memory at once**, where `n` is the number of simultaneous downloads (`--n-simultaneous-downloads`; default 10). For microbial and viral genomes, this is trivial. For large eukaryotic genomes (e.g. plants!), be sure to provide sufficient memory or decrease `n`. You can tune the number of simultaneous downloads (and thus, the number of genomes/proteomes that will be in memory simultaneously) with `--n-simultaneous-downloads`.
-
-### Rerunning failures
-
-If using batches, you can rerun the same command and any failed sketches will be retried. Alternatively, the `--failed` file from either `gbsketch` or `urlsketch` can be used as input into `gbsketch` or `urlsketch`. We cannot append to the existing output zipfile of signatures, so please provide a different output file if running `urlsketch` with the failure file.
 
 ### Using an NCBI API Key (gbsketch only)
 
@@ -98,7 +99,7 @@ Full Usage:
 
 ```
 usage:  gbsketch [-h] [-q] [-d] [-o OUTPUT] [-f FASTAS] [--batch-size BATCH_SIZE] [-k] [--download-only] [--failed FAILED] [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES]
-                 [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [-a API_KEY] [-v] [--write-urlsketch-csv] [-g | -m]
+                 [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [-a API_KEY] [-v] [--write-urlsketch-csv] [--no-overwrite-fasta] [-g | -m]
                  input_csv
 
 download and sketch GenBank assembly datasets
@@ -115,8 +116,8 @@ options:
   -f FASTAS, --fastas FASTAS
                         Write fastas here
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to restart
-                        sketching from scratch. Default: write all sigs to single zipfile.
+                        Write smaller zipfiles, each containing sigs associated with this number of accessions. This allows gbsketch to recover after unexpected failures, rather than needing to restart sketching from scratch. Default: write all
+                        sigs to single zipfile.
   -k, --keep-fasta      Write FASTA files. Default: do not write FASTA files.
   --download-only       Download FASTAS but do not sketch. Requires '--keep-fasta'. By default this downloads both genomes and proteomes.
   --failed FAILED       CSV of failed accessions and download links (should be mostly protein).
@@ -135,6 +136,7 @@ options:
   -v, --verbose         print progress for every download.
   --write-urlsketch-csv
                         Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.
+  --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
@@ -172,7 +174,9 @@ sourmash scripts urlsketch acc-url.csv -o test-urlsketch.zip -f out_fastas -k --
 
 Full Usage:
 ```
-usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [--batch-size BATCH_SIZE] [-f FASTAS] [-k] [--download-only] [--failed FAILED] [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES] [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [--force] [-g | -m] input_csv
+usage:  urlsketch [-h] [-q] [-d] [-o OUTPUT] [--batch-size BATCH_SIZE] [-f FASTAS] [-k] [--download-only] [--failed FAILED] [--checksum-fail CHECKSUM_FAIL] [-p PARAM_STRING] [-c CORES] [-r RETRY_TIMES]
+                  [-n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}] [--force] [-v] [--no-overwrite-fasta] [-g | -m]
+                  input_csv
 
 download and sketch GenBank assembly datasets
 
@@ -186,7 +190,8 @@ options:
   -o OUTPUT, --output OUTPUT
                         Output ZIP file for the signatures. Must end with '.zip'.
   --batch-size BATCH_SIZE
-                        Write smaller zipfiles, each containing sigs associated with this number of urls. This allows urlsketch to recover after unexpected failures, rather than needing to restart sketching from scratch. Default: write all sigs to single zipfile.
+                        Write smaller zipfiles, each containing sigs associated with this number of urls. This allows urlsketch to recover after unexpected failures, rather than needing to restart sketching from scratch. Default: write all sigs
+                        to single zipfile.
   -f FASTAS, --fastas FASTAS
                         Write fastas here.
   -k, --keep-fasta, --keep-fastq
@@ -202,11 +207,13 @@ options:
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         Number of times to retry failed downloads (default=3).
   -n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}, --n-simultaneous-downloads {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
-                        Number of files to download simultaneously (1-30; default=10). Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.
+                        Number of files to download simultaneously (1-30; default=10). Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download.
+                        Please limit downloads accordingly for large genomes.
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
+  -v, --verbose         print progress for every download.
+  --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
-  -v, --verbose         print progress for every download.
 ```
 
 ## Code of Conduct
