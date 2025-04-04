@@ -3,6 +3,7 @@
 name = "sourmash_plugin_directsketch"
 version = "0.5.0"
 edition = "2021"
+rust-version = "1.74.0"
 
 [lib]
 name = "sourmash_plugin_directsketch"
