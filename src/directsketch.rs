@@ -1,6 +1,8 @@
 use anyhow::{anyhow, bail, Context, Error, Result};
 use async_zip::base::write::ZipFileWriter;
+use camino::Utf8Path;
 use camino::Utf8PathBuf as PathBuf;
+use futures::stream::{self, StreamExt};
 use needletail::parse_fastx_reader;
 use needletail::parser::SequenceRecord;
 use regex::Regex;
@@ -8,22 +10,26 @@ use reqwest::{header::HeaderMap, Client};
 use serde_json::json;
 use sourmash::collection::Collection;
 use std::cmp::max;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::create_dir_all;
-use std::io::{Cursor, Read};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::io::{Cursor, Read, Write};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::{AsyncWriteExt, BufWriter};
-use tokio::sync::Semaphore;
+use tokio::io::{duplex, AsyncWriteExt, BufWriter};
+use tokio::sync::mpsc::Sender;
+use tokio::sync::{oneshot, Semaphore};
+use tokio::task::spawn_blocking;
 use tokio_util::compat::Compat;
+use tokio_util::io::SyncIoBridge;
+use tokio_util::sync::CancellationToken;
 use zip::read::ZipArchive;
 
 use pyo3::prelude::*;
 
 use crate::utils::{
-    load_accession_info, load_gbassembly_info, AccessionData, FailedChecksum, FailedDownload,
-    GenBankFileType, InputMolType, MultiCollection, UrlInfo,
+    load_accession_info, load_gbsketch_info, AccessionData, FailedChecksum, InputMolType,
+    MultiCollection, TempFastaFile, ToCsvRow,
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
@@ -90,28 +96,19 @@ async fn download_with_retry(
     }))
 }
 
-async fn try_remove_file(path: &PathBuf) {
-    if path.exists() {
-        if let Err(e) = tokio::fs::remove_file(path).await {
-            eprintln!("Failed to remove file {}: {e}", path);
-        }
-    }
-}
-
-/// Processes FASTX records from the provided data slice. Writes FASTA entries if a file is given
+/// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
 /// Note, if internal checksum (e.g. CRC32) or decompression issues occur, it will return an error.
-pub async fn process_fastx(
-    data: &[u8],
-    mut file: Option<&mut File>,
-    sigs: &mut BuildCollection, // will be empty collection if download_only
+pub fn process_fastx_from_reader<R: std::io::Read + Send + 'static>(
+    reader: R,
+    mut file: Option<std::fs::File>,
+    mut sigs: BuildCollection,
     moltype: &str,
     name: String,
     filename: String,
     range: Option<(usize, usize)>,
-) -> Result<()> {
-    let cursor = Cursor::new(data);
-    let mut fastx_reader = parse_fastx_reader(cursor)
+) -> Result<BuildCollection> {
+    let mut fastx_reader = parse_fastx_reader(reader)
         .context("Failed to parse FASTX data (possibly CRC32 or decompression issue)")?;
 
     while let Some(record) = fastx_reader.next() {
@@ -126,7 +123,6 @@ pub async fn process_fastx(
                 String::from_utf8_lossy(&subseq)
             );
             file.write_all(fasta_entry.as_bytes())
-                .await
                 .context("Failed to write FASTA entry")?;
         }
 
@@ -136,21 +132,25 @@ pub async fn process_fastx(
 
     // Update the sig/manifest info once per call. Will not impact empty collection.
     sigs.update_info(name, filename);
-
-    Ok(())
+    Ok(sigs)
 }
 
 #[allow(clippy::too_many_arguments)]
-pub async fn download_and_process_with_retry(
+pub async fn stream_and_process_with_retry(
     client: &Client,
     accinfo: AccessionData,
     location: &PathBuf,
     retry: Option<u32>,
     keep_fastas: bool,
     mut sigs: BuildCollection,
-    download_only: bool,
+    _download_only: bool,
     write_checksum_fail: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+    cancel_token: CancellationToken,
+) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
+    if cancel_token.is_cancelled() {
+        return Err(anyhow!("Aborting due to cancellation"));
+    }
+
     let retry_count = retry.unwrap_or(3);
     let mut download_failures = Vec::new();
     let mut checksum_failures = Vec::new();
@@ -163,14 +163,19 @@ pub async fn download_and_process_with_retry(
     let filename = download_filename.clone();
     let merged_sample = accinfo.url_info.len() > 1;
 
-    // Open file (if applicable) once, and append to it for merged samples
-    let mut file: Option<File> = if keep_fastas {
-        open_file_for_writing(location, Some(&download_filename)).await?
+    let mut temp_fasta: Option<TempFastaFile> = None;
+    let mut file: Option<std::fs::File> = if keep_fastas {
+        let (fasta_file, handle) = TempFastaFile::new(location, &download_filename)?;
+        temp_fasta = Some(fasta_file);
+        Some(handle)
     } else {
         None
     };
 
     for uinfo in &accinfo.url_info {
+        if cancel_token.is_cancelled() {
+            return Err(anyhow!("Cancelled before starting new URL"));
+        }
         let url = &uinfo.url;
         let expected_md5 = &uinfo.md5sum;
         let range = uinfo.range;
@@ -179,6 +184,9 @@ pub async fn download_and_process_with_retry(
         let mut last_error: Option<anyhow::Error> = None;
 
         while attempts_left > 0 {
+            if cancel_token.is_cancelled() {
+                return Err(anyhow!("Cancelled before starting new URL"));
+            }
             let response = match client.get(url.clone()).send().await {
                 Ok(resp) if resp.status().is_success() => resp,
                 Ok(resp) => {
@@ -193,35 +201,85 @@ pub async fn download_and_process_with_retry(
                 }
             };
 
-            match response.bytes().await {
-                Ok(data) => {
-                    // Attempt to parse and process FASTX
-                    let f = file.as_mut();
-                    let process_result = process_fastx(
-                        &data,
-                        f,
-                        &mut sigs,
-                        moltype.as_str(),
-                        name.clone(),
-                        filename.clone(),
-                        range,
-                    )
-                    .await;
+            // create tokio duplex stream for reading and writing
+            let (mut writer, reader) = duplex(1024 * 1024);
+            let (tx, rx) = oneshot::channel();
 
-                    if let Err(e) = process_result {
-                        last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
-                        if keep_fastas {
-                            let path = location.join(&download_filename);
-                            try_remove_file(&path).await;
-                        }
-                        attempts_left -= 1;
-                        continue;
-                    }
-                    break; // success, break retry loop
+            let moltype_cloned = moltype.as_str();
+            let name_cloned = name.clone();
+            let filename_cloned = filename.clone();
+            let file_taken = file.take();
+            let sigs_taken = std::mem::take(&mut sigs);
+
+            let reader = SyncIoBridge::new(reader);
+            spawn_blocking(move || {
+                let result = process_fastx_from_reader(
+                    reader,
+                    file_taken,
+                    sigs_taken,
+                    moltype_cloned,
+                    name_cloned,
+                    filename_cloned,
+                    range,
+                );
+                let _ = tx.send(result);
+            });
+
+            let mut stream = response.bytes_stream();
+
+            while let Some(chunk) = stream.next().await {
+                if cancel_token.is_cancelled() {
+                    return Err(anyhow!("Cancelled during response streaming"));
                 }
+                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    // exit if a Python interrupt signal is caught
+                    cancel_token.cancel();
+                    return Err(anyhow::anyhow!(
+                        "Caught Python interrupt: {}, shutting down gracefully",
+                        e
+                    ));
+                }
+                match chunk {
+                    Ok(bytes) => {
+                        // "write" bytes into the in-memory stream
+                        if let Err(e) = writer.write_all(&bytes).await {
+                            last_error = Some(anyhow!(e).context("Failed to stream FASTX data"));
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        last_error = Some(anyhow!(e).context("Failed to read response chunk"));
+                        break;
+                    }
+                }
+            }
 
-                Err(e) => {
-                    last_error = Some(anyhow!(e).context("Failed to read response body"));
+            writer.shutdown().await.ok();
+
+            if cancel_token.is_cancelled() {
+                return Err(anyhow!("Cancelled before starting new URL"));
+            }
+
+            match rx.await {
+                Ok(Ok(updated_sigs)) => {
+                    sigs = updated_sigs;
+                    if let Some(fasta) = temp_fasta.take() {
+                        fasta.finalize()?;
+                    }
+                    break;
+                }
+                Ok(Err(e)) => {
+                    last_error = Some(anyhow!(e).context("Failed to process FASTX data"));
+                    attempts_left -= 1;
+                    if let Some(fasta) = &temp_fasta {
+                        fasta.cleanup().await;
+                    }
+                }
+                Err(_) => {
+                    last_error = Some(anyhow!("Processing task failed or was cancelled"));
+                    if let Some(fasta) = &temp_fasta {
+                        fasta.cleanup().await;
+                    }
                     attempts_left -= 1;
                 }
             }
@@ -250,10 +308,10 @@ pub async fn download_and_process_with_retry(
 
                 // Mark the whole merged sample as failed, in addition to writing the checksum failure
                 if merged_sample {
-                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                    download_failures.push(accinfo);
                 }
             } else {
-                download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                download_failures.push(accinfo);
             }
 
             // If any download completely fails, we should stop processing further URLs (rather than getting incomplete merged sigs/files)
@@ -486,10 +544,10 @@ async fn dl_sketch_url(
     mut sigs: BuildCollection,
     download_only: bool,
     write_checksum_fail: bool,
-) -> Result<(BuildCollection, Vec<FailedDownload>, Vec<FailedChecksum>)> {
+) -> Result<(BuildCollection, Vec<AccessionData>, Vec<FailedChecksum>)> {
     let retry_count = retry.unwrap_or(3); // Default retry count
     let empty_coll = BuildCollection::new();
-    let mut download_failures = Vec::<FailedDownload>::new();
+    let mut download_failures = Vec::<AccessionData>::new();
     let mut checksum_failures = Vec::<FailedChecksum>::new();
 
     let name = accinfo.name.clone();
@@ -573,10 +631,10 @@ async fn dl_sketch_url(
                     // The checksum failures file is mostly for debugging, while the failure csv
                     // can be used to re-run urlsketch.
                     if merged_sample {
-                        download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                        download_failures.push(accinfo);
                     }
                 } else {
-                    download_failures.push(FailedDownload::from_accession_data(&accinfo));
+                    download_failures.push(accinfo);
                 }
                 // Clear signatures and return immediately on failure
                 return Ok((empty_coll, download_failures, checksum_failures));
@@ -911,35 +969,51 @@ pub fn zipwriter_handle(
     })
 }
 
-pub fn failures_handle(
-    failed_csv: String,
-    mut recv_failed: tokio::sync::mpsc::Receiver<FailedDownload>,
+// sync CSV writer
+pub fn write_csv_to_path<T: ToCsvRow>(records: &[T], output_path: &Utf8Path) -> Result<()> {
+    if let Some(parent) = output_path.parent() {
+        create_dir_all(parent.as_std_path())
+            .with_context(|| format!("Failed to create parent directory: {}", parent))?;
+    }
+
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(output_path.as_std_path())
+        .with_context(|| format!("Failed to open file at {}", output_path))?;
+
+    file.write_all(T::csv_header().as_bytes())?;
+    for record in records {
+        file.write_all(record.csv_record().as_bytes())?;
+    }
+
+    Ok(())
+}
+
+pub fn csv_writer_handle<T: ToCsvRow + Send + 'static>(
+    output_path: String,
+    mut receiver: tokio::sync::mpsc::Receiver<T>,
     error_sender: tokio::sync::mpsc::Sender<Error>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
-        match File::create(&failed_csv).await {
+        match File::create(&output_path).await {
             Ok(file) => {
                 let mut writer = BufWriter::new(file);
 
-                // Write CSV header
-                if let Err(e) = writer
-                    .write_all(FailedDownload::csv_header().as_bytes())
-                    .await
-                {
+                if let Err(e) = writer.write_all(T::csv_header().as_bytes()).await {
                     let error = Error::new(e).context("Failed to write headers");
                     let _ = error_sender.send(error).await;
                     return;
                 }
-                while let Some(failed_download) = recv_failed.recv().await {
-                    // Write the FailedDownload to the CSV writer
-                    if let Err(e) = failed_download.to_writer(&mut writer).await {
+
+                while let Some(record) = receiver.recv().await {
+                    if let Err(e) = writer.write_all(record.csv_record().as_bytes()).await {
                         let error = Error::new(e).context("Failed to write record");
                         let _ = error_sender.send(error).await;
-                        continue;
                     }
                 }
 
-                // Flush the writer
                 if let Err(e) = writer.flush().await {
                     let error = Error::new(e).context("Failed to flush writer");
                     let _ = error_sender.send(error).await;
@@ -950,50 +1024,7 @@ pub fn failures_handle(
                 let _ = error_sender.send(error).await;
             }
         }
-        drop(error_sender);
-    })
-}
 
-pub fn checksum_failures_handle(
-    checksum_failed_csv: String,
-    mut recv_failed: tokio::sync::mpsc::Receiver<FailedChecksum>,
-    error_sender: tokio::sync::mpsc::Sender<Error>, // Additional parameter for error channel
-) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(async move {
-        match File::create(&checksum_failed_csv).await {
-            Ok(file) => {
-                let mut writer = BufWriter::new(file);
-
-                // Attempt to write CSV headers
-                if let Err(e) = writer
-                    .write_all(FailedChecksum::csv_header().as_bytes())
-                    .await
-                {
-                    let error = Error::new(e).context("Failed to write headers");
-                    let _ = error_sender.send(error).await;
-                    return;
-                }
-
-                // Write each failed checksum record
-                while let Some(failed_checksum) = recv_failed.recv().await {
-                    if let Err(e) = failed_checksum.to_writer(&mut writer).await {
-                        let error = Error::new(e).context("Failed to write failed checksum record");
-                        let _ = error_sender.send(error).await;
-                        continue;
-                    }
-                }
-
-                // Attempt to flush the writer
-                if let Err(e) = writer.flush().await {
-                    let error = Error::new(e).context("Failed to flush failed checksum writer");
-                    let _ = error_sender.send(error).await;
-                }
-            }
-            Err(e) => {
-                let error = Error::new(e).context("Failed to create failed checksum file");
-                let _ = error_sender.send(error).await;
-            }
-        }
         drop(error_sender);
     })
 }
@@ -1013,6 +1044,111 @@ pub fn error_handler(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
+pub async fn process_accession_stream(
+    acc_data: Vec<AccessionData>,
+    concurrency_limit: usize,
+    download_counter: Arc<AtomicUsize>,
+    existing_records_map: Arc<HashMap<String, BuildManifest>>,
+    sig_templates: Arc<BuildCollection>,
+    client: Arc<Client>,
+    download_path: PathBuf,
+    retry_times: u32,
+    keep_fastas: bool,
+    download_only: bool,
+    filter: bool,
+    send_sigs: Arc<Sender<BuildCollection>>,
+    send_failed: Arc<Sender<AccessionData>>,
+    send_failed_checksums: Arc<Sender<FailedChecksum>>,
+    error_sender: Arc<Sender<anyhow::Error>>,
+    verbose: bool,
+    cancel_token: CancellationToken,
+) -> Result<()> {
+    // get total number of downloads (not acc)
+    let n_downloads = acc_data.len();
+    // set reporting threshold to every 1 percent (or every 1, whichever is larger)
+    let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
+
+    stream::iter(acc_data)
+        .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
+            let client = client.clone();
+            let send_sigs = send_sigs.clone();
+            let send_failed = send_failed.clone();
+            let send_failed_checksums = send_failed_checksums.clone();
+            let error_sender = error_sender.clone();
+            let download_path = download_path.clone();
+            let download_counter = download_counter.clone();
+            let existing_records_map = existing_records_map.clone();
+            let sig_templates = sig_templates.clone();
+            let cancel_token = cancel_token.clone();
+
+            async move {
+                if cancel_token.is_cancelled() {
+                    return;
+                }
+                if let Err(e) = pyo3::Python::with_gil(|py| py.check_signals()) {
+                    cancel_token.cancel();
+                    eprintln!("Caught Python interrupt: {}", e);
+                    return;
+                }
+
+                let mut sigs = (*sig_templates).clone();
+                // filter template sigs based on existing sigs
+                if filter {
+                    if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
+                        // If the key exists, filter template sigs
+                        sigs.filter_by_manifest(existing_manifest);
+                    }
+                }
+
+                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
+                // progress report when processing begins for a download
+                if verbose || download_index % reporting_threshold == 0 {
+                    let percent = ((download_index as f64 / n_downloads as f64) * 100.0).round();
+                    println!(
+                        "Starting download {}/{} ({}%) - accession: '{}', moltype: {}",
+                        download_index, n_downloads, percent, accinfo.accession, accinfo.moltype
+                    );
+                }
+
+                match stream_and_process_with_retry(
+                    &client,
+                    accinfo,
+                    &download_path,
+                    Some(retry_times),
+                    keep_fastas,
+                    sigs,
+                    download_only,
+                    true,
+                    cancel_token.clone(),
+                )
+                .await
+                {
+                    Ok((coll, failed_downloads, failed_checksums)) => {
+                        if !coll.is_empty() {
+                            if let Err(e) = send_sigs.send(coll).await {
+                                let _ = error_sender.send(e.into()).await;
+                            }
+                        }
+                        for fail in failed_downloads {
+                            let _ = send_failed.send(fail).await;
+                        }
+                        for fail in failed_checksums {
+                            let _ = send_failed_checksums.send(fail).await;
+                        }
+                    }
+                    Err(e) => {
+                        let _ = error_sender.send(e).await;
+                    }
+                }
+            }
+        })
+        .await;
+
+    Ok(())
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub async fn gbsketch(
@@ -1028,9 +1164,10 @@ pub async fn gbsketch(
     proteomes_only: bool,
     download_only: bool,
     batch_size: u32,
-    n_permits: usize,
+    concurrency_limit: usize,
     api_key: String,
     verbose: bool,
+    write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
@@ -1071,7 +1208,7 @@ pub async fn gbsketch(
     }
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
@@ -1088,13 +1225,18 @@ pub async fn gbsketch(
         error_sender.clone(),
     );
 
-    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
-    let checksum_failures_handle = checksum_failures_handle(
+    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
+    let checksum_failures_handle = csv_writer_handle(
         failed_checksums_csv,
         recv_failed_checksum,
         error_sender.clone(),
     );
+    // error tracker for no sigs written at all
     let critical_error_flag = Arc::new(AtomicBool::new(false));
+
+    // tracker for keyboard interrupt
+    let cancel_token = CancellationToken::new();
+
     let error_handle = error_handler(error_receiver, critical_error_flag.clone());
     handles.push(sig_handle);
     handles.push(failures_handle);
@@ -1102,22 +1244,11 @@ pub async fn gbsketch(
     handles.push(checksum_failures_handle);
 
     // Worker tasks
-    let semaphore = Arc::new(Semaphore::new(n_permits)); // Limiting concurrent downloads
     let client = Arc::new(Client::new());
-
-    // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_gbassembly_info(input_csv)?;
-    if n_accs == 0 {
-        bail!("No accessions to download and sketch.")
-    }
 
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
-
-    let mut headers = HeaderMap::new();
-    headers.insert("Content-Type", "application/json".parse()?);
-    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
 
     // build sketch params
     if download_only {
@@ -1159,30 +1290,41 @@ pub async fn gbsketch(
             bail!("No signatures to build.")
         }
     }
-    // report every 1 percent (or every 1, whichever is larger)
-    let reporting_threshold = std::cmp::max(n_accs / 100, 1);
 
-    // what files do we want to download?
-    let mut file_types = vec![GenBankFileType::Genomic, GenBankFileType::Protein];
+    // gbsketch specific : set up the HTTP client and headers
+    let mut headers = HeaderMap::new();
+    headers.insert("Content-Type", "application/json".parse()?);
+    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
 
     let mut annotation_types = vec!["SEQUENCE_REPORT"];
 
+    let mut include_genome_files = true;
+    let mut include_protein_files = true;
     if genomes_only {
         annotation_types.push("GENOME_FASTA");
-        file_types = vec![GenBankFileType::Genomic];
+        include_protein_files = false; // only genomic files
     } else if proteomes_only {
         annotation_types.push("PROT_FASTA");
-        file_types = vec![GenBankFileType::Protein];
+        include_genome_files = false; // only protein files
     } else {
         annotation_types.push("GENOME_FASTA");
         annotation_types.push("PROT_FASTA");
     }
 
     // get accessions for retrieval
-    let accessions: Vec<String> = accession_info
-        .iter()
-        .map(|accinfo| accinfo.accession.clone())
-        .collect();
+    // Open the file containing the accessions synchronously
+    let (mut accession_info, n_accs) = load_gbsketch_info(
+        input_csv.clone(),
+        include_genome_files,
+        include_protein_files,
+    )?;
+    if n_accs == 0 {
+        bail!("No accessions to download and sketch.")
+    }
+    let accession_set: HashSet<String> =
+        accession_info.iter().map(|a| a.accession.clone()).collect();
+
+    let accessions: Vec<String> = accession_set.into_iter().collect();
 
     let post_params = json!({
         "accessions": accessions,
@@ -1192,6 +1334,7 @@ pub async fn gbsketch(
     });
 
     // dl + parse dehydrated file
+    py.check_signals()?; // If interrupted, return an Err automatically
     let download_links = match download_parse_dehydrated_zip_with_retry(
         &client,
         post_url,
@@ -1211,85 +1354,41 @@ pub async fn gbsketch(
     };
     eprintln!("Successfully downloaded and parsed dehydrated zipfile. Now processing accessions.");
 
-    for (i, accinfo) in accession_info.into_iter().enumerate() {
-        py.check_signals()?; // If interrupted, return an Err automatically
+    let mut download_failures = Vec::<AccessionData>::new();
 
-        let mut sigs = sig_templates.clone();
+    // Now attach URLs to each accession info
+    for accinfo in &mut accession_info {
+        py.check_signals()?; // If interrupted, return an Err
+        let dl_filename = accinfo
+            .download_filename
+            .as_ref()
+            .expect("download_filename should always be set");
 
-        // filter template sigs based on existing sigs
-        if filter {
-            if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                // If the key exists, filter template sigs
-                sigs.filter_by_manifest(existing_manifest);
+        match download_links.get(dl_filename) {
+            Some(url_str) => match Url::parse(url_str) {
+                Ok(url) => {
+                    accinfo.attach_url(url);
+                }
+                Err(e) => {
+                    if verbose {
+                        eprintln!(
+                            "Failed to parse URL for file {}: {}. Writing to download_failures.",
+                            dl_filename, e
+                        );
+                    }
+                    download_failures.push(accinfo.clone());
+                }
+            },
+            None => {
+                if verbose {
+                    eprintln!(
+                        "No download URL found for file: {}. Writing to download_failures.",
+                        dl_filename
+                    );
+                }
+                download_failures.push(accinfo.clone());
             }
         }
-
-        // collect info for this accession into vector of accessiondata
-        let mut acc_data = Vec::<AccessionData>::new();
-        let mut download_failures = Vec::<FailedDownload>::new();
-
-        for ftype in &file_types {
-            if ftype == &GenBankFileType::Genomic {
-                let genomic_filename = format!("{}_genomic.fna.gz", accinfo.accession);
-                let genomic_url = download_links
-                    .get(&genomic_filename)
-                    .and_then(|url| Url::parse(url).ok());
-
-                if let Some(genomic_url) = genomic_url {
-                    let genomic_url_info = vec![UrlInfo::new(genomic_url, None, None)];
-
-                    let genomic_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Dna,
-                        genomic_url_info,
-                        Some(genomic_filename),
-                    );
-                    acc_data.push(genomic_accinfo);
-                } else {
-                    // Build a placeholder AccessionData and convert to FailedDownload
-                    let placeholder_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Dna,
-                        vec![],
-                        Some(genomic_filename),
-                    );
-                    download_failures
-                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
-                }
-            } else if ftype == &GenBankFileType::Protein {
-                let protein_filename = format!("{}_protein.faa.gz", accinfo.accession);
-                let protein_url = download_links
-                    .get(&protein_filename)
-                    .and_then(|url| Url::parse(url).ok());
-
-                if let Some(protein_url) = protein_url {
-                    let protein_url_info = vec![UrlInfo::new(protein_url, None, None)];
-
-                    let protein_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Protein,
-                        protein_url_info,
-                        Some(protein_filename),
-                    );
-                    acc_data.push(protein_accinfo);
-                } else {
-                    // Build a placeholder AccessionData and convert to FailedDownload
-                    let placeholder_accinfo = AccessionData::new(
-                        accinfo.accession.clone(),
-                        accinfo.name.clone(),
-                        InputMolType::Protein,
-                        vec![],
-                        Some(protein_filename),
-                    );
-                    download_failures
-                        .push(FailedDownload::from_accession_data(&placeholder_accinfo));
-                }
-            }
-        }
-
         // if we failed to get a download link, write to download failures
         for fail in &download_failures {
             if let Err(e) = send_failed.send(fail.clone()).await {
@@ -1297,77 +1396,55 @@ pub async fn gbsketch(
                 let _ = error_sender.send(e.into()).await;
             }
         }
+    }
 
-        for accinfo in acc_data {
-            // clone remaining utilities
-            let semaphore_clone = Arc::clone(&semaphore);
-            let client_clone = Arc::clone(&client);
-            let send_sigs = send_sigs.clone();
-            let send_failed = send_failed.clone();
-            let checksum_send_failed = send_failed_checksums.clone();
-            let download_path_clone = download_path.clone(); // Clone the path for each task
-            let send_errors = error_sender.clone();
-            let ftype_sigs = sigs.clone();
+    // only retain AccessionData entries that have valid URLs
+    accession_info.retain(|a| !a.url_info.is_empty());
 
-            tokio::spawn(async move {
-                let _permit = semaphore_clone.acquire().await;
-                // progress report when the permit is available and processing begins
-                if verbose || (i + 1) % reporting_threshold == 0 {
-                    let percent_processed = (((i + 1) as f64 / n_accs as f64) * 100.0).round();
-                    println!(
-                        "Starting accession {}/{} ({}%) - moltype: {}",
-                        (i + 1),
-                        n_accs,
-                        percent_processed,
-                        accinfo.moltype
-                    );
-                }
-
-                let result = download_and_process_with_retry(
-                    &client_clone,
-                    accinfo,
-                    &download_path_clone,
-                    Some(retry_times),
-                    keep_fastas,
-                    ftype_sigs,
-                    download_only,
-                    true,
-                )
-                .await;
-                match result {
-                    Ok((coll, failed_downloads, failed_checksums)) => {
-                        if !coll.is_empty() {
-                            if let Err(e) = send_sigs.send(coll).await {
-                                eprintln!("Failed to send signatures: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                        for fail in failed_downloads {
-                            if let Err(e) = send_failed.send(fail).await {
-                                eprintln!("Failed to send failed download info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                        for fail in failed_checksums {
-                            if let Err(e) = checksum_send_failed.send(fail).await {
-                                eprintln!("Failed to send failed checksum info: {}", e);
-                                let _ = send_errors.send(e.into()).await; // Send the error through the channel
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        let _ = send_errors.send(e).await;
-                    }
-                }
-                drop(send_errors);
-            });
+    // optionally write urlsketch csv with all available download links
+    if write_urlsketch_csv {
+        let urlsketch_path = PathBuf::from(format!("{}.urlsketch.csv", input_csv));
+        if let Err(e) = write_csv_to_path(&accession_info, &urlsketch_path) {
+            eprintln!("Failed to write urlsketch csv with download links: {:#}", e);
+        } else {
+            eprintln!(
+                "Wrote urlsketch csv with download links to '{}'",
+                urlsketch_path
+            );
         }
     }
-    // drop senders as we're done sending data
-    drop(send_sigs);
-    drop(send_failed);
-    drop(send_failed_checksums);
-    drop(error_sender);
+
+    // these now need to be Arc to be shared across async tasks
+    let download_counter = Arc::new(AtomicUsize::new(0));
+    let existing_records_map = Arc::new(existing_records_map);
+    let sig_templates = Arc::new(sig_templates);
+
+    let send_sigs_arc = Arc::new(send_sigs);
+    let send_failed_arc = Arc::new(send_failed);
+    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
+    let error_sender_arc = Arc::new(error_sender);
+
+    process_accession_stream(
+        accession_info,
+        concurrency_limit,
+        download_counter,
+        existing_records_map,
+        sig_templates,
+        client,
+        download_path,
+        retry_times,
+        keep_fastas,
+        download_only,
+        filter,
+        send_sigs_arc,
+        send_failed_arc,
+        send_failed_checksums_arc,
+        error_sender_arc,
+        verbose,
+        cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
+    )
+    .await?;
+
     // Wait for all tasks to complete
     for handle in handles {
         if let Err(e) = handle.await {
@@ -1441,7 +1518,7 @@ pub async fn urlsketch(
 
     // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
     let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<FailedDownload>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
     let (send_failed_checksums, recv_failed_checksum) =
         tokio::sync::mpsc::channel::<FailedChecksum>(4);
     // Error channel for handling task errors
@@ -1458,15 +1535,13 @@ pub async fn urlsketch(
         error_sender.clone(),
     );
 
-    let failures_handle = failures_handle(failed_csv, recv_failed, error_sender.clone());
+    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
 
     let mut write_failed_checksums = false;
-    if let Some(ref failed_checksums) = failed_checksums_csv {
-        let checksum_failures_handle = checksum_failures_handle(
-            failed_checksums.clone(),
-            recv_failed_checksum,
-            error_sender.clone(),
-        );
+    if let Some(failed_checksums) = failed_checksums_csv {
+        let checksum_failures_handle =
+            csv_writer_handle(failed_checksums, recv_failed_checksum, error_sender.clone());
+
         write_failed_checksums = true;
         handles.push(checksum_failures_handle);
     }

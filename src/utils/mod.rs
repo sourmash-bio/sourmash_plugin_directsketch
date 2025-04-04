@@ -1,9 +1,10 @@
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use camino::{Utf8Path, Utf8PathBuf};
 use reqwest::Url;
 use sourmash::collection::Collection;
 use std::collections::HashMap;
 use std::fmt;
-use tokio::io::AsyncWriteExt;
+use std::fs::{File, OpenOptions};
 
 pub mod buildutils;
 use crate::utils::buildutils::{BuildManifest, BuildRecord};
@@ -19,6 +20,12 @@ impl InputMolType {
         match self {
             InputMolType::Dna => "DNA",
             InputMolType::Protein => "protein",
+        }
+    }
+    pub fn default_filename(&self, accession: &str) -> String {
+        match self {
+            InputMolType::Dna => format!("{}_genomic.fna.gz", accession),
+            InputMolType::Protein => format!("{}_protein.faa.gz", accession),
         }
     }
 }
@@ -41,62 +48,6 @@ impl std::str::FromStr for InputMolType {
     }
 }
 
-#[allow(dead_code)]
-#[derive(PartialEq, Clone)]
-pub enum GenBankFileType {
-    Genomic,
-    Protein,
-    AssemblyReport,
-    Checksum,
-}
-
-impl GenBankFileType {
-    pub fn suffix(&self) -> &'static str {
-        match self {
-            GenBankFileType::Genomic => "_genomic.fna.gz",
-            GenBankFileType::Protein => "_protein.faa.gz",
-            GenBankFileType::AssemblyReport => "_assembly_report.txt",
-            GenBankFileType::Checksum => "md5checksums.txt",
-        }
-    }
-
-    //use for checksums
-    #[allow(dead_code)]
-    pub fn server_filename(&self, full_name: &str) -> String {
-        format!("{}{}", full_name, self.suffix())
-    }
-
-    #[allow(dead_code)]
-    pub fn filename_to_write(&self, accession: &str) -> String {
-        match self {
-            GenBankFileType::Checksum => format!("{}_{}", accession, self.suffix()),
-            _ => format!("{}{}", accession, self.suffix()),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn url(&self, base_url: &Url, full_name: &str) -> Url {
-        match self {
-            GenBankFileType::Checksum => base_url
-                .join(&format!("{}/{}", full_name, self.suffix()))
-                .unwrap(),
-            _ => base_url
-                .join(&format!("{}/{}{}", full_name, full_name, self.suffix()))
-                .unwrap(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn moltype(&self) -> String {
-        match self {
-            GenBankFileType::Genomic => "DNA".to_string(),
-            GenBankFileType::Protein => "protein".to_string(),
-            _ => "".to_string(),
-        }
-    }
-}
-
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct AccessionData {
     pub accession: String,
@@ -122,6 +73,59 @@ impl AccessionData {
             download_filename,
         }
     }
+
+    pub fn attach_url(&mut self, url: Url) {
+        self.url_info.push(UrlInfo::new(url, None, None));
+    }
+}
+
+pub trait ToCsvRow {
+    fn csv_record(&self) -> String;
+    fn csv_header() -> &'static str;
+
+    // Shared fn for building semicolon-separated strings from UrlInfo
+    fn parse_to_separated_string<T, F>(url_info: &[UrlInfo], mut extractor: F) -> String
+    where
+        F: FnMut(&UrlInfo) -> Option<T>,
+        T: ToString,
+    {
+        let results: Vec<String> = url_info
+            .iter()
+            .map(|info| extractor(info).map_or("".to_string(), |v| v.to_string())) // Map `None` to empty string
+            .collect();
+
+        if results.iter().all(|entry| entry.is_empty()) {
+            "".to_string() // If all entries are empty, return `""`
+        } else {
+            results.join(";") // Otherwise, join with `;`
+        }
+    }
+}
+
+impl ToCsvRow for AccessionData {
+    fn csv_record(&self) -> String {
+        let md5sum = Self::parse_to_separated_string(&self.url_info, |info| info.md5sum.clone());
+        let url =
+            Self::parse_to_separated_string(&self.url_info, |info| Some(info.url.to_string()));
+        let range = Self::parse_to_separated_string(&self.url_info, |info| {
+            info.range.map(|(start, end)| format!("{}-{}", start, end))
+        });
+
+        format!(
+            "{},{},{},{},{},{},{}\n",
+            self.accession,
+            self.name,
+            self.moltype,
+            md5sum,
+            self.download_filename.clone().unwrap_or_default(),
+            url,
+            range,
+        )
+    }
+
+    fn csv_header() -> &'static str {
+        "accession,name,moltype,md5sum,download_filename,url,range\n"
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -137,13 +141,59 @@ impl UrlInfo {
     }
 }
 
-#[derive(Clone)]
-pub struct GBAssemblyData {
-    pub accession: String,
-    pub name: String,
+async fn try_remove_file(path: &Utf8Path) {
+    if path.exists() {
+        if let Err(e) = tokio::fs::remove_file(path.as_std_path()).await {
+            eprintln!("Failed to remove file {}: {e}", path);
+        }
+    }
 }
 
-pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, usize)> {
+pub struct TempFastaFile {
+    tmp_path: Utf8PathBuf,
+    final_path: Utf8PathBuf,
+}
+
+impl TempFastaFile {
+    pub fn new(location: &Utf8Path, filename: &str) -> Result<(Self, File)> {
+        let tmp_path = location.join(format!("{filename}.incomplete"));
+        let final_path = location.join(filename);
+
+        let file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&tmp_path)
+            .context("Failed to open temp FASTA file")?;
+
+        Ok((
+            Self {
+                tmp_path,
+                final_path,
+            },
+            file,
+        ))
+    }
+
+    pub fn finalize(self) -> Result<()> {
+        std::fs::rename(&self.tmp_path, &self.final_path).with_context(|| {
+            format!(
+                "Failed to rename {:?} to {:?}",
+                self.tmp_path, self.final_path
+            )
+        })
+    }
+
+    pub async fn cleanup(&self) {
+        let _ = try_remove_file(&self.tmp_path).await;
+    }
+}
+
+pub fn load_gbsketch_info(
+    input_csv: String,
+    include_genome_files: bool,
+    include_proteome_files: bool,
+) -> Result<(Vec<AccessionData>, usize)> {
     let mut results = Vec::new();
     let mut row_count = 0;
     let mut processed_rows = std::collections::HashSet::new();
@@ -183,15 +233,14 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
     for result in rdr.records() {
         let record = result?;
         let row_string = record.iter().collect::<Vec<_>>().join(",");
-        if processed_rows.contains(&row_string) {
+        if !processed_rows.insert(row_string.clone()) {
             duplicate_count += 1;
             continue;
         }
-        processed_rows.insert(row_string.clone());
         row_count += 1;
 
         // require acc, name
-        let acc = record
+        let accession = record
             .get(0)
             .ok_or_else(|| anyhow!("Missing 'accession' field"))?
             .to_string();
@@ -201,10 +250,26 @@ pub fn load_gbassembly_info(input_csv: String) -> Result<(Vec<GBAssemblyData>, u
             .to_string();
 
         // store accession data
-        results.push(GBAssemblyData {
-            accession: acc.to_string(),
-            name: name.to_string(),
-        });
+        if include_genome_files {
+            let moltype = InputMolType::Dna;
+            results.push(AccessionData::new(
+                accession.clone(),
+                name.clone(),
+                moltype.clone(),
+                vec![], // empty url for now
+                Some(moltype.default_filename(&accession)),
+            ));
+        }
+        if include_proteome_files {
+            let moltype = InputMolType::Protein;
+            results.push(AccessionData::new(
+                accession.clone(),
+                name,
+                moltype.clone(),
+                vec![], // empty url for now
+                Some(moltype.default_filename(&accession)),
+            ));
+        }
     }
 
     // Print warning if there were duplicated rows.
@@ -493,102 +558,6 @@ impl MultiCollection {
     }
 }
 
-#[derive(Clone)]
-pub struct FailedDownload {
-    accession: String,
-    name: String,
-    moltype: String,
-    md5sum: String,
-    download_filename: String,
-    url: String,
-    range: String,
-}
-
-#[allow(dead_code)]
-impl FailedDownload {
-    /// Build a `FailedDownload` from `GBAssemblyData` with detailed information
-    pub fn from_gbassembly(
-        accession: String,
-        name: String,
-        moltype: String,
-        md5sum: Option<String>,            // Single MD5 checksum
-        download_filename: Option<String>, // Download filename
-        url: Option<reqwest::Url>,         // URL for the file
-        range: Option<(usize, usize)>,     // Optional range for the download
-    ) -> Self {
-        Self {
-            accession,
-            name,
-            moltype,
-            md5sum: md5sum.unwrap_or_default(),
-            download_filename: download_filename.unwrap_or_default(),
-            url: url.map(|u| u.to_string()).unwrap_or_default(),
-            range: range
-                .map(|(start, end)| format!("{}-{}", start, end))
-                .unwrap_or_default(), // Format range or use ""
-        }
-    }
-
-    fn parse_to_separated_string<T, F>(url_info: &[UrlInfo], mut extractor: F) -> String
-    where
-        F: FnMut(&UrlInfo) -> Option<T>,
-        T: ToString,
-    {
-        let results: Vec<String> = url_info
-            .iter()
-            .map(|info| extractor(info).map_or("".to_string(), |v| v.to_string())) // Map `None` to empty string
-            .collect();
-
-        if results.iter().all(|entry| entry.is_empty()) {
-            "".to_string() // If all entries are empty, return `""`
-        } else {
-            results.join(";") // Otherwise, join with `;`
-        }
-    }
-
-    /// Build a `FailedDownload` from `AccessionData`
-    pub fn from_accession_data(acc_data: &AccessionData) -> Self {
-        Self {
-            accession: acc_data.accession.clone(),
-            name: acc_data.name.clone(),
-            moltype: acc_data.moltype.to_string(),
-            md5sum: Self::parse_to_separated_string(&acc_data.url_info, |info| info.md5sum.clone()),
-            download_filename: acc_data.download_filename.clone().unwrap_or_default(),
-            url: Self::parse_to_separated_string(&acc_data.url_info, |info| {
-                Some(info.url.to_string())
-            }),
-            range: Self::parse_to_separated_string(&acc_data.url_info, |info| {
-                info.range.map(|(start, end)| format!("{}-{}", start, end))
-            }),
-        }
-    }
-
-    pub fn to_csv_record(&self) -> String {
-        format!(
-            "{},{},{},{},{},{},{}\n",
-            self.accession,
-            self.name,
-            self.moltype,
-            self.md5sum,
-            self.download_filename,
-            self.url,
-            self.range,
-        )
-    }
-
-    pub fn csv_header() -> &'static str {
-        "accession,name,moltype,md5sum,download_filename,url,range\n"
-    }
-
-    /// Write a `FailedDownload` to a CSV writer
-    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), std::io::Error> {
-        writer.write_all(self.to_csv_record().as_bytes()).await
-    }
-}
-
 pub struct FailedChecksum {
     accession: String,
     name: String,
@@ -623,16 +592,22 @@ impl FailedChecksum {
             reason,
         }
     }
+}
 
-    /// Convert a `FailedChecksum` to a CSV-formatted string
-    pub fn to_csv_record(&self) -> String {
+impl ToCsvRow for FailedChecksum {
+    fn csv_record(&self) -> String {
         let md5sum_url_str = self
             .md5sum_url
             .as_ref()
-            .map(|u| u.to_string())
+            .map(ToString::to_string)
             .unwrap_or_default();
-
-        let url_str = self.url.as_ref().map(|u| u.to_string()).unwrap_or_default();
+        let url_str = self
+            .url
+            .as_ref()
+            .map(ToString::to_string)
+            .unwrap_or_default();
+        let filename_str = self.download_filename.clone().unwrap_or_default();
+        let expected_md5 = self.expected_md5sum.clone().unwrap_or_default();
 
         format!(
             "{},{},{},{},{},{},{},{}\n",
@@ -640,24 +615,15 @@ impl FailedChecksum {
             self.name,
             self.moltype,
             md5sum_url_str,
-            self.download_filename.clone().unwrap_or_default(),
+            filename_str,
             url_str,
-            self.expected_md5sum.clone().unwrap_or_default(),
-            self.reason,
+            expected_md5,
+            self.reason
         )
     }
 
-    /// Get the CSV header for a `FailedChecksum`
-    pub fn csv_header() -> &'static str {
+    fn csv_header() -> &'static str {
         "accession,name,moltype,md5sum_url,download_filename,url,expected_md5sum,reason\n"
-    }
-
-    /// Write a `FailedChecksum` to a CSV writer
-    pub async fn to_writer<W: tokio::io::AsyncWrite + Unpin>(
-        &self,
-        writer: &mut W,
-    ) -> Result<(), std::io::Error> {
-        writer.write_all(self.to_csv_record().as_bytes()).await
     }
 }
 
@@ -951,97 +917,6 @@ mod tests {
     }
 
     #[test]
-    fn test_failed_download_from_gbassembly_valid() {
-        let accession = "ACC123".to_string();
-        let name = "Sample Name".to_string();
-        let moltype = "DNA".to_string();
-        let md5sum = Some("abcd1234".to_string());
-        let download_filename = Some("file.fasta".to_string());
-        let url = Some(Url::parse("http://example.com/file.fasta").unwrap());
-        let range = Some((10, 20));
-
-        let failed_download = FailedDownload::from_gbassembly(
-            accession.clone(),
-            name.clone(),
-            moltype.clone(),
-            md5sum.clone(),
-            download_filename.clone(),
-            url.clone(),
-            range.clone(),
-        );
-
-        assert_eq!(failed_download.accession, accession);
-        assert_eq!(failed_download.name, name);
-        assert_eq!(failed_download.moltype, moltype);
-        assert_eq!(failed_download.md5sum, "abcd1234");
-        assert_eq!(failed_download.download_filename, "file.fasta");
-        assert_eq!(failed_download.url, "http://example.com/file.fasta");
-        assert_eq!(failed_download.range, "10-20");
-    }
-
-    #[test]
-    fn test_failed_download_from_gbassembly_defaults() {
-        let accession = "ACC123".to_string();
-        let name = "Sample Name".to_string();
-        let moltype = "DNA".to_string();
-
-        let failed_download = FailedDownload::from_gbassembly(
-            accession.clone(),
-            name.clone(),
-            moltype.clone(),
-            None, // No MD5 checksum
-            None, // No filename
-            None, // No URL
-            None, // No range
-        );
-
-        assert_eq!(failed_download.accession, accession);
-        assert_eq!(failed_download.name, name);
-        assert_eq!(failed_download.moltype, moltype);
-        assert_eq!(failed_download.md5sum, "");
-        assert_eq!(failed_download.download_filename, "");
-        assert_eq!(failed_download.url, "");
-        assert_eq!(failed_download.range, "");
-    }
-
-    #[test]
-    fn test_failed_download_from_accession_data() {
-        let url_info = vec![
-            UrlInfo {
-                url: Url::parse("http://example.com/file1").unwrap(),
-                md5sum: Some("abcd1234".to_string()),
-                range: Some((10, 20)),
-            },
-            UrlInfo {
-                url: Url::parse("http://example.com/file2").unwrap(),
-                md5sum: None,
-                range: Some((30, 40)),
-            },
-        ];
-
-        let acc_data = AccessionData {
-            accession: "ACC123".to_string(),
-            name: "Sample Name".to_string(),
-            moltype: InputMolType::Dna,
-            url_info,
-            download_filename: Some("file.fasta".to_string()),
-        };
-
-        let failed_download = FailedDownload::from_accession_data(&acc_data);
-
-        assert_eq!(failed_download.accession, "ACC123");
-        assert_eq!(failed_download.name, "Sample Name");
-        assert_eq!(failed_download.moltype, "DNA");
-        assert_eq!(failed_download.md5sum, "abcd1234;");
-        assert_eq!(failed_download.download_filename, "file.fasta");
-        assert_eq!(
-            failed_download.url,
-            "http://example.com/file1;http://example.com/file2"
-        );
-        assert_eq!(failed_download.range, "10-20;30-40");
-    }
-
-    #[test]
     fn test_parse_to_separated_string() {
         let url_info = vec![
             UrlInfo {
@@ -1057,17 +932,17 @@ mod tests {
         ];
 
         let md5sum_result =
-            FailedDownload::parse_to_separated_string(&url_info, |info| info.md5sum.clone());
+            AccessionData::parse_to_separated_string(&url_info, |info| info.md5sum.clone());
         assert_eq!(md5sum_result, "abcd1234;");
 
         let url_result =
-            FailedDownload::parse_to_separated_string(&url_info, |info| Some(info.url.to_string()));
+            AccessionData::parse_to_separated_string(&url_info, |info| Some(info.url.to_string()));
         assert_eq!(
             url_result,
             "http://example.com/file1;http://example.com/file2"
         );
 
-        let range_result = FailedDownload::parse_to_separated_string(&url_info, |info| {
+        let range_result = AccessionData::parse_to_separated_string(&url_info, |info| {
             info.range.map(|(start, end)| format!("{}-{}", start, end))
         });
         assert_eq!(range_result, "10-20;30-40");
@@ -1094,17 +969,17 @@ mod tests {
         ];
 
         let md5sum_result =
-            FailedDownload::parse_to_separated_string(&url_info, |info| info.md5sum.clone());
+            AccessionData::parse_to_separated_string(&url_info, |info| info.md5sum.clone());
         assert_eq!(md5sum_result, "abcd1234;efgh5678;ijkl9012");
 
         let url_result =
-            FailedDownload::parse_to_separated_string(&url_info, |info| Some(info.url.to_string()));
+            AccessionData::parse_to_separated_string(&url_info, |info| Some(info.url.to_string()));
         assert_eq!(
             url_result,
             "http://example.com/file1;http://example.org/file2;http://example.net/file3"
         );
 
-        let range_result = FailedDownload::parse_to_separated_string(&url_info, |info| {
+        let range_result = AccessionData::parse_to_separated_string(&url_info, |info| {
             info.range.map(|(start, end)| format!("{}:{}", start, end))
         });
         assert_eq!(range_result, "10:20;30:40;50:60");
