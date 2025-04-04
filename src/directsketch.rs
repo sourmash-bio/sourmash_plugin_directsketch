@@ -18,7 +18,7 @@ use tokio::fs::File;
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
-use tokio::task::spawn_blocking;
+use tokio::task::{spawn_blocking, JoinHandle};
 use tokio_util::compat::Compat;
 use tokio_util::io::SyncIoBridge;
 use tokio_util::sync::CancellationToken;
@@ -610,13 +610,80 @@ async fn create_or_get_zip_file(
     Ok((ZipFileWriter::with_tokio(file), temp_outpath, batch_outpath))
 }
 
+struct ReceiverHandles {
+    send_sigs: Arc<Sender<BuildCollection>>,
+    send_failed: Arc<Sender<AccessionData>>,
+    send_failed_checksums: Arc<Sender<FailedChecksum>>,
+    error_sender: Arc<Sender<anyhow::Error>>,
+    handles: Vec<JoinHandle<()>>,
+    write_failed_checksums: bool,
+}
+
+fn setup_channels_and_handlers(
+    failed_csv: String,
+    failed_checksums_csv: Option<String>,
+    output_sigs: Option<String>,
+    batch_size: usize,
+    batch_index: usize,
+) -> (
+    ReceiverHandles,
+    Arc<AtomicBool>, // critical_error_flag
+    CancellationToken,
+) {
+    // create channels. To do: might want to modify this buffer size.
+    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
+    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
+    let (send_failed_checksums, recv_failed_checksum) =
+        tokio::sync::mpsc::channel::<FailedChecksum>(4);
+    let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
+
+    let mut handles = Vec::new();
+    let critical_error_flag = Arc::new(AtomicBool::new(false));
+    let cancel_token = CancellationToken::new();
+
+    let sig_handle = zipwriter_handle(
+        recv_sigs,
+        output_sigs.clone(),
+        batch_size,
+        batch_index,
+        error_sender.clone(),
+    );
+    handles.push(sig_handle);
+
+    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
+    handles.push(failures_handle);
+
+    let write_failed_checksums = failed_checksums_csv.is_some();
+    if let Some(failed_checksums) = failed_checksums_csv {
+        let checksum_handle =
+            csv_writer_handle(failed_checksums, recv_failed_checksum, error_sender.clone());
+        handles.push(checksum_handle);
+    }
+
+    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
+    handles.push(error_handle);
+
+    (
+        ReceiverHandles {
+            send_sigs: Arc::new(send_sigs),
+            send_failed: Arc::new(send_failed),
+            send_failed_checksums: Arc::new(send_failed_checksums),
+            error_sender: Arc::new(error_sender),
+            handles,
+            write_failed_checksums,
+        },
+        critical_error_flag,
+        cancel_token,
+    )
+}
+
 pub fn zipwriter_handle(
     mut recv_sigs: tokio::sync::mpsc::Receiver<BuildCollection>,
     output_sigs: Option<String>,
     batch_size: usize,      // Tunable batch size
     mut batch_index: usize, // starting batch index
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut md5sum_occurrences = HashMap::new();
         let mut zip_manifest = BuildManifest::new();
@@ -790,7 +857,7 @@ pub fn csv_writer_handle<T: ToCsvRow + Send + 'static>(
     output_path: String,
     mut receiver: tokio::sync::mpsc::Receiver<T>,
     error_sender: tokio::sync::mpsc::Sender<Error>,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         match File::create(&output_path).await {
             Ok(file) => {
@@ -827,7 +894,7 @@ pub fn csv_writer_handle<T: ToCsvRow + Send + 'static>(
 pub fn error_handler(
     mut recv_errors: tokio::sync::mpsc::Receiver<anyhow::Error>,
     error_flag: Arc<AtomicBool>,
-) -> tokio::task::JoinHandle<()> {
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(error) = recv_errors.recv().await {
             eprintln!("Error: {}", error);
@@ -945,6 +1012,70 @@ pub async fn process_accession_stream(
     Ok(())
 }
 
+async fn prepare_signature_output(
+    output_sigs: &Option<String>,
+) -> Result<(HashMap<String, BuildManifest>, usize, bool), anyhow::Error> {
+    if let Some(ref output_sigs) = output_sigs {
+        let outpath = Utf8PathBuf::from(output_sigs);
+        if outpath.extension().map_or(true, |ext| ext != "zip") {
+            bail!("Output must be a zip file.");
+        }
+
+        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
+        if !existing_sigs.is_empty() {
+            eprintln!(
+                "Found {} existing valid zip batch(es). Starting new sig writing at batch {}",
+                max_existing_batch_index,
+                max_existing_batch_index + 1
+            );
+            Ok((
+                existing_sigs.build_recordsmap(),
+                max_existing_batch_index + 1,
+                true,
+            ))
+        } else {
+            eprintln!("No valid existing signature batches found; building all signatures.");
+            Ok((HashMap::new(), 1, false))
+        }
+    } else {
+        Ok((HashMap::new(), 1, false))
+    }
+}
+
+fn build_filtered_templates(
+    param_str: &str,
+    keep_fastas: bool,
+    genomes_only: &mut bool,
+    proteomes_only: &mut bool,
+    download_only: bool,
+) -> Result<BuildCollection, anyhow::Error> {
+    let mut sig_templates = BuildCollection::from_param_str(param_str)
+        .map_err(|e| anyhow::anyhow!("Failed to parse params string: {}", e))?;
+
+    if sig_templates.anydna_size()? == 0 && !keep_fastas {
+        eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
+        *proteomes_only = true;
+    }
+    if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
+        eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
+        *genomes_only = true;
+    }
+
+    if *genomes_only {
+        sig_templates.select(&MultiSelection::from_input_moltype("dna")?)?;
+        eprintln!("Downloading and sketching genomes only.");
+    } else if *proteomes_only {
+        sig_templates.select(&MultiSelection::from_input_moltype("protein")?)?;
+        eprintln!("Downloading and sketching proteomes only.");
+    }
+
+    if sig_templates.is_empty() && !download_only {
+        bail!("No signatures to build.");
+    }
+
+    Ok(sig_templates)
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub async fn gbsketch(
@@ -967,133 +1098,45 @@ pub async fn gbsketch(
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let mut batch_index = 1;
-    let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
-    let mut filter = false;
-    // if writing sigs, prepare output and look for existing sig batches
-    if let Some(ref output_sigs) = output_sigs {
-        // Create outpath from output_sigs
-        let outpath = Utf8PathBuf::from(output_sigs);
-
-        // Check if the extension is "zip"
-        if outpath.extension().map_or(true, |ext| ext != "zip") {
-            bail!("Output must be a zip file.");
-        }
-        // find and read any existing sigs
-        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
-        // Check if there are any existing batches to process
-        if !existing_sigs.is_empty() {
-            existing_records_map = existing_sigs.build_recordsmap();
-
-            batch_index = max_existing_batch_index + 1;
-            eprintln!(
-                "Found {} existing valid zip batch(es). Starting new sig writing at batch {}",
-                max_existing_batch_index, batch_index
-            );
-            filter = true;
-        } else {
-            // No existing batches, skipping signature filtering
-            eprintln!("No valid existing signature batches found; building all signatures.");
-        }
-    }
+    let (existing_records_map, batch_index, filter) =
+        prepare_signature_output(&output_sigs).await?;
 
     // set up fasta download path
-    let download_path = Utf8PathBuf::from(fasta_location);
+    let download_path = Utf8PathBuf::from(&fasta_location);
     if !download_path.exists() {
-        create_dir_all(&download_path)?;
+        std::fs::create_dir_all(&download_path)?;
     }
-    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
-    let (send_failed_checksums, recv_failed_checksum) =
-        tokio::sync::mpsc::channel::<FailedChecksum>(4);
-    // Error channel for handling task errors
-    let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
 
-    // Set up collector/writing tasks
-    let mut handles = Vec::new();
-
-    let sig_handle = zipwriter_handle(
-        recv_sigs,
-        output_sigs,
+    let (receivers, critical_error_flag, cancel_token) = setup_channels_and_handlers(
+        failed_csv,
+        Some(failed_checksums_csv),
+        output_sigs.clone(),
         batch_size,
         batch_index,
-        error_sender.clone(),
     );
 
-    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
-    let checksum_failures_handle = csv_writer_handle(
-        failed_checksums_csv,
-        recv_failed_checksum,
-        error_sender.clone(),
-    );
-    // error tracker for no sigs written at all
-    let critical_error_flag = Arc::new(AtomicBool::new(false));
-
-    // tracker for keyboard interrupt
-    let cancel_token = CancellationToken::new();
-
-    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
-    handles.push(sig_handle);
-    handles.push(failures_handle);
-    handles.push(error_handle);
-    handles.push(checksum_failures_handle);
-
-    // Worker tasks
     let client = Arc::new(Client::new());
 
     let mut sig_templates = BuildCollection::new();
     let mut genomes_only = genomes_only;
     let mut proteomes_only = proteomes_only;
 
-    // build sketch params
-    if download_only {
-        if genomes_only {
-            eprintln!("Downloading genomes only.");
-        } else if proteomes_only {
-            eprintln!("Downloading proteomes only.");
-        }
-    } else {
-        let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-        sig_templates = match sig_template_result {
-            Ok(sig_templates) => sig_templates,
-            Err(e) => {
-                bail!("Failed to parse params string: {}", e);
-            }
-        };
-        // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.anydna_size()? == 0 && !keep_fastas {
-            eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
-            proteomes_only = true;
-        }
-        // Check if we have protein signature templates not keep_fastas
-        if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
-            eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
-            genomes_only = true;
-        }
-        if genomes_only {
-            // select only templates built from DNA input
-            let multiselection = MultiSelection::from_input_moltype("DNA")?;
-            sig_templates.select(&multiselection)?;
-            eprintln!("Downloading and sketching genomes only.");
-        } else if proteomes_only {
-            // select only templates built from protein input
-            let multiselection = MultiSelection::from_input_moltype("protein")?;
-            sig_templates.select(&multiselection)?;
-            eprintln!("Downloading and sketching proteomes only.");
-        }
-        if sig_templates.is_empty() && !download_only {
-            bail!("No signatures to build.")
-        }
+    if !download_only {
+        sig_templates = build_filtered_templates(
+            &param_str,
+            keep_fastas,
+            &mut genomes_only,
+            &mut proteomes_only,
+            download_only,
+        )?;
     }
 
     // gbsketch specific : set up the HTTP client and headers
+    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
     let mut headers = HeaderMap::new();
     headers.insert("Content-Type", "application/json".parse()?);
-    let post_url = Url::parse("https://api.ncbi.nlm.nih.gov/datasets/v2/genome/download")?;
 
     let mut annotation_types = vec!["SEQUENCE_REPORT"];
-
     let mut include_genome_files = true;
     let mut include_protein_files = true;
     if genomes_only {
@@ -1107,8 +1150,6 @@ pub async fn gbsketch(
         annotation_types.push("PROT_FASTA");
     }
 
-    // get accessions for retrieval
-    // Open the file containing the accessions synchronously
     let (mut accession_info, n_accs) = load_gbsketch_info(
         input_csv.clone(),
         include_genome_files,
@@ -1117,10 +1158,8 @@ pub async fn gbsketch(
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
-    let accession_set: HashSet<String> =
-        accession_info.iter().map(|a| a.accession.clone()).collect();
-
-    let accessions: Vec<String> = accession_set.into_iter().collect();
+    let accession_set: HashSet<_> = accession_info.iter().map(|a| a.accession.clone()).collect();
+    let accessions: Vec<_> = accession_set.into_iter().collect();
 
     let post_params = json!({
         "accessions": accessions,
@@ -1155,42 +1194,22 @@ pub async fn gbsketch(
     // Now attach URLs to each accession info
     for accinfo in &mut accession_info {
         py.check_signals()?; // If interrupted, return an Err
-        let dl_filename = accinfo
-            .download_filename
-            .as_ref()
-            .expect("download_filename should always be set");
-
-        match download_links.get(dl_filename) {
-            Some(url_str) => match Url::parse(url_str) {
-                Ok(url) => {
-                    accinfo.attach_url(url);
-                }
-                Err(e) => {
-                    if verbose {
-                        eprintln!(
-                            "Failed to parse URL for file {}: {}. Writing to download_failures.",
-                            dl_filename, e
-                        );
+        if let Some(dl_filename) = &accinfo.download_filename {
+            match download_links.get(dl_filename) {
+                Some(url_str) => {
+                    if let Ok(url) = Url::parse(url_str) {
+                        accinfo.attach_url(url);
+                    } else {
+                        download_failures.push(accinfo.clone());
                     }
-                    download_failures.push(accinfo.clone());
                 }
-            },
-            None => {
-                if verbose {
-                    eprintln!(
-                        "No download URL found for file: {}. Writing to download_failures.",
-                        dl_filename
-                    );
-                }
-                download_failures.push(accinfo.clone());
+                None => download_failures.push(accinfo.clone()),
             }
         }
+
         // if we failed to get a download link, write to download failures
         for fail in &download_failures {
-            if let Err(e) = send_failed.send(fail.clone()).await {
-                eprintln!("Failed to send missing download failure info: {}", e);
-                let _ = error_sender.send(e.into()).await;
-            }
+            let _ = receivers.send_failed.send(fail.clone()).await;
         }
     }
 
@@ -1200,25 +1219,17 @@ pub async fn gbsketch(
     // optionally write urlsketch csv with all available download links
     if write_urlsketch_csv {
         let urlsketch_path = Utf8PathBuf::from(format!("{}.urlsketch.csv", input_csv));
-        if let Err(e) = write_csv_to_path(&accession_info, &urlsketch_path) {
-            eprintln!("Failed to write urlsketch csv with download links: {:#}", e);
-        } else {
-            eprintln!(
-                "Wrote urlsketch csv with download links to '{}'",
-                urlsketch_path
-            );
-        }
+        let _ = write_csv_to_path(&accession_info, &urlsketch_path);
+        eprintln!(
+            "Wrote urlsketch csv with download links to '{}'",
+            urlsketch_path
+        );
     }
 
     // these now need to be Arc to be shared across async tasks
     let download_counter = Arc::new(AtomicUsize::new(0));
     let existing_records_map = Arc::new(existing_records_map);
     let sig_templates = Arc::new(sig_templates);
-
-    let send_sigs_arc = Arc::new(send_sigs);
-    let send_failed_arc = Arc::new(send_failed);
-    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
-    let error_sender_arc = Arc::new(error_sender);
 
     process_accession_stream(
         accession_info,
@@ -1232,21 +1243,19 @@ pub async fn gbsketch(
         keep_fastas,
         download_only,
         filter,
-        send_sigs_arc,
-        send_failed_arc,
-        send_failed_checksums_arc,
-        error_sender_arc,
+        receivers.send_sigs,
+        receivers.send_failed,
+        receivers.send_failed_checksums,
+        receivers.error_sender,
         verbose,
         cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
-        true, // write_checksum_fail flag to indicate we want to write failed checksums
+        receivers.write_failed_checksums,
     )
     .await?;
 
     // Wait for all tasks to complete
-    for handle in handles {
-        if let Err(e) = handle.await {
-            eprintln!("Handle join error: {}.", e);
-        }
+    for handle in receivers.handles {
+        let _ = handle.await;
     }
     // since the only critical error is not having written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
@@ -1278,83 +1287,38 @@ pub async fn urlsketch(
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let mut batch_index = 1;
-    let mut existing_records_map: HashMap<String, BuildManifest> = HashMap::new();
-    let mut filter = false;
-    // if writing sigs, prepare output and look for existing sig batches
-    if let Some(ref output_sigs) = output_sigs {
-        // Create outpath from output_sigs
-        let outpath = Utf8PathBuf::from(output_sigs);
-
-        // Check if the extension is "zip"
-        if outpath.extension().map_or(true, |ext| ext != "zip") {
-            bail!("Output must be a zip file.");
-        }
-        // find and read any existing sigs
-        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
-        // Check if there are any existing batches to process
-        if !existing_sigs.is_empty() {
-            existing_records_map = existing_sigs.build_recordsmap();
-
-            batch_index = max_existing_batch_index + 1;
-            eprintln!(
-                "Found {} existing zip batches. Starting new sig writing at batch {}",
-                max_existing_batch_index, batch_index
-            );
-            filter = true;
-        } else {
-            // No existing batches, skipping signature filtering
-            eprintln!("No existing signature batches found; building all signatures.");
-        }
-    }
+    let (existing_records_map, batch_index, filter) =
+        prepare_signature_output(&output_sigs).await?;
 
     // set up fasta download path
-    let download_path = Utf8PathBuf::from(fasta_location);
+    let download_path = Utf8PathBuf::from(&fasta_location);
     if !download_path.exists() {
-        create_dir_all(&download_path)?;
+        std::fs::create_dir_all(&download_path)?;
     }
 
-    // create channels. buffer size here is 4 b/c we can do 3 downloads simultaneously
-    let (send_sigs, recv_sigs) = tokio::sync::mpsc::channel::<BuildCollection>(4);
-    let (send_failed, recv_failed) = tokio::sync::mpsc::channel::<AccessionData>(4);
-    let (send_failed_checksums, recv_failed_checksum) =
-        tokio::sync::mpsc::channel::<FailedChecksum>(4);
-    // Error channel for handling task errors
-    let (error_sender, error_receiver) = tokio::sync::mpsc::channel::<anyhow::Error>(1);
-
-    // Set up collector/writing tasks
-    let mut handles = Vec::new();
-
-    let sig_handle = zipwriter_handle(
-        recv_sigs,
-        output_sigs,
+    let (receivers, critical_error_flag, cancel_token) = setup_channels_and_handlers(
+        failed_csv,
+        failed_checksums_csv,
+        output_sigs.clone(),
         batch_size,
         batch_index,
-        error_sender.clone(),
     );
 
-    let failures_handle = csv_writer_handle(failed_csv, recv_failed, error_sender.clone());
-
-    let mut write_failed_checksums = false;
-    if let Some(failed_checksums) = failed_checksums_csv {
-        let checksum_failures_handle =
-            csv_writer_handle(failed_checksums, recv_failed_checksum, error_sender.clone());
-
-        write_failed_checksums = true;
-        handles.push(checksum_failures_handle);
-    }
-
-    let critical_error_flag = Arc::new(AtomicBool::new(false));
-    // tracker for keyboard interrupt
-    let cancel_token = CancellationToken::new();
-
-    let error_handle = error_handler(error_receiver, critical_error_flag.clone());
-    handles.push(sig_handle);
-    handles.push(failures_handle);
-    handles.push(error_handle);
-
-    // Worker tasks
     let client = Arc::new(Client::new());
+
+    let mut sig_templates = BuildCollection::new();
+    let mut genomes_only = genomes_only;
+    let mut proteomes_only = proteomes_only;
+
+    if !download_only {
+        sig_templates = build_filtered_templates(
+            &param_str,
+            keep_fastas,
+            &mut genomes_only,
+            &mut proteomes_only,
+            download_only,
+        )?;
+    }
 
     // Open the file containing the accessions synchronously
     let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
@@ -1362,59 +1326,9 @@ pub async fn urlsketch(
         bail!("No accessions to download and sketch.")
     }
 
-    let mut sig_templates = BuildCollection::new();
-    let mut genomes_only = genomes_only;
-    let mut proteomes_only = proteomes_only;
-
-    let dna_multiselection = MultiSelection::from_input_moltype("dna")?;
-    let protein_multiselection = MultiSelection::from_input_moltype("protein")?;
-
-    if download_only {
-        if genomes_only {
-            eprintln!("Downloading genomes only.");
-        } else if proteomes_only {
-            eprintln!("Downloading proteomes only.");
-        }
-    } else {
-        let sig_template_result = BuildCollection::from_param_str(param_str.as_str());
-        sig_templates = match sig_template_result {
-            Ok(sig_templates) => sig_templates,
-            Err(e) => {
-                bail!("Failed to parse params string: {}", e);
-            }
-        };
-        // Check if we have dna signature templates and not keep_fastas
-        if sig_templates.anydna_size()? == 0 && !keep_fastas {
-            eprintln!("No DNA signature templates provided, and --keep-fasta is not set.");
-            proteomes_only = true;
-        }
-        // Check if we have protein signature templates not keep_fastas
-        if sig_templates.anyprotein_size()? == 0 && !keep_fastas {
-            eprintln!("No protein signature templates provided, and --keep-fasta is not set.");
-            genomes_only = true;
-        }
-        if genomes_only {
-            // select only DNA templates
-            sig_templates.select(&dna_multiselection)?;
-            eprintln!("Downloading and sketching genomes only.");
-        } else if proteomes_only {
-            // select only protein templates
-            sig_templates.select(&protein_multiselection)?;
-            eprintln!("Downloading and sketching proteomes only.");
-        }
-        if sig_templates.is_empty() && !download_only {
-            bail!("No signatures to build.")
-        }
-    }
-
     let download_counter = Arc::new(AtomicUsize::new(0));
     let existing_records_map = Arc::new(existing_records_map);
     let sig_templates = Arc::new(sig_templates);
-
-    let send_sigs_arc = Arc::new(send_sigs);
-    let send_failed_arc = Arc::new(send_failed);
-    let send_failed_checksums_arc = Arc::new(send_failed_checksums);
-    let error_sender_arc = Arc::new(error_sender);
 
     process_accession_stream(
         accession_info,
@@ -1428,21 +1342,19 @@ pub async fn urlsketch(
         keep_fastas,
         download_only,
         filter,
-        send_sigs_arc,
-        send_failed_arc,
-        send_failed_checksums_arc,
-        error_sender_arc,
+        receivers.send_sigs,
+        receivers.send_failed,
+        receivers.send_failed_checksums,
+        receivers.error_sender,
         verbose,
         cancel_token.clone(), // pass the cancellation token to allow for graceful shutdown),
-        write_failed_checksums, // write_checksum_fail flag to indicate whether we want to write failed checksums
+        receivers.write_failed_checksums, // flag to indicate whether we want to write failed checksums
     )
     .await?;
 
     // Wait for all tasks to complete
-    for handle in handles {
-        if let Err(e) = handle.await {
-            eprintln!("Handle join error: {}.", e);
-        }
+    for handle in receivers.handles {
+        let _ = handle.await;
     }
     // since the only critical error is not having written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
