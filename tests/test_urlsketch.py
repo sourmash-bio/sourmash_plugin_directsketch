@@ -193,6 +193,42 @@ def test_urlsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+def test_urlsketch_save_fastas_no_overwrite(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    fa1 = runtmp.output('out_fastas/GCA_000961135.2_genomic.urlsketch.fna.gz')
+
+    # first run to get one file downloaded
+    single_acc_csv = runtmp.output('single_acc.csv')
+    with open(acc_csv, 'r') as inF, open(single_acc_csv, 'w') as outF:
+        lines = inF.readlines()
+        # only take the first acc for this test
+        outF.write(lines[0])  # Header
+        outF.write(lines[1])
+
+    # Run the first gbsketch to download the fasta files
+    runtmp.sourmash('scripts', 'urlsketch', single_acc_csv, '--download-only',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail, '-g')
+    assert os.path.exists(fa1)
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000961135.2_genomic.urlsketch.fna.gz'])
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '--download-only',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail, '--genomes-only', '--no-overwrite-fasta')
+
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.urlsketch.fna.gz', 'GCA_000961135.2_genomic.urlsketch.fna.gz'])
+
 
 def test_urlsketch_save_fastas_no_append_across_runs(runtmp):
     # make sure we overwrite files on subsequent runs (not append to existing)
