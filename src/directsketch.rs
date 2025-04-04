@@ -1400,14 +1400,14 @@ pub async fn urlsketch(
     }
 
     // Open the file containing the accessions synchronously
-    let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
+    let (mut accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
     }
 
     // filter any accessions that aren't needed (already sketched/downloaded)
     if filter {
-        let (accession_info, skipped_empty_url, skipped_unneeded) = filter_accessions_to_download(
+        let (filtered, _, skipped_unneeded) = filter_accessions_to_download(
             accession_info,
             &existing_records_map,
             &sig_templates,
@@ -1415,6 +1415,8 @@ pub async fn urlsketch(
             keep_fastas,
             filter,
         )?;
+
+        accession_info = filtered;
 
         let skipped_unneeded = skipped_unneeded.load(Ordering::Relaxed);
         if skipped_unneeded > 0 {
