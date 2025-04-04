@@ -1076,6 +1076,66 @@ fn build_filtered_templates(
     Ok(sig_templates)
 }
 
+pub fn filter_accessions_to_download(
+    original_acc_data: Vec<AccessionData>,
+    existing_records_map: &HashMap<String, BuildManifest>,
+    sig_templates: &BuildCollection,
+    download_path: &Utf8Path,
+    keep_fastas: bool,
+    filter: bool,
+) -> Result<(
+    Vec<AccessionData>,
+    Arc<AtomicUsize>, // skipped_empty_url
+    Arc<AtomicUsize>, // skipped_unneeded
+)> {
+    let skipped_empty_url = Arc::new(AtomicUsize::new(0));
+    let skipped_unneeded = Arc::new(AtomicUsize::new(0));
+    let mut filtered = Vec::new();
+
+    for accinfo in original_acc_data {
+        if accinfo.url_info.is_empty() {
+            skipped_empty_url.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+
+        // first, filter by input moltype to exclude any sigs we can't build anyway
+        let input_moltype = accinfo.moltype.as_str();
+        let selection = MultiSelection::from_input_moltype(input_moltype)?;
+        let mut sigs = sig_templates.clone();
+        sigs.select(&selection)?;
+
+        // now filter by existing sigs
+        if filter {
+            if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
+                sigs.filter_by_manifest(existing_manifest);
+            }
+        }
+
+        let already_sketched = sigs.is_empty();
+        let should_skip = if already_sketched {
+            if keep_fastas {
+                // check if the filename exists
+                let download_filename = accinfo.download_filename.as_deref().unwrap_or_default();
+                let fasta_final_path = download_path.join(download_filename);
+                fasta_final_path.exists()
+            } else {
+                true
+            }
+        } else {
+            false
+        };
+
+        if should_skip {
+            skipped_unneeded.fetch_add(1, Ordering::Relaxed);
+            continue;
+        }
+
+        filtered.push(accinfo);
+    }
+
+    Ok((filtered, skipped_empty_url, skipped_unneeded))
+}
+
 #[tokio::main]
 #[allow(clippy::too_many_arguments)]
 pub async fn gbsketch(
@@ -1213,10 +1273,29 @@ pub async fn gbsketch(
         }
     }
 
-    // only retain AccessionData entries that have valid URLs
-    accession_info.retain(|a| !a.url_info.is_empty());
+    // filter accessions by 1.empty URLs (can't download) and 2. not needed (already sketched/downloaded)
+    let (accession_info, skipped_empty_url, skipped_unneeded) = filter_accessions_to_download(
+        accession_info,
+        &existing_records_map,
+        &sig_templates,
+        &download_path,
+        keep_fastas,
+        filter,
+    )?;
 
-    // optionally write urlsketch csv with all available download links
+    let skipped_empty = skipped_empty_url.load(Ordering::Relaxed);
+    let skipped_unneeded = skipped_unneeded.load(Ordering::Relaxed);
+
+    if skipped_empty > 0 {
+        eprintln!("Skipped {skipped_empty} download(s) due to missing download URLs.");
+    }
+    if skipped_unneeded > 0 {
+        eprintln!(
+            "Skipped {skipped_unneeded} download(s) due to existing sketches and/or FASTA files."
+        );
+    }
+
+    // optionally write urlsketch csv with available download links
     if write_urlsketch_csv {
         let urlsketch_path = Utf8PathBuf::from(format!("{}.urlsketch.csv", input_csv));
         let _ = write_csv_to_path(&accession_info, &urlsketch_path);
@@ -1324,6 +1403,23 @@ pub async fn urlsketch(
     let (accession_info, n_accs) = load_accession_info(input_csv, keep_fastas, force)?;
     if n_accs == 0 {
         bail!("No accessions to download and sketch.")
+    }
+
+    // filter any accessions that aren't needed (already sketched/downloaded)
+    if filter {
+        let (accession_info, skipped_empty_url, skipped_unneeded) = filter_accessions_to_download(
+            accession_info,
+            &existing_records_map,
+            &sig_templates,
+            &download_path,
+            keep_fastas,
+            filter,
+        )?;
+
+        let skipped_unneeded = skipped_unneeded.load(Ordering::Relaxed);
+        if skipped_unneeded > 0 {
+            eprintln!("Skipped {skipped_unneeded} download(s) due to existing sketches and/or FASTA files.");
+        }
     }
 
     let download_counter = Arc::new(AtomicUsize::new(0));

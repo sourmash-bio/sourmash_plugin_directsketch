@@ -834,6 +834,89 @@ def test_urlsketch_simple_batch_restart_incomplete(runtmp, capfd):
     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
 
 
+def test_urlsketch_simple_batch_restart_skipcount(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    # need to actually rename it first, so it will match sig that would have been written
+
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '5', '-n', "1", '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    # skips GCA_000961135.2 DNA bc it exists and GCA_000961135.2 protein bc we're not asking for protein sigs
+    assert "Skipped 2 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+    expected_siginfo = {
+        (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
+        (ss2.name, ss3.md5sum(), ss3.minhash.moltype), # ss2 name b/c thats how it is in acc-url.csv
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+    }
+
+    all_siginfo = set()
+    for out_file in [out1, out2]:
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Verify that the loaded signatures match the expected signatures, order-independent
+    assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+
+
+def test_urlsketch_simple_batch_restart_skipcount_2(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
+    out3 = runtmp.output('simple.3.zip')
+
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    # need to actually cat it first, so it will match sig that would have been written
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '5', '-n', "1", '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", "-p", "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert os.path.exists(out3)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    # skips GCA_000961135.2 DNA bc it exists
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+
 def test_urlsketch_negative_batch_size(runtmp):
     # negative int provided for batch size
     acc_csv = runtmp.output('acc1.csv')
