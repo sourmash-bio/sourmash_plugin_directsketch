@@ -39,7 +39,7 @@ def test_urlsketch_simple(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -88,7 +88,7 @@ def test_urlsketch_simple_default_failed(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '-r', '1',
+                    '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000",
                     '-p', "protein,k=10,scaled=200",
                     in_dir=runtmp.output(''))
@@ -127,7 +127,7 @@ def test_urlsketch_manifest(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -170,7 +170,7 @@ def test_urlsketch_save_fastas(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -193,6 +193,37 @@ def test_urlsketch_save_fastas(runtmp):
             else:
                 assert sig.md5sum() == ss3.md5sum()
 
+
+def test_urlsketch_save_fastas_proteomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '--download-only', '--proteomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000961135.2_protein.urlsketch.faa.gz'])
+    assert "Skipped 2 download(s) due to moltype exclusion by --genomes-only or --proteomes-only" in captured.err 
+
+
+def test_urlsketch_save_fastas_genomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '--download-only', '--genomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.urlsketch.fna.gz', 'GCA_000961135.2_genomic.urlsketch.fna.gz'])
+    assert "Skipped 1 download(s) due to moltype exclusion by --genomes-only or --proteomes-only" in captured.err 
+
+
 def test_urlsketch_save_fastas_no_overwrite(runtmp, capfd):
     acc_csv = get_test_data('acc-url.csv')
     failed = runtmp.output('failed.csv')
@@ -211,20 +242,21 @@ def test_urlsketch_save_fastas_no_overwrite(runtmp, capfd):
 
     # Run the first gbsketch to download the fasta files
     runtmp.sourmash('scripts', 'urlsketch', single_acc_csv, '--download-only',
-                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--checksum-fail', ch_fail, '-g')
     assert os.path.exists(fa1)
     fa_files = os.listdir(out_dir)
     assert set(fa_files) == set(['GCA_000961135.2_genomic.urlsketch.fna.gz'])
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '--download-only',
-                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--checksum-fail', ch_fail, '--genomes-only', '--no-overwrite-fasta')
 
     assert not runtmp.last_result.out # stdout should be empty
     captured = capfd.readouterr()
     print(captured.err)
     assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+    assert "Skipped 1 download(s) due to moltype exclusion by --genomes-only or --proteomes-only" in captured.err
 
     fa_files = os.listdir(out_dir)
     assert set(fa_files) == set(['GCA_000175535.1_genomic.urlsketch.fna.gz', 'GCA_000961135.2_genomic.urlsketch.fna.gz'])
@@ -239,7 +271,7 @@ def test_urlsketch_save_fastas_no_append_across_runs(runtmp):
 
     # run once
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     # check out fastas exist
@@ -258,7 +290,7 @@ def test_urlsketch_save_fastas_no_append_across_runs(runtmp):
 
     # run a second time
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     fa_files2 = os.listdir(out_dir)
@@ -286,7 +318,7 @@ def test_urlsketch_download_only(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '--download-only',
-                    '--failed', failed, '-r', '1', '--fastas', out_dir, '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert not runtmp.last_result.out # stdout should be empty
@@ -322,7 +354,7 @@ def test_urlsketch_bad_acc(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -365,7 +397,7 @@ def test_urlsketch_missing_accfile(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -382,7 +414,7 @@ def test_urlsketch_empty_accfile(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
         
     captured = capfd.readouterr()
@@ -408,7 +440,7 @@ def test_urlsketch_bad_acc_fail(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
         
     captured = capfd.readouterr()
@@ -425,7 +457,7 @@ def test_urlsketch_missing_output(runtmp):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_csv,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: output signature zipfile is required if not using '--download-only'." in runtmp.last_result.err
@@ -450,7 +482,7 @@ def test_urlsketch_empty_url_fail(runtmp, capfd):
     # this should fail since the URL is empty
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Error: No valid URLs found in 'url' field for accession 'GCA_000175535.1': Empty URL entry found in 'url' field" in capfd.readouterr().err
@@ -473,7 +505,7 @@ def test_urlsketch_empty_url_force(runtmp, capfd):
     failed = runtmp.output('failed.csv')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1', '--force',
+                    '--failed', failed, '-r', '4', '--force',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -495,7 +527,7 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(failed)
@@ -518,7 +550,7 @@ def test_urlsketch_from_gbsketch_failed(runtmp, capfd):
     with pytest.raises(utils.SourmashCommandFailed):
 
         runtmp.sourmash('scripts', 'urlsketch', failed, '-o', out2,
-                    '--failed', fail2, '-r', '1',
+                    '--failed', fail2, '-r', '4',
                     '-p', "protein,k=10,scaled=200", '--force')
     captured = capfd.readouterr()
     print(captured.out)
@@ -550,7 +582,7 @@ def test_zip_file_permissions(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(output)
@@ -580,7 +612,7 @@ def test_urlsketch_protein_dayhoff_hp(runtmp):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='hp')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str',"protein,k=10,scaled=200",
                     '-p', "dayhoff,k=10,scaled=200",
                     '-p', "hp,k=10,scaled=200")
@@ -619,7 +651,7 @@ def test_urlsketch_md5sum_mismatch_checksum_file(runtmp, capfd):
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -663,7 +695,7 @@ def test_urlsketch_md5sum_mismatch_no_checksum_file(runtmp, capfd):
     ss1 = sourmash.load_one_signature(sig1, ksize=31)
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -715,7 +747,7 @@ def test_urlsketch_simple_batched(runtmp, capfd):
     ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200",
                     '--batch-size', '1')
 
@@ -902,7 +934,8 @@ def test_urlsketch_simple_batch_restart_skipcount(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
     # skips GCA_000961135.2 DNA bc it exists and GCA_000961135.2 protein bc we're not asking for protein sigs
-    assert "Skipped 2 download(s) due to existing sketches and/or FASTA files." in captured.err
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+    assert "Skipped 1 download(s) due to moltype exclusion by --genomes-only or --proteomes-only" in captured.err 
 
     expected_siginfo = {
         (ss2.name, ss2.md5sum(), ss2.minhash.moltype),
@@ -961,7 +994,7 @@ def test_urlsketch_negative_batch_size(runtmp):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_csv,
-                    '--failed', failed, '-r', '1', '--batch-size', '-2',
+                    '--failed', failed, '-r', '4', '--batch-size', '-2',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert "Batch size cannot be negative (input value: -2)" in runtmp.last_result.err
@@ -1034,7 +1067,7 @@ def test_urlsketch_simple_skipmer(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "skipm2n3,k=21,scaled=1000")
 
     assert os.path.exists(output)
@@ -1134,7 +1167,7 @@ def test_urlsketch_simple_merged(runtmp):
     print(msig.name)
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -1168,7 +1201,7 @@ def test_urlsketch_simple_merged_with_md5sums(runtmp):
     print(msig.name)
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=1000")
 
     assert os.path.exists(output)
@@ -1203,7 +1236,7 @@ def test_urlsketch_simple_merged_keep_fasta(runtmp):
     print(msig.name)
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--keep-fasta',
                     '--fastas', out_dir,
                     '--param-str', "dna,k=31,scaled=1000")
 
@@ -1269,7 +1302,7 @@ def test_urlsketch_simple_merged_keep_fasta_path_in_filename(runtmp):
     print(msig.name)
 
     runtmp.sourmash('scripts', 'urlsketch', mod_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--keep-fasta',
                     '--fastas', out_dir,
                     '--param-str', "dna,k=31,scaled=1000")
 
@@ -1306,7 +1339,7 @@ def test_urlsketch_simple_merged_incorrect_md5sum_checksum_failure(runtmp):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', mod_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--keep-fasta',
                     '--fastas', out_dir, '--checksum-fail', ch_failed,
                     '--param-str', "dna,k=31,scaled=1000")
 
@@ -1357,7 +1390,7 @@ def test_urlsketch_with_range(runtmp):
     ss2 = siglist[1]
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     assert os.path.exists(output)
@@ -1394,7 +1427,7 @@ def test_urlsketch_with_range_keep_fasta(runtmp):
     ss2 = siglist[1]
 
     runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--keep-fasta',
+                    '--failed', failed, '-r', '4', '--keep-fasta',
                     '--fastas', out_dir,
                     '--param-str', "dna,k=31,scaled=100")
 
@@ -1458,7 +1491,7 @@ def test_urlsketch_with_range_improper_range_1(runtmp, capfd):
     ss1 = siglist[0]
 
     runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     assert os.path.exists(output)
@@ -1512,7 +1545,7 @@ def test_urlsketch_with_range_improper_range_2(runtmp, capfd):
 
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     captured = capfd.readouterr()
@@ -1564,7 +1597,7 @@ def test_urlsketch_merged_ranged(runtmp):
 
     # # run urlsketch
     runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     assert os.path.exists(output)
@@ -1601,7 +1634,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_no_checksum_file(runtmp):
     # # run urlsketch
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     assert not os.path.exists(output)
@@ -1645,7 +1678,7 @@ def test_urlsketch_merged_ranged_md5sum_fail_with_checksum_file(runtmp):
     # # run urlsketch
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=100")
 
     assert not os.path.exists(output)
@@ -1706,7 +1739,7 @@ def test_urlsketch_merged_ranged_fail(runtmp):
     # # run urlsketch
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '1',
+                    '--failed', failed, '-r', '4',
                     '--param-str', "dna,k=31,scaled=100")
 
     assert not os.path.exists(output)

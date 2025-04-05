@@ -917,6 +917,8 @@ pub async fn process_accession_stream(
     download_path: Utf8PathBuf,
     retry_times: u32,
     keep_fastas: bool,
+    genomes_only: bool,
+    proteomes_only: bool,
     download_only: bool,
     filter_sigs: bool,
     no_overwrite_fasta: bool,
@@ -933,9 +935,12 @@ pub async fn process_accession_stream(
     // set reporting threshold to every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
 
-    // skip counter
+    // skip counters
     let skipped_unneeded = Arc::new(AtomicUsize::new(0));
     let skipped_unneeded_for_tasks = skipped_unneeded.clone();
+
+    let skipped_moltype = Arc::new(AtomicUsize::new(0));
+    let skipped_moltype_for_tasks = skipped_moltype.clone();
 
     stream::iter(acc_data)
         .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
@@ -950,6 +955,7 @@ pub async fn process_accession_stream(
             let sig_templates = sig_templates.clone();
             let cancel_token = cancel_token.clone();
             let skipped_unneeded = skipped_unneeded_for_tasks.clone();
+            let skipped_moltype = skipped_moltype_for_tasks.clone();
 
             async move {
                 if cancel_token.is_cancelled() {
@@ -965,8 +971,31 @@ pub async fn process_accession_stream(
                 let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
 
                 let mut sigs = (*sig_templates).clone();
+                let moltype = accinfo.moltype.as_str();
+
+                if genomes_only && moltype != "DNA" {
+                    skipped_moltype.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' - moltype '{}' excluded by --genomes-only.",
+                            accinfo.accession, moltype
+                        );
+                    }
+                    return;
+                }
+                if proteomes_only && moltype != "protein" {
+                    skipped_moltype.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' - moltype '{}' excluded by --proteomes-only.",
+                            accinfo.accession, moltype
+                        );
+                    }
+                    return;
+                }
+
                 // If sig_templates was empty to begin with (e.g., download_only mode), nothing will happen here
-                if let Ok(selection) = MultiSelection::from_input_moltype(accinfo.moltype.as_str()) {
+                if let Ok(selection) = MultiSelection::from_input_moltype(moltype) {
                     let _ = sigs.select(&selection);
                 }
 
@@ -1045,9 +1074,17 @@ pub async fn process_accession_stream(
         })
         .await;
 
-    let skipped = skipped_unneeded.load(Ordering::Relaxed);
-    if skipped > 0 {
-        eprintln!("Skipped {skipped} download(s) due to existing sketches and/or FASTA files.");
+    let skipped_existing = skipped_unneeded.load(Ordering::Relaxed);
+    if skipped_existing > 0 {
+        eprintln!(
+            "Skipped {skipped_existing} download(s) due to existing sketches and/or FASTA files."
+        );
+    }
+    let skipped_moltype_count = skipped_moltype.load(Ordering::Relaxed);
+    if skipped_moltype_count > 0 {
+        eprintln!(
+            "Skipped {skipped_moltype_count} download(s) due to moltype exclusion by --genomes-only or --proteomes-only."
+        );
     }
     Ok(())
 }
@@ -1292,6 +1329,8 @@ pub async fn gbsketch(
         download_path,
         retry_times,
         keep_fastas,
+        genomes_only,
+        proteomes_only,
         download_only,
         filter,
         no_overwrite_fasta,
@@ -1393,6 +1432,8 @@ pub async fn urlsketch(
         download_path,
         retry_times,
         keep_fastas,
+        genomes_only,
+        proteomes_only,
         download_only,
         filter,
         no_overwrite_fasta,

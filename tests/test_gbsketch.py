@@ -324,6 +324,35 @@ def test_gbsketch_save_fastas(runtmp):
                 assert sig.md5sum() == ss3.md5sum()
 
 
+def test_gbsketch_save_fastas_proteomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only', '--proteomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000961135.2_protein.faa.gz'])
+    assert "Skipped 1 download(s) due to missing download URLs" in captured.err 
+
+
+def test_gbsketch_save_fastas_genomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only', '--genomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_genomic.fna.gz'])
+
+
 def test_gbsketch_save_fastas_no_overwrite(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     failed = runtmp.output('failed.csv')
@@ -1361,7 +1390,7 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(failed)
@@ -1384,7 +1413,7 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     # since the protein file doesn't exist at NCBI, we won't be able to find any links in the downloaded dehydrated zip.
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', failed, '-o', out2,
-                    '--failed', fail2, '-r', '1',
+                    '--failed', fail2, '-r', '4',
                     '-p', "protein,k=10,scaled=200")
     captured = capfd.readouterr()
     print(captured.out)
