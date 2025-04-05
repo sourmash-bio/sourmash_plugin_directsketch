@@ -917,8 +917,11 @@ pub async fn process_accession_stream(
     download_path: Utf8PathBuf,
     retry_times: u32,
     keep_fastas: bool,
+    genomes_only: bool,
+    proteomes_only: bool,
     download_only: bool,
-    filter: bool,
+    filter_sigs: bool,
+    no_overwrite_fasta: bool,
     send_sigs: Arc<Sender<BuildCollection>>,
     send_failed: Arc<Sender<AccessionData>>,
     send_failed_checksums: Arc<Sender<FailedChecksum>>,
@@ -932,6 +935,13 @@ pub async fn process_accession_stream(
     // set reporting threshold to every 1 percent (or every 1, whichever is larger)
     let reporting_threshold = std::cmp::max(n_downloads / 100, 1);
 
+    // skip counters
+    let skipped_unneeded = Arc::new(AtomicUsize::new(0));
+    let skipped_unneeded_for_tasks = skipped_unneeded.clone();
+
+    let skipped_moltype = Arc::new(AtomicUsize::new(0));
+    let skipped_moltype_for_tasks = skipped_moltype.clone();
+
     stream::iter(acc_data)
         .for_each_concurrent(Some(concurrency_limit), move |accinfo| {
             let client = client.clone();
@@ -944,6 +954,8 @@ pub async fn process_accession_stream(
             let existing_records_map = existing_records_map.clone();
             let sig_templates = sig_templates.clone();
             let cancel_token = cancel_token.clone();
+            let skipped_unneeded = skipped_unneeded_for_tasks.clone();
+            let skipped_moltype = skipped_moltype_for_tasks.clone();
 
             async move {
                 if cancel_token.is_cancelled() {
@@ -955,16 +967,69 @@ pub async fn process_accession_stream(
                     return;
                 }
 
+                // record that we are starting logic for this download
+                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+
                 let mut sigs = (*sig_templates).clone();
-                // filter template sigs based on existing sigs
-                if filter {
+                let moltype = accinfo.moltype.as_str();
+
+                if genomes_only && moltype != "DNA" {
+                    skipped_moltype.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' - moltype '{}' excluded by --genomes-only.",
+                            accinfo.accession, moltype
+                        );
+                    }
+                    return;
+                }
+                if proteomes_only && moltype != "protein" {
+                    skipped_moltype.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' - moltype '{}' excluded by --proteomes-only.",
+                            accinfo.accession, moltype
+                        );
+                    }
+                    return;
+                }
+
+                // If sig_templates was empty to begin with (e.g., download_only mode), nothing will happen here
+                if let Ok(selection) = MultiSelection::from_input_moltype(moltype) {
+                    let _ = sigs.select(&selection);
+                }
+
+                // filter tells us whether or not we need to filter sigs
+                if filter_sigs {
                     if let Some(existing_manifest) = existing_records_map.get(&accinfo.name) {
-                        // If the key exists, filter template sigs
                         sigs.filter_by_manifest(existing_manifest);
                     }
                 }
 
-                let download_index = download_counter.fetch_add(1, Ordering::Relaxed) + 1;
+                let no_sigs = sigs.is_empty();
+
+                let should_skip = if no_sigs {
+                    if keep_fastas {
+                        let download_filename = accinfo.download_filename.as_deref().unwrap_or_default();
+                        let fasta_final_path = download_path.join(download_filename);
+                        no_overwrite_fasta && fasta_final_path.exists()
+                    } else {
+                        true
+                    }
+                } else {
+                    false
+                };
+
+                if should_skip {
+                    skipped_unneeded.fetch_add(1, Ordering::Relaxed);
+                    if verbose {
+                        eprintln!(
+                            "Skipping download for '{}' ({}): already sketched or no signatures to build.",
+                            accinfo.accession, accinfo.moltype
+                        );
+                    }
+                    return;
+                }
 
                 // progress report when processing begins for a download
                 if verbose || download_index % reporting_threshold == 0 {
@@ -1009,13 +1074,30 @@ pub async fn process_accession_stream(
         })
         .await;
 
+    let skipped_existing = skipped_unneeded.load(Ordering::Relaxed);
+    if skipped_existing > 0 {
+        eprintln!(
+            "Skipped {skipped_existing} download(s) due to existing sketches and/or FASTA files."
+        );
+    }
+    let skipped_moltype_count = skipped_moltype.load(Ordering::Relaxed);
+    if skipped_moltype_count > 0 {
+        eprintln!(
+            "Skipped {skipped_moltype_count} download(s) due to moltype exclusion by --genomes-only or --proteomes-only."
+        );
+    }
     Ok(())
 }
 
 async fn prepare_signature_output(
     output_sigs: &Option<String>,
+    batch_size: usize,
 ) -> Result<(HashMap<String, BuildManifest>, usize, bool), anyhow::Error> {
     if let Some(ref output_sigs) = output_sigs {
+        if batch_size == 0 {
+            // No batching, so no need to check existing output
+            return Ok((HashMap::new(), 1, false));
+        }
         let outpath = Utf8PathBuf::from(output_sigs);
         if outpath.extension().map_or(true, |ext| ext != "zip") {
             bail!("Output must be a zip file.");
@@ -1094,12 +1176,13 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
+    no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let (existing_records_map, batch_index, filter) =
-        prepare_signature_output(&output_sigs).await?;
+        prepare_signature_output(&output_sigs, batch_size).await?;
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
@@ -1191,6 +1274,7 @@ pub async fn gbsketch(
 
     let mut download_failures = Vec::<AccessionData>::new();
 
+    let all_accs = accession_info.len();
     // Now attach URLs to each accession info
     for accinfo in &mut accession_info {
         py.check_signals()?; // If interrupted, return an Err
@@ -1213,10 +1297,19 @@ pub async fn gbsketch(
         }
     }
 
-    // only retain AccessionData entries that have valid URLs
+    // retain only accessions without empty URLs (can't download)
     accession_info.retain(|a| !a.url_info.is_empty());
 
-    // optionally write urlsketch csv with all available download links
+    if accession_info.is_empty() {
+        bail!("No valid download URLs found for any accessions. Exiting.");
+    }
+    let skipped_empty = all_accs - accession_info.len();
+
+    if skipped_empty > 0 {
+        eprintln!("Skipped {skipped_empty} download(s) due to missing download URLs.");
+    }
+
+    // optionally write urlsketch csv with available download links
     if write_urlsketch_csv {
         let urlsketch_path = Utf8PathBuf::from(format!("{}.urlsketch.csv", input_csv));
         let _ = write_csv_to_path(&accession_info, &urlsketch_path);
@@ -1241,8 +1334,11 @@ pub async fn gbsketch(
         download_path,
         retry_times,
         keep_fastas,
+        genomes_only,
+        proteomes_only,
         download_only,
         filter,
+        no_overwrite_fasta,
         receivers.send_sigs,
         receivers.send_failed,
         receivers.send_failed_checksums,
@@ -1283,12 +1379,13 @@ pub async fn urlsketch(
     concurrency_limit: usize,
     force: bool,
     verbose: bool,
+    no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let (existing_records_map, batch_index, filter) =
-        prepare_signature_output(&output_sigs).await?;
+        prepare_signature_output(&output_sigs, batch_size).await?;
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
@@ -1340,8 +1437,11 @@ pub async fn urlsketch(
         download_path,
         retry_times,
         keep_fastas,
+        genomes_only,
+        proteomes_only,
         download_only,
         filter,
+        no_overwrite_fasta,
         receivers.send_sigs,
         receivers.send_failed,
         receivers.send_failed_checksums,

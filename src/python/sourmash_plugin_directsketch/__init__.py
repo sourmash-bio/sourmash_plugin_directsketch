@@ -139,6 +139,11 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             action="store_true",
             help="Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.",
         )
+        p.add_argument(
+            "--no-overwrite-fasta",
+            action="store_true",
+            help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
+        )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
             "-g",
@@ -162,6 +167,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if args.download_only and not args.keep_fasta:
             notify("Error: '--download-only' requires '--keep-fasta'.")
             sys.exit(-1)
+        if args.no_overwrite_fasta and not args.keep_fasta:
+            notify("Error: '--no-overwrite-fasta' requires '--keep-fasta'.")
+            sys.exit(-1)
         if args.output is None and not args.download_only:
             notify(
                 "Error: output signature zipfile is required if not using '--download-only'."
@@ -173,6 +181,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
                 args.api_key = api_key
             else:
                 args.api_key = ""
+        if args.batch_size > 0:
+            args.no_overwrite_fasta = True
+            notify("Batch size is set, enabling --no-overwrite-fasta by default.")
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
         # lowercase the param string
@@ -212,6 +223,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.api_key,
             args.verbose,
+            args.no_overwrite_fasta,
             args.write_urlsketch_csv,
             args.output,
         )
@@ -322,6 +334,11 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             action="store_true",
             help="print progress for every download.",
         )
+        p.add_argument(
+            "--no-overwrite-fasta",
+            action="store_true",
+            help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
+        )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
             "-g",
@@ -345,11 +362,18 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         if args.download_only and not args.keep_fasta:
             notify("Error: '--download-only' requires '--keep-fasta'.")
             sys.exit(-1)
+        if args.no_overwrite_fasta and not args.keep_fasta:
+            notify("Error: '--no-overwrite-fasta' requires '--keep-fasta'.")
+            sys.exit(-1)
         if args.output is None and not args.download_only:
             notify(
                 "Error: output signature zipfile is required if not using '--download-only'."
             )
             sys.exit(-1)
+
+        if args.batch_size > 0:
+            args.no_overwrite_fasta = True
+            notify("Batch size is set, enabling --no-overwrite-fasta by default.")
 
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
@@ -380,6 +404,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.force,
             args.verbose,
+            args.no_overwrite_fasta,
             args.output,
             args.checksum_fail,
         )

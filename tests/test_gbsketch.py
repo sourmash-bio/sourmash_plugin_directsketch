@@ -324,6 +324,72 @@ def test_gbsketch_save_fastas(runtmp):
                 assert sig.md5sum() == ss3.md5sum()
 
 
+def test_gbsketch_save_fastas_proteomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only', '--proteomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000961135.2_protein.faa.gz'])
+    assert "Skipped 1 download(s) due to missing download URLs" in captured.err 
+
+
+def test_gbsketch_save_fastas_genomes_only(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only', '--genomes-only',
+                    '--failed', failed, '-r', '4', '--fastas', out_dir, '--keep-fasta')
+
+    fa_files = os.listdir(out_dir)
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_genomic.fna.gz'])
+
+
+def test_gbsketch_save_fastas_no_overwrite(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    fa1 = runtmp.output('out_fastas/GCA_000961135.2_genomic.fna.gz')
+
+    # first run to get one file downloaded 
+    single_acc_csv = runtmp.output('single_acc.csv')
+    with open(acc_csv, 'r') as inF, open(single_acc_csv, 'w') as outF:
+        lines = inF.readlines()
+        # only take the first acc for this test
+        outF.write(lines[0])  # Header
+        outF.write(lines[1])
+    
+    # Run the first gbsketch to download the fasta files
+    runtmp.sourmash('scripts', 'gbsketch', single_acc_csv, '--download-only',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail, '-g')
+    assert os.path.exists(fa1)
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000961135.2_genomic.fna.gz'])
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '--download-only',
+                    '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
+                    '--checksum-fail', ch_fail, '-g', '--no-overwrite-fasta')
+
+    assert not runtmp.last_result.out # stdout should be empty
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+    fa_files = os.listdir(out_dir)
+    assert set(fa_files) == set(['GCA_000175535.1_genomic.fna.gz', 'GCA_000961135.2_genomic.fna.gz'])
+
+
 def test_gbsketch_download_only(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     failed = runtmp.output('failed.csv')
@@ -808,6 +874,8 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     captured = capfd.readouterr()
     print(captured.err)
 
+    assert "Skipped 1 download(s) due to missing download URLs." in captured.err
+
     # # we created this one with sig cat
     idx = sourmash.load_file_as_index(out1)
     sigs = list(idx.signatures())
@@ -833,6 +901,58 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
 
     # Assert that all expected signatures are found (ignoring order)
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batch_restart_nobatch(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
+    out3 = runtmp.output('simple.3.zip')
+
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert os.path.exists(out3)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    siglist = []
+    for out_file in [out1, out2, out3]:
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        siglist.extend(sigs)
+    assert len(siglist) == 4  # k=21 and k=31 from sig2, k=31 from sig1, and k=10 from sig3
+
+    assert "Skipped 1 download(s) due to missing download URLs." in captured.err
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+    # run again, but without batching
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-p', "protein,k=10,scaled=200")
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    assert "Skipped 1 download(s) due to missing download URLs." in captured.err
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." not in captured.err
+    assert os.path.exists(output)
+    idx = sourmash.load_file_as_index(output)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 3  # should include all 3 possible signatures, including the one from out1
 
 
 def test_gbsketch_simple_batch_restart_sig_zip(runtmp, capfd):
@@ -955,6 +1075,66 @@ def test_gbsketch_simple_batch_restart_incomplete_sig_zip(runtmp, capfd):
     # Collect actual signature information from gbsketch zip batches
     all_siginfo = set()
     for out_file in [out2, out3]:
+        print( f"Loading signatures from {out_file}...")
+        idx = sourmash.load_file_as_index(out_file)
+        sigs = list(idx.signatures())
+        for sig in sigs:
+            all_siginfo.add((sig.name, sig.md5sum(), sig.minhash.moltype))
+
+    # Assert that all expected signatures are found (ignoring order)
+    assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batch_restart_skipcount(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+    out2 = runtmp.output('simple.2.zip')
+    out3 = runtmp.output('simple.3.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund",
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert os.path.exists(out2)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    assert "Found 1 existing valid zip batch(es). Starting new sig writing at batch 2" in captured.err
+    assert "Skipped 1 download(s) due to existing sketches and/or FASTA files." in captured.err
+
+    # # we created this one with sig cat
+    idx = sourmash.load_file_as_index(out1)
+    sigs = list(idx.signatures())
+    assert len(sigs) == 2
+    for sig in sigs:
+        assert sig.name == ss2.name
+        assert sig.md5sum() in [ss2.md5sum(), ss3.md5sum()]
+
+    # # these were created with gbsketch
+    expected_siginfo = {
+        (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
+    }
+
+    # Collect actual signature information from gbsketch zip batches
+    all_siginfo = set()
+    for out_file in [out2]:
         print( f"Loading signatures from {out_file}...")
         idx = sourmash.load_file_as_index(out_file)
         sigs = list(idx.signatures())
@@ -1262,7 +1442,7 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
-                    '--failed', failed, '-r', '1', '--checksum-fail', ch_fail,
+                    '--failed', failed, '-r', '4', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000", '-p', "protein,k=10,scaled=200")
 
     assert os.path.exists(failed)
@@ -1285,7 +1465,7 @@ def test_gbsketch_from_gbsketch_failed(runtmp, capfd):
     # since the protein file doesn't exist at NCBI, we won't be able to find any links in the downloaded dehydrated zip.
     with pytest.raises(utils.SourmashCommandFailed):
         runtmp.sourmash('scripts', 'gbsketch', failed, '-o', out2,
-                    '--failed', fail2, '-r', '1',
+                    '--failed', fail2, '-r', '4',
                     '-p', "protein,k=10,scaled=200")
     captured = capfd.readouterr()
     print(captured.out)
