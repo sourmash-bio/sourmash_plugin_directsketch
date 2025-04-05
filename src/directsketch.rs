@@ -1091,8 +1091,13 @@ pub async fn process_accession_stream(
 
 async fn prepare_signature_output(
     output_sigs: &Option<String>,
+    batch_size: usize,
 ) -> Result<(HashMap<String, BuildManifest>, usize, bool), anyhow::Error> {
     if let Some(ref output_sigs) = output_sigs {
+        if batch_size == 0 {
+            // No batching, so no need to check existing output
+            return Ok((HashMap::new(), 1, false));
+        }
         let outpath = Utf8PathBuf::from(output_sigs);
         if outpath.extension().map_or(true, |ext| ext != "zip") {
             bail!("Output must be a zip file.");
@@ -1177,7 +1182,7 @@ pub async fn gbsketch(
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let (existing_records_map, batch_index, filter) =
-        prepare_signature_output(&output_sigs).await?;
+        prepare_signature_output(&output_sigs, batch_size).await?;
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
@@ -1380,7 +1385,7 @@ pub async fn urlsketch(
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
     let (existing_records_map, batch_index, filter) =
-        prepare_signature_output(&output_sigs).await?;
+        prepare_signature_output(&output_sigs, batch_size).await?;
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
