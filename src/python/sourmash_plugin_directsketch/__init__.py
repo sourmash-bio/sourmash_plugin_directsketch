@@ -120,7 +120,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             default=10,
             type=int,
             choices=range(1, 31),
-            help="Number of files to download simultaneously (1-30; default=10). Note that simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.",
+            help="Number of files to download simultaneously (1-30; default=10).",
         )
         p.add_argument(
             "-a",
@@ -195,13 +195,6 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.failed = os.path.basename(args.input_csv) + '.fail.csv'
         if args.checksum_fail is None:
             args.checksum_fail = os.path.basename(args.input_csv) + '.checksum_fail.csv'
-
-        if args.n_simultaneous_downloads is None:
-            if args.api_key:
-                notify("API key provided - setting --n-simultaneous-downloads to 9")
-                args.n_simultaneous_downloads = 9
-            else:
-                args.n_simultaneous_downloads = 3
 
         notify(
             f"Downloading and sketching all accessions in '{args.input_csv} using {args.n_simultaneous_downloads} simultaneous downloads, {args.retry_times} retries, and {num_threads} threads."
@@ -321,7 +314,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             default=10,
             type=int,
             choices=range(1, 31),
-            help="Number of files to download simultaneously (1-30; default=10).  Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.",
+            help="Number of files to download simultaneously (1-30; default=10).",
         )
         p.add_argument(
             "--force",

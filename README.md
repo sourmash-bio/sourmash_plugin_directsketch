@@ -130,7 +130,7 @@ options:
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         Number of times to retry failed downloads (default=3).
   -n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}, --n-simultaneous-downloads {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
-                        Number of files to download simultaneously (1-30; default=10). Note that simultaneous downloads are held in memory during download. Please limit downloads accordingly for large genomes.
+                        Number of files to download simultaneously (1-30; default=10).
   -a API_KEY, --api-key API_KEY
                         API Key for NCBI REST API. Alternatively, set NCBI_API_KEY environmental variable. If provided, will be used when downloading the initial dehyrated file.
   -v, --verbose         print progress for every download.
@@ -207,8 +207,7 @@ options:
   -r RETRY_TIMES, --retry-times RETRY_TIMES
                         Number of times to retry failed downloads (default=3).
   -n {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}, --n-simultaneous-downloads {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30}
-                        Number of files to download simultaneously (1-30; default=10). Restrict this to match your servers limits, otherwise many downloads will fail. Note that all simultaneous downloads are held in memory during download.
-                        Please limit downloads accordingly for large genomes.
+                        Number of files to download simultaneously (1-30; default=10).
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
   -v, --verbose         print progress for every download.
   --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
