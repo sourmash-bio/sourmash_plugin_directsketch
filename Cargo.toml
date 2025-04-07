@@ -32,7 +32,7 @@ md5 = "0.7.0"
 openssl = { version = "0.10", features = ["vendored"] }
 futures = "0.3.31"
 getset = "0.1.5"
-zip = "2.6.0"
+zip = "2.6.1"
 
 [profile.release]
 #target-cpu=native
