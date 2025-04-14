@@ -23,7 +23,7 @@ def test_installed(runtmp):
     assert 'usage:  gbsketch' in runtmp.last_result.err
 
 
-def test_gbsketch_simpletest_gbsketch_simple(runtmp, capfd):
+def test_gbsketch_simple(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
