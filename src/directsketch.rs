@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
+use tokio::signal;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::task::{spawn_blocking, JoinHandle};
@@ -32,6 +33,40 @@ use crate::utils::{
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
+
+/// Spawns signal handlers that work on both Unix and Windows.
+/// This sets up a trigger to initialize cancellation when Ctrl+C or SIGTERM is received.
+pub fn setup_signal_handlers(cancel_token: CancellationToken) {
+    // Ctrl+C (cross-platform)
+    let cancel_token_ctrlc = cancel_token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            eprintln!("Failed to register Ctrl+C handler: {}", e);
+        } else {
+            eprintln!("Received Ctrl+C. Cancelling...");
+            cancel_token_ctrlc.cancel();
+        }
+    });
+
+    // SIGTERM (Unix/Linux only)
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let cancel_token_sigterm = cancel_token.clone();
+        tokio::spawn(async move {
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm_stream) => {
+                    sigterm_stream.recv().await;
+                    eprintln!("Received SIGTERM. Cancelling...");
+                    cancel_token_sigterm.cancel();
+                }
+                Err(e) => {
+                    eprintln!("Failed to register SIGTERM handler: {}", e);
+                }
+            }
+        });
+    }
+}
 
 /// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
@@ -1197,6 +1232,8 @@ pub async fn gbsketch(
         batch_size,
         batch_index,
     );
+    // setup handler to catch both ctrl-c and sigterm
+    setup_signal_handlers(cancel_token.clone());
 
     let client = Arc::new(Client::new());
 
