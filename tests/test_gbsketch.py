@@ -7,9 +7,9 @@ import pytest
 
 import sourmash
 from sourmash import sourmash_args
+from sourmash.signature import load_one_signature_from_json
 import sourmash_tst_utils as utils
 from sourmash_tst_utils import SourmashCommandFailed
-
 
 
 def get_test_data(filename):
@@ -23,7 +23,7 @@ def test_installed(runtmp):
     assert 'usage:  gbsketch' in runtmp.last_result.err
 
 
-def test_gbsketch_simple(runtmp, capfd):
+def test_gbsketch_simpletest_gbsketch_simple(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -32,10 +32,10 @@ def test_gbsketch_simple(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -86,10 +86,10 @@ def test_gbsketch_simple_default_failed(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '-r', '3',
@@ -126,10 +126,10 @@ def test_gbsketch_manifest(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -167,8 +167,8 @@ def test_gbsketch_genomes_only(runtmp):
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--genomes-only',
@@ -199,7 +199,7 @@ def test_gbsketch_proteomes_only(runtmp):
 
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--proteomes-only',
@@ -226,8 +226,8 @@ def test_gbsketch_genomes_only_via_params(runtmp, capfd):
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -260,7 +260,7 @@ def test_gbsketch_proteomes_only_via_params(runtmp, capfd):
 
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3',
@@ -293,10 +293,10 @@ def test_gbsketch_save_fastas(runtmp):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--fastas', out_dir, '--keep-fasta',
@@ -430,10 +430,10 @@ def test_gbsketch_bad_acc(runtmp):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
     # why does this need ksize =30 and not ksize = 10!???
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
                     '--failed', failed, '-r', '3', #'--fastas', output_fastas,
@@ -597,7 +597,7 @@ def test_gbsketch_version_bug(runtmp):
     ch_fail = runtmp.output('checksum_dl_failed.csv')
 
     sig1 = get_test_data('GCA_000193795.2.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -659,9 +659,9 @@ def test_zip_file_permissions(runtmp):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -690,9 +690,9 @@ def test_gbsketch_protein_dayhoff_hp(runtmp):
     sig1 = get_test_data('GCA_000961135.2.protein.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.dayhoff.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.hp.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=30, select_moltype='protein')
-    ss2 = sourmash.load_one_signature(sig2, ksize=30, select_moltype='dayhoff')
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='hp')
+    ss1 = load_one_signature_from_json(sig1, ksize=30, select_moltype='protein')
+    ss2 = load_one_signature_from_json(sig2, ksize=30, select_moltype='dayhoff')
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='hp')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3',
@@ -753,8 +753,8 @@ def test_gbsketch_simple_batched_single_acc(runtmp, capfd):
 
     sig1 = get_test_data('GCA_000961135.2.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=30, select_moltype='protein')
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc1, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -798,9 +798,9 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
@@ -852,11 +852,11 @@ def test_gbsketch_simple_batch_restart(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig2, ksize=21)
     # why does this need ksize =30 and not ksize = 10!???
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss4 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
@@ -968,11 +968,11 @@ def test_gbsketch_simple_batch_restart_sig_zip(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig2, ksize=21)
     # why does this need ksize =30 and not ksize = 10!???
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss4 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
@@ -1031,11 +1031,11 @@ def test_gbsketch_simple_batch_restart_incomplete_sig_zip(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig2, ksize=21)
     # why does this need ksize =30 and not ksize = 10!???
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss4 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
@@ -1097,9 +1097,9 @@ def test_gbsketch_simple_batch_restart_skipcount(runtmp, capfd):
 
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig2, ksize=21)
 
     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
@@ -1173,10 +1173,10 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    ss3 = sourmash.load_one_signature(sig2, ksize=21)
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    ss3 = load_one_signature_from_json(sig2, ksize=21)
+    ss4 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
     runtmp.sourmash('sig', 'cat', sig2, '-o', out1)
@@ -1257,10 +1257,10 @@ def test_gbsketch_overwrite(runtmp, capfd):
     sig1 = get_test_data('GCA_000175535.1.sig.gz')
     sig2 = get_test_data('GCA_000961135.2.sig.gz')
     sig3 = get_test_data('GCA_000961135.2.protein.sig.gz')
-    ss1 = sourmash.load_one_signature(sig1, ksize=31)
-    ss2 = sourmash.load_one_signature(sig2, ksize=31)
-    # ss3 = sourmash.load_one_signature(sig2, ksize=21)
-    ss4 = sourmash.load_one_signature(sig3, ksize=30, select_moltype='protein')
+    ss1 = load_one_signature_from_json(sig1, ksize=31)
+    ss2 = load_one_signature_from_json(sig2, ksize=31)
+    # ss3 = load_one_signature_from_json(sig2, ksize=21)
+    ss4 = load_one_signature_from_json(sig3, ksize=30, select_moltype='protein')
 
     # run the workflow once - write all to single output
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
