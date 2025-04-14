@@ -1437,6 +1437,8 @@ pub async fn urlsketch(
         batch_size,
         batch_index,
     );
+    // setup handler to catch both ctrl-c and sigterm
+    setup_signal_handlers(cancel_token.clone());
 
     let client = Arc::new(Client::new());
 
