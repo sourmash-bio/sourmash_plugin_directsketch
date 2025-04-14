@@ -1364,7 +1364,7 @@ pub async fn gbsketch(
     process_accession_stream(
         accession_info,
         concurrency_limit,
-        download_counter,
+        download_counter.clone(),
         existing_records_map,
         sig_templates,
         client,
@@ -1390,7 +1390,13 @@ pub async fn gbsketch(
     for handle in receivers.handles {
         let _ = handle.await;
     }
-    // since the only critical error is not having written any sigs
+
+    if cancel_token.is_cancelled() {
+        let sig_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {sig_count} download(s).");
+    }
+
+    // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
     if critical_error_flag.load(Ordering::SeqCst) & !download_only {
         bail!("No signatures written, exiting.");
@@ -1469,7 +1475,7 @@ pub async fn urlsketch(
     process_accession_stream(
         accession_info,
         concurrency_limit,
-        download_counter,
+        download_counter.clone(),
         existing_records_map,
         sig_templates,
         client,
@@ -1495,7 +1501,13 @@ pub async fn urlsketch(
     for handle in receivers.handles {
         let _ = handle.await;
     }
-    // since the only critical error is not having written any sigs
+
+    if cancel_token.is_cancelled() {
+        let sig_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {sig_count} download(s).");
+    }
+
+    // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
     if critical_error_flag.load(Ordering::SeqCst) & !download_only {
         bail!("No signatures written, exiting.");
