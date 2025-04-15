@@ -1327,11 +1327,11 @@ pub async fn gbsketch(
                 None => download_failures.push(accinfo.clone()),
             }
         }
+    }
 
-        // if we failed to get a download link, write to download failures
-        for fail in &download_failures {
-            let _ = receivers.send_failed.send(fail.clone()).await;
-        }
+    // if we failed to get a download link, write to download failures
+    for fail in &download_failures {
+        let _ = receivers.send_failed.send(fail.clone()).await;
     }
 
     // retain only accessions without empty URLs (can't download)
