@@ -4,6 +4,9 @@ Tests for gbsketch
 import os
 import csv
 import pytest
+import signal
+import subprocess
+import time
 
 import sourmash
 from sourmash import sourmash_args
@@ -1573,3 +1576,53 @@ def test_gbsketch_download_failures_are_unique(runtmp, capfd):
     assert "GCA_000193795.2,GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19,protein,,GCA_000193795.2_protein.faa.gz,,\n" in failed_downloads
     assert "GCA_0001937951111.2,fake_1,DNA,,GCA_0001937951111.2_genomic.fna.gz,,\n" in failed_downloads
     assert "GCA_0001937951111.2,fake_1,protein,,GCA_0001937951111.2_protein.faa.gz,,\n" in failed_downloads
+
+
+def test_gbsketch_sigterm_handling(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    # Start the process using subprocess so we can send SIGTERM
+    proc = subprocess.Popen(
+        [
+            "python", "-m", "sourmash", "scripts", "gbsketch", acc_csv,
+            "-o", output,
+            "--failed", failed,
+            "-r", "3",
+            "--checksum-fail", ch_fail,
+            "--param-str", "dna,k=31,scaled=1000",
+            "-p", "protein,k=10,scaled=200",
+        ],
+        cwd=runtmp.location,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        preexec_fn=os.setsid,  # important: send SIGTERM to full process group
+    )
+
+    time.sleep(1)  # allow gbsketch to start up
+
+    # Send SIGTERM
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        assert False, "gbsketch did not exit after SIGTERM"
+
+    stderr_str = stderr.decode()
+    stdout_str = stdout.decode()
+
+    # Optional: print for debugging
+    print("STDOUT:", stdout_str)
+    print("STDERR:", stderr_str)
+
+    # SIGTERM would normally end the process with code 143 (128 + SIGTERM)
+    # BUT, I've set it up so we do some graceful shutdown and then `bail`, meaning we should get exit code 1
+    assert proc.returncode in (1, 143), f"Unexpected return code: {proc.returncode}"
+
+    # Optionally check for graceful message
+    assert "SIGTERM" in stderr_str
+    assert "Shutting down early" in stderr_str
