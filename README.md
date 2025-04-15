@@ -45,12 +45,12 @@ To build a single database after batched sketching, you can use `sig cat` to bui
 
 ### Memory Requirements
 
-Directsketch v0.6+ streams the downloaded data, sketching and/or writing as it goes. For gzipped files, the library we use checks the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to avoid memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used ~2.5Gb data.
+Directsketch v0.6+ streams the downloaded data, sketching and/or writing as it goes. For gzipped files, the library we use checks the internal `crc32` to make sure we obtained the full download. `urlsketch` can also verify a user-provided `md5sum`. While you don't need to hold entire files in memory, **you do need enough memory to hold chunks of downloaded data and signatures while sketching**. You can limit the number of concurrent downloads (`--n-simultaneous-downloads`) to avoid memory issues. While testing with 10 eukaroyotic genomes under 1Gb each (10 simultaneous downloads), we used a maximum of ~2.5Gb.
 
 
 ### Using an NCBI API Key (gbsketch only)
 
-`gbsketch` uses the NCBI REST API to download a dehydrated file with direct download links for the genomes. It is not required, but can be provided here. To obtain an API key, follow the instructions [here](https://support.nlm.nih.gov/kbArticle/?pn=KA-05317). Once you have a key, you can provide it via the command line or set the `NCBI_API_KEY` variable (`export NCBI_API_KEY=YOUR_KEY`), which `gbsketch` will check and use automatically.
+`gbsketch` uses the NCBI REST API to download a dehydrated file with direct download links for the genomes. An API key may be needed if you run `gbsketch` many times, as NCBI has altered its download limitations. If you are unable to download the dehydrated zipfile, try providing an API Key. To obtain an one, follow the instructions [here](https://support.nlm.nih.gov/kbArticle/?pn=KA-05317). Once you have a key, you can provide it via the command line or set the `NCBI_API_KEY` variable (`export NCBI_API_KEY=YOUR_KEY`), which `gbsketch` will check and use automatically.
 
 ## Running the commands
 
