@@ -50,7 +50,7 @@ Directsketch v0.6+ streams the downloaded data, sketching and/or writing as it g
 
 ### Using an NCBI API Key (gbsketch only)
 
-`gbsketch` uses the NCBI REST API to download a dehydrated file with direct download links for the genomes. An API key may be needed if you run `gbsketch` many times, as NCBI has altered its download limitations. If you are unable to download the dehydrated zipfile, try providing an API Key. To obtain an one, follow the instructions [here](https://support.nlm.nih.gov/kbArticle/?pn=KA-05317). Once you have a key, you can provide it via the command line or set the `NCBI_API_KEY` variable (`export NCBI_API_KEY=YOUR_KEY`), which `gbsketch` will check and use automatically.
+`gbsketch` uses the NCBI REST API to download a dehydrated file with direct download links for the genomes. An API key may be needed if you run `gbsketch` many times, as NCBI has altered its download limitations. If you are unable to download the dehydrated zipfile, try providing an API Key. To obtain one, follow the instructions [here](https://support.nlm.nih.gov/kbArticle/?pn=KA-05317). Once you have a key, you can provide it via the command line or set the `NCBI_API_KEY` variable (`export NCBI_API_KEY=YOUR_KEY`), which `gbsketch` will check and use automatically.
 
 ## Running the commands
 
