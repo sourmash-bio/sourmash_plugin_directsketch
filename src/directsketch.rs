@@ -16,6 +16,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
+use tokio::signal;
 use tokio::sync::mpsc::Sender;
 use tokio::sync::oneshot;
 use tokio::task::{spawn_blocking, JoinHandle};
@@ -32,6 +33,40 @@ use crate::utils::{
 };
 
 use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
+
+/// Spawns signal handlers that work on both Unix and Windows.
+/// This sets up a trigger to initialize cancellation when Ctrl+C or SIGTERM is received.
+pub fn setup_signal_handlers(cancel_token: CancellationToken) {
+    // Ctrl+C (cross-platform)
+    let cancel_token_ctrlc = cancel_token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = signal::ctrl_c().await {
+            eprintln!("Failed to register Ctrl+C handler: {}", e);
+        } else {
+            eprintln!("Received Ctrl+C. Cancelling...");
+            cancel_token_ctrlc.cancel();
+        }
+    });
+
+    // SIGTERM (Unix/Linux only)
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let cancel_token_sigterm = cancel_token.clone();
+        tokio::spawn(async move {
+            match signal(SignalKind::terminate()) {
+                Ok(mut sigterm_stream) => {
+                    sigterm_stream.recv().await;
+                    eprintln!("Received SIGTERM. Cancelling...");
+                    cancel_token_sigterm.cancel();
+                }
+                Err(e) => {
+                    eprintln!("Failed to register SIGTERM handler: {}", e);
+                }
+            }
+        });
+    }
+}
 
 /// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
@@ -1197,6 +1232,8 @@ pub async fn gbsketch(
         batch_size,
         batch_index,
     );
+    // setup handler to catch both ctrl-c and sigterm
+    setup_signal_handlers(cancel_token.clone());
 
     let client = Arc::new(Client::new());
 
@@ -1290,11 +1327,11 @@ pub async fn gbsketch(
                 None => download_failures.push(accinfo.clone()),
             }
         }
+    }
 
-        // if we failed to get a download link, write to download failures
-        for fail in &download_failures {
-            let _ = receivers.send_failed.send(fail.clone()).await;
-        }
+    // if we failed to get a download link, write to download failures
+    for fail in &download_failures {
+        let _ = receivers.send_failed.send(fail.clone()).await;
     }
 
     // retain only accessions without empty URLs (can't download)
@@ -1327,7 +1364,7 @@ pub async fn gbsketch(
     process_accession_stream(
         accession_info,
         concurrency_limit,
-        download_counter,
+        download_counter.clone(),
         existing_records_map,
         sig_templates,
         client,
@@ -1353,7 +1390,13 @@ pub async fn gbsketch(
     for handle in receivers.handles {
         let _ = handle.await;
     }
-    // since the only critical error is not having written any sigs
+
+    if cancel_token.is_cancelled() {
+        let sig_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {sig_count} download(s).");
+    }
+
+    // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
     if critical_error_flag.load(Ordering::SeqCst) & !download_only {
         bail!("No signatures written, exiting.");
@@ -1400,6 +1443,8 @@ pub async fn urlsketch(
         batch_size,
         batch_index,
     );
+    // setup handler to catch both ctrl-c and sigterm
+    setup_signal_handlers(cancel_token.clone());
 
     let client = Arc::new(Client::new());
 
@@ -1430,7 +1475,7 @@ pub async fn urlsketch(
     process_accession_stream(
         accession_info,
         concurrency_limit,
-        download_counter,
+        download_counter.clone(),
         existing_records_map,
         sig_templates,
         client,
@@ -1456,7 +1501,13 @@ pub async fn urlsketch(
     for handle in receivers.handles {
         let _ = handle.await;
     }
-    // since the only critical error is not having written any sigs
+
+    if cancel_token.is_cancelled() {
+        let sig_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {sig_count} download(s).");
+    }
+
+    // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
     if critical_error_flag.load(Ordering::SeqCst) & !download_only {
         bail!("No signatures written, exiting.");

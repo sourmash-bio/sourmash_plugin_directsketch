@@ -4,6 +4,9 @@ Tests for gbsketch
 import os
 import csv
 import pytest
+import signal
+import subprocess
+import time
 
 import sourmash
 from sourmash import sourmash_args
@@ -1522,3 +1525,104 @@ def test_gbsketch_write_urlsketch_csv(runtmp, capfd):
     assert "Starting download 1/3 (33%) - accession: 'GCA_000961135.2', moltype: DNA" in captured.out
     assert "Starting download 2/3 (67%) - accession: 'GCA_000961135.2', moltype: protein" in captured.out
     assert "Starting download 3/3 (100%) - accession: 'GCA_000175535.1', moltype: DNA" in captured.out
+
+
+def test_gbsketch_download_failures_are_unique(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    failed = runtmp.output('failed.csv')
+    out_dir = runtmp.output('out_fastas')
+    output = runtmp.output('simple.zip')
+
+    # create acc_mod csv with acc.csv content and accession GCA_000193795.2
+    with open(acc_csv, 'r') as f, open(acc_mod, 'w') as f_out:
+        lines = f.readlines()
+        for line in lines:
+            print(line.strip())
+            f_out.write(line)
+        f_out.write("GCA_000193795.2,GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19\n")
+        # now add some fake accessions that will not have download linkes
+        f_out.write("GCA_0001937951111.2,fake_1\n")
+
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_mod,
+                    '--failed', failed, '-r', '4', '-o', output,
+                    '--fastas', out_dir, '-p', "protein,k=10,scaled=200",
+                    '--param-str', "dna,k=21,k=31,scaled=1000")
+
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "Skipped 4 download(s) due to missing download URLs" in captured.err
+
+    assert os.path.exists(failed)
+
+    with open(failed, 'r') as f:
+        lines = f.readlines()
+
+    # First line should be the header
+    assert lines[0].startswith("accession,name,moltype")
+    print("".join(lines))
+    # Ensure only one accession failed (not duplicated)
+    # and no duplicates in the accessions
+    failed_downloads = set()
+    for line in lines[1:]:
+        assert line not in failed_downloads, f"Duplicate failure for line: {line.strip()}"
+        failed_downloads.add(line)
+
+    # check for exact number of failures
+    assert len(failed_downloads) == 4, f"Expected 4 unique failures, found {len(failed_downloads)}"
+
+    assert "GCA_000175535.1,GCA_000175535.1 Chlamydia muridarum MopnTet14 (agent of mouse pneumonitis) strain=MopnTet14,protein,,GCA_000175535.1_protein.faa.gz,,\n" in failed_downloads
+    assert "GCA_000193795.2,GCA_000193795.2 Neisseria lactamica NS19 (b-proteobacteria) strain=NS19,protein,,GCA_000193795.2_protein.faa.gz,,\n" in failed_downloads
+    assert "GCA_0001937951111.2,fake_1,DNA,,GCA_0001937951111.2_genomic.fna.gz,,\n" in failed_downloads
+    assert "GCA_0001937951111.2,fake_1,protein,,GCA_0001937951111.2_protein.faa.gz,,\n" in failed_downloads
+
+
+def test_gbsketch_sigterm_handling(runtmp):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    # Start the process using subprocess so we can send SIGTERM
+    proc = subprocess.Popen(
+        [
+            "python", "-m", "sourmash", "scripts", "gbsketch", acc_csv,
+            "-o", output,
+            "--failed", failed,
+            "-r", "3",
+            "--checksum-fail", ch_fail,
+            "--param-str", "dna,k=31,scaled=1000",
+            "-p", "protein,k=10,scaled=200",
+        ],
+        cwd=runtmp.location,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        preexec_fn=os.setsid,  # important: send SIGTERM to full process group
+    )
+
+    time.sleep(1)  # allow gbsketch to start up
+
+    # Send SIGTERM
+    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+
+    try:
+        stdout, stderr = proc.communicate(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        assert False, "gbsketch did not exit after SIGTERM"
+
+    stderr_str = stderr.decode()
+    stdout_str = stdout.decode()
+
+    # Optional: print for debugging
+    print("STDOUT:", stdout_str)
+    print("STDERR:", stderr_str)
+
+    # SIGTERM would normally end the process with code 143 (128 + SIGTERM)
+    # BUT, I've set it up so we do some graceful shutdown and then `bail`, meaning we should get exit code 1
+    assert proc.returncode in (1, 143), f"Unexpected return code: {proc.returncode}"
+
+    # Optionally check for graceful message
+    assert "SIGTERM" in stderr_str
+    assert "Shutting down early" in stderr_str
