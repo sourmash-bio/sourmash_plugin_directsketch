@@ -428,6 +428,28 @@ impl<'a> IntoIterator for &'a mut BuildManifest {
     }
 }
 
+/// Extracts a range from a `SequenceRecord`. Returns the specified sequence slice as a `Vec<u8>`.
+pub fn extract_range_from_record(
+    record: &SequenceRecord,
+    range: Option<(usize, usize)>,
+) -> Result<Vec<u8>> {
+    let full_sequence = record.seq();
+    if let Some((start, end)) = range {
+        let adjusted_start = start.saturating_sub(1); // Adjust for 1-based indexing
+        if adjusted_start >= end || end > full_sequence.len() {
+            return Err(anyhow::anyhow!(
+                "Invalid range: start={}, end={}, sequence length={}",
+                start,
+                end,
+                full_sequence.len()
+            ));
+        }
+        Ok(full_sequence[adjusted_start..end].to_vec())
+    } else {
+        Ok(full_sequence.to_vec())
+    }
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct BuildCollection {
     pub manifest: BuildManifest,
@@ -761,25 +783,13 @@ impl BuildCollection {
         record: &SequenceRecord,
         range: Option<(usize, usize)>,
     ) -> Result<()> {
-        // Get the full sequence and apply the range if provided
-        let full_sequence = record.seq();
-        let sequence_to_process = if let Some((start, end)) = range {
-            // Adjust for 1-based input: start - 1, end remains unchanged
-            let adjusted_start = start.saturating_sub(1); // Ensure no underflow
-            if adjusted_start >= end || end > full_sequence.len() {
-                return Err(anyhow::anyhow!(
-                    "Invalid range: start={}, end={}, sequence length={}",
-                    start,
-                    end,
-                    full_sequence.len()
-                ));
-            }
-            &full_sequence[adjusted_start..end]
+        // extracting the range allocates a Vec. Avoid doing that if not using range.
+        if let Some(_) = range {
+            let sequence = extract_range_from_record(record, range)?; // allocates Vec<u8>
+            self.add_sequence(input_moltype, &sequence)
         } else {
-            &full_sequence
-        };
-        // add seq to sigs
-        self.add_sequence(input_moltype, sequence_to_process)
+            self.add_sequence(input_moltype, &record.seq())
+        }
     }
 
     pub fn add_sequence(&mut self, input_moltype: &str, sequence: &[u8]) -> Result<()> {
