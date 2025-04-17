@@ -1259,7 +1259,7 @@ def test_gbsketch_simple_batch_restart_nosigstowrite(runtmp, capfd):
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-g',
-                    '--batch-size', '1', '--allow-empty-sigs')
+                    '--batch-size', '1', '--no-fail-on-empty')
 
     assert os.path.exists(out1)
     assert not os.path.exists(output) # for now, orig output file should be empty.

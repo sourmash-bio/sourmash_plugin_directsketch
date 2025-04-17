@@ -145,9 +145,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
         )
         p.add_argument(
-            "--allow-empty-sigs",
+            "--no-fail-on-empty",
             action="store_true",
-            help="Allow empty signatures to be written to the output zipfile. Useful if restarting from batching and there are no more signatures that can be built.",
+            help="Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that can be built.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -221,7 +221,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.api_key,
             args.verbose,
-            args.allow_empty_sigs,
+            args.no_fail_on_empty,
             args.no_overwrite_fasta,
             args.write_urlsketch_csv,
             args.output,
@@ -339,9 +339,9 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
         )
         p.add_argument(
-            "--allow-empty-sigs",
+            "--no-fail-on-empty",
             action="store_true",
-            help="Allow empty signatures to be written to the output zipfile. Useful if restarting from batching and there are no more signatures that can be built.",
+            help="Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that can be built.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -408,7 +408,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.force,
             args.verbose,
-            args.allow_empty_sigs,
+            args.no_fail_on_empty,
             args.no_overwrite_fasta,
             args.output,
             args.checksum_fail,

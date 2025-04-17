@@ -1239,7 +1239,7 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
-    allow_empty_sigs: bool,
+    no_fail_on_empty: bool,
     no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
@@ -1457,7 +1457,7 @@ pub async fn gbsketch(
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_empty_sigs {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !no_fail_on_empty {
         bail!("No signatures written, exiting.");
     }
 
@@ -1481,7 +1481,7 @@ pub async fn urlsketch(
     concurrency_limit: usize,
     force: bool,
     verbose: bool,
-    allow_empty_sigs: bool,
+    no_fail_on_empty: bool,
     no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
@@ -1599,7 +1599,7 @@ pub async fn urlsketch(
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_empty_sigs {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !no_fail_on_empty {
         bail!("No signatures written, exiting.");
     }
 

@@ -470,7 +470,7 @@ def test_urlsketch_bad_acc_fail_allow(runtmp, capfd):
     failed = runtmp.output('failed.csv')
 
     runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '4', '--allow-empty-sigs',
+                    '--failed', failed, '-r', '4', '--no-fail-on-empty',
                     '--param-str', "dna,k=31,scaled=1000")
 
     captured = capfd.readouterr()
