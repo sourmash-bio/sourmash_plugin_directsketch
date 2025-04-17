@@ -33,13 +33,11 @@ conda install sourmash_plugin_directsketch
 
 ### Allowing restart with batching
 
-If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. The batch size represents the number of files downloaded, so it is possible DNA and protein signatures of the same accession may be split across zipfiles. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes.
-
-To build a single database after batched sketching, you can use `sig cat` to build a single zipfile (`sourmash sig cat *.zip -o OUTPUT.sig.zip`) or `sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
+If you're building large databases, we highly recommend you use batched zipfiles (v0.4+) to facilitate restart. If you encounter unexpected failures and are using a single zipfile output (default), `gbsketch`/`urlsketch` will have to re-download and re-sketch all files. If you instead set a batch size using `--batch-size`, then `gbsketch`/`urlsketch` can load any batched zips that finished writing, and avoid re-generating those signatures. The batch size represents the number of files downloaded, so it is possible DNA and protein signatures of the same accession may be split across zipfiles. Note that batches will use the `--output` file to build batched filenames, so if you provided `output.sig.zip`, batches will be `output.1.sig.zip`, etc (or `output.zip` --> `output.N.zip`). For small genomes (e.g. microbes), you can keep batch sizes quite large, e.g. 1000s-10000s. For large eukaryotic genomes where download takes much longer, you may want to use smaller batch sizes. At the end of a batched run, we write a file `{output}.batches.txt` with a list of all batch files created. This can then be used to build a single zipfile with `sourmash sig cat` (`sourmash sig cat {output}.batchlist.txt -o OUTPUT.sig.zip`) or `sourmash sig collect` to collect all the zips into a standalone manifest that can be used with sourmash and branchwater commands.
 
 ### Rerunning failures (with batching or not)
 
-**With batching**, you can use the same exact command to restart: directsketch will detect already-generated signatures and downloaded FASTAs and skip them. It will start writing signature from the next batch index, so if you last completed zipfile was `output.2.sig.zip`, running the command again with the same `--output output.sig.zip` will start from `output.3.sig.zip`. Incomplete zipfiles (marked as `.incomplete`) will be deleted.
+**With batching**, you can use the same exact command to restart: directsketch will detect already-generated signatures and downloaded FASTAs and skip them. It will start writing signature from the next batch index, so if you last completed zipfile was `output.2.sig.zip`, running the command again with the same `--output output.sig.zip` will start from `output.3.sig.zip`. Incomplete zipfiles (marked as `.incomplete`) will be deleted. The failure file will be overwritten, but since we retry any missing sketches, all failures will be re-attempted and then rewritten to the failure file if not successful.
 
 **Without batching**, the existing signature zipfile will be unreadable and marked as `.incomplete`. You can restart by using the same input csv file, but if you are using `--keep-fasta`, you can add the option `--no-overwrite-fasta` to avoid overwriting any completed FASTA files. Incomplete fasta files are marked with the `.incomplete` extension and will be re-downloaded. If sketching, the incomplete zipfile will be deleted upon re-run, and we will still re-download all fasta files needed to generate sketches.
 
@@ -137,6 +135,7 @@ options:
   --write-urlsketch-csv
                         Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.
   --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
+  --allow-empty-sigs    Allow empty signatures to be written to the output zipfile. Useful if restarting from batching and there are no more signatures that can be built.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
@@ -211,6 +210,7 @@ options:
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
   -v, --verbose         print progress for every download.
   --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
+  --allow-empty-sigs    Allow empty signatures to be written to the output zipfile. Useful if restarting from batching and there are no more signatures that can be built.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
