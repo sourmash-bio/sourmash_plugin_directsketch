@@ -1431,7 +1431,8 @@ pub async fn gbsketch(
     if batch_size > 0 && output_sigs.is_some() && completed_batchlist.is_some() {
         // write list of all batches
         let outpath: Utf8PathBuf = output_sigs.clone().unwrap().into();
-        let batch_list_file = outpath.with_extension("batches.txt");
+        let batch_list_file =
+            outpath.with_file_name(format!("{}.batches.txt", outpath.file_name().unwrap()));
 
         let batches = completed_batchlist.expect("Failed to get list of completed batches.");
         let guard = batches.lock().await;
@@ -1572,7 +1573,8 @@ pub async fn urlsketch(
     if batch_size > 0 && output_sigs.is_some() && completed_batchlist.is_some() {
         // write list of all batches
         let outpath: Utf8PathBuf = output_sigs.clone().unwrap().into();
-        let batch_list_file = outpath.with_extension("batches.txt");
+        let batch_list_file =
+            outpath.with_file_name(format!("{}.batches.txt", outpath.file_name().unwrap()));
 
         let batches = completed_batchlist.expect("Failed to get list of completed batches.");
         let guard = batches.lock().await;
