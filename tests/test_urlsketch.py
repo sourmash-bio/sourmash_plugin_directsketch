@@ -453,6 +453,32 @@ def test_urlsketch_bad_acc_fail(runtmp, capfd):
     assert "Error: No signatures written, exiting." in captured.err
 
 
+def test_urlsketch_bad_acc_fail_allow(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        outF.write(lines[0])  # write the header line
+        for line in lines:
+            # if this acc exist in line, copy it and write
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+                print(mod_line)
+                outF.write(mod_line)
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '4', '--allow-empty-sigs',
+                    '--param-str', "dna,k=31,scaled=1000")
+
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Error: No signatures written, exiting." not in captured.err
+
+
 def test_urlsketch_missing_output(runtmp):
     # no output sig zipfile provided but also not --download-only
     acc_csv = runtmp.output('acc1.csv')
@@ -770,6 +796,17 @@ def test_urlsketch_simple_batched(runtmp, capfd):
     batch_base = output.split('.zip')[0]
     print(batch_base)
     assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
+    assert f"Wrote list of all batches to '{batch_base}.batches.txt'" in captured.err
+
+    # check all batch files are in the batches.txt file
+    with open(f"{batch_base}.batches.txt", 'r') as batch_file:
+        batch_lines = batch_file.readlines()
+        print(batch_lines)
+        assert len(batch_lines) == 3
+        assert batch_lines[0] == f"{batch_base}.1.zip\n"
+        assert batch_lines[1] == f"{batch_base}.2.zip\n"
+        assert batch_lines[2] == f"{batch_base}.3.zip\n"
+
 
     expected_siginfo = {
             (ss1.name, ss1.md5sum(), ss1.minhash.moltype),

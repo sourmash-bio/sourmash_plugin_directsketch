@@ -787,6 +787,7 @@ def test_gbsketch_simple_batched_single_acc(runtmp, capfd):
 
     # Assert that all expected signatures are found
     assert all_siginfo == expected_siginfo
+    assert "Wrote list of all batches to" in captured.err
 
 
 def test_gbsketch_simple_batched_multiple(runtmp, capfd):
@@ -823,6 +824,15 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     batch_base = output.split('.zip')[0]
     print(batch_base)
     assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
+    assert f"Wrote list of all batches to '{batch_base}.batches.txt'" in captured.err
+
+    # check all batch files are in the batches.txt file
+    with open(f"{batch_base}.batches.txt", 'r') as batch_file:
+        batch_lines = batch_file.readlines()
+        print(batch_lines)
+        assert len(batch_lines) == 2
+        assert batch_lines[0] == f"{batch_base}.1.zip\n"
+        assert batch_lines[1] == f"{batch_base}.2.zip\n"
 
     expected_siginfo = {
         (ss1.name, ss1.md5sum(), ss1.minhash.moltype),
@@ -1229,6 +1239,66 @@ def test_gbsketch_simple_batch_restart_with_incomplete_zip(runtmp, capfd):
 
     # Assert that all expected signatures are found (ignoring order)
     assert all_siginfo == expected_siginfo
+
+
+def test_gbsketch_simple_batch_restart_nosigstowrite(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, sig1, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-g',
+                    '--batch-size', '1', '--allow-empty-sigs')
+
+    assert os.path.exists(out1)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    assert "Skipped 2 download(s) due to existing sketches and/or FASTA files." in captured.err
+    assert "Wrote list of all batches to " in captured.err
+
+
+def test_gbsketch_simple_batch_restart_nosigstowrite_fail(runtmp, capfd):
+    acc_csv = get_test_data('acc.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    runtmp.sourmash('sig', 'cat', sig2, sig1, '-o', out1)
+    assert os.path.exists(out1)
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-g',
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+
+    assert "Skipped 2 download(s) due to existing sketches and/or FASTA files." in captured.err
+    assert "Wrote list of all batches to " in captured.err
+    assert "Error: No signatures written, exiting." in captured.err
 
 
 def test_gbsketch_bad_param_str(runtmp, capfd):

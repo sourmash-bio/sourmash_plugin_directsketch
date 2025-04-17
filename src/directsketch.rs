@@ -18,7 +18,7 @@ use tokio::fs::File;
 use tokio::io::{duplex, AsyncWriteExt, BufWriter};
 use tokio::signal;
 use tokio::sync::mpsc::Sender;
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, Mutex};
 use tokio::task::{spawn_blocking, JoinHandle};
 use tokio_util::compat::Compat;
 use tokio_util::io::SyncIoBridge;
@@ -486,7 +486,10 @@ fn get_current_directory() -> Result<Utf8PathBuf> {
 }
 
 // Load existing batch files into MultiCollection, skipping corrupt files
-async fn load_existing_zip_batches(outpath: &Utf8PathBuf) -> Result<(MultiCollection, usize)> {
+async fn load_existing_zip_batches(
+    outpath: &Utf8PathBuf,
+) -> Result<(MultiCollection, usize, Vec<Utf8PathBuf>)> {
+    let mut existing_batches = Vec::new();
     // Remove the .zip extension to get the base name
     let filename = outpath.file_name().unwrap();
     let (base, suffix) = if filename.ends_with(".sig.zip") {
@@ -582,6 +585,7 @@ async fn load_existing_zip_batches(outpath: &Utf8PathBuf) -> Result<(MultiCollec
                 Collection::from_zipfile(&entry_path)
                     .map(|collection| {
                         collections.push(collection);
+                        existing_batches.push(entry_path.clone());
                         eprintln!("loaded existing collection from {}", &entry_path);
 
                         // Extract batch number if it exists
@@ -601,7 +605,11 @@ async fn load_existing_zip_batches(outpath: &Utf8PathBuf) -> Result<(MultiCollec
         }
     }
     // Return the loaded MultiCollection and the max batch index, even if no collections were found
-    Ok((MultiCollection::new(collections), highest_batch))
+    Ok((
+        MultiCollection::new(collections),
+        highest_batch,
+        existing_batches,
+    ))
 }
 
 /// create zip file depending on batch size and index.
@@ -660,6 +668,7 @@ fn setup_channels_and_handlers(
     output_sigs: Option<String>,
     batch_size: usize,
     batch_index: usize,
+    batch_list: Option<Arc<Mutex<Vec<Utf8PathBuf>>>>,
 ) -> (
     ReceiverHandles,
     Arc<AtomicBool>, // critical_error_flag
@@ -681,6 +690,7 @@ fn setup_channels_and_handlers(
         output_sigs.clone(),
         batch_size,
         batch_index,
+        batch_list.clone(),
         error_sender.clone(),
     );
     handles.push(sig_handle);
@@ -717,6 +727,7 @@ pub fn zipwriter_handle(
     output_sigs: Option<String>,
     batch_size: usize,      // Tunable batch size
     mut batch_index: usize, // starting batch index
+    batch_list: Option<Arc<Mutex<Vec<Utf8PathBuf>>>>,
     error_sender: tokio::sync::mpsc::Sender<anyhow::Error>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -801,6 +812,10 @@ pub fn zipwriter_handle(
                                 .await;
                             return;
                         }
+                        if let Some(batch_list) = &batch_list {
+                            let mut guard = batch_list.lock().await;
+                            guard.push(final_path.clone());
+                        }
                     }
                     eprintln!(
                         "finished batch {}: wrote to '{}'",
@@ -844,6 +859,10 @@ pub fn zipwriter_handle(
                                 ))
                                 .await;
                             return;
+                        }
+                        if let Some(batch_list) = &batch_list {
+                            let mut guard = batch_list.lock().await;
+                            guard.push(final_path.clone());
                         }
                     }
                     // notify about final batch
@@ -935,7 +954,6 @@ pub fn error_handler(
             eprintln!("Error: {}", error);
             if error.to_string().contains("No signatures written") {
                 error_flag.store(true, Ordering::SeqCst);
-                break;
             }
         }
     })
@@ -1127,18 +1145,27 @@ pub async fn process_accession_stream(
 async fn prepare_signature_output(
     output_sigs: &Option<String>,
     batch_size: usize,
-) -> Result<(HashMap<String, BuildManifest>, usize, bool), anyhow::Error> {
+) -> Result<
+    (
+        HashMap<String, BuildManifest>,
+        usize,
+        bool,
+        Option<Vec<Utf8PathBuf>>,
+    ),
+    anyhow::Error,
+> {
     if let Some(ref output_sigs) = output_sigs {
         if batch_size == 0 {
             // No batching, so no need to check existing output
-            return Ok((HashMap::new(), 1, false));
+            return Ok((HashMap::new(), 1, false, None));
         }
         let outpath = Utf8PathBuf::from(output_sigs);
         if outpath.extension().map_or(true, |ext| ext != "zip") {
             bail!("Output must be a zip file.");
         }
 
-        let (existing_sigs, max_existing_batch_index) = load_existing_zip_batches(&outpath).await?;
+        let (existing_sigs, max_existing_batch_index, existing_batches) =
+            load_existing_zip_batches(&outpath).await?;
         if !existing_sigs.is_empty() {
             eprintln!(
                 "Found {} existing valid zip batch(es). Starting new sig writing at batch {}",
@@ -1149,13 +1176,14 @@ async fn prepare_signature_output(
                 existing_sigs.build_recordsmap(),
                 max_existing_batch_index + 1,
                 true,
+                Some(existing_batches.clone()),
             ))
         } else {
             eprintln!("No valid existing signature batches found; building all signatures.");
-            Ok((HashMap::new(), 1, false))
+            Ok((HashMap::new(), 1, false, None))
         }
     } else {
-        Ok((HashMap::new(), 1, false))
+        Ok((HashMap::new(), 1, false, None))
     }
 }
 
@@ -1211,13 +1239,20 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
+    allow_empty_sigs: bool,
     no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let (existing_records_map, batch_index, filter) =
+    let (existing_records_map, batch_index, filter, existing_batchlist) =
         prepare_signature_output(&output_sigs, batch_size).await?;
+    // make existing batches sharable/useable by zipwriter_handle
+    let completed_batchlist = if batch_size > 0 {
+        Some(Arc::new(Mutex::new(existing_batchlist.unwrap_or_default())))
+    } else {
+        None
+    };
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
@@ -1231,6 +1266,7 @@ pub async fn gbsketch(
         output_sigs.clone(),
         batch_size,
         batch_index,
+        completed_batchlist.clone(),
     );
     // setup handler to catch both ctrl-c and sigterm
     setup_signal_handlers(cancel_token.clone());
@@ -1391,14 +1427,36 @@ pub async fn gbsketch(
         let _ = handle.await;
     }
 
+    // write list of all batches
+    if batch_size > 0 && output_sigs.is_some() && completed_batchlist.is_some() {
+        // write list of all batches
+        let outpath: Utf8PathBuf = output_sigs.clone().unwrap().into();
+        let batch_list_file = outpath.with_extension("batches.txt");
+
+        let batches = completed_batchlist.expect("Failed to get list of completed batches.");
+        let guard = batches.lock().await;
+
+        if !guard.is_empty() {
+            let mut file = std::fs::File::create(&batch_list_file)
+                .with_context(|| format!("Failed to create batch list at {}", batch_list_file))?;
+
+            for batch_path in guard.iter() {
+                use std::io::Write;
+                writeln!(file, "{}", batch_path)?;
+            }
+
+            eprintln!("Wrote list of all batches to '{}'", batch_list_file);
+        }
+    }
+
     if cancel_token.is_cancelled() {
-        let sig_count = download_counter.load(Ordering::Relaxed);
-        bail!("Shutting down early. Completed {sig_count} download(s).");
+        let dl_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {dl_count} download(s).");
     }
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_empty_sigs {
         bail!("No signatures written, exiting.");
     }
 
@@ -1422,13 +1480,20 @@ pub async fn urlsketch(
     concurrency_limit: usize,
     force: bool,
     verbose: bool,
+    allow_empty_sigs: bool,
     no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let (existing_records_map, batch_index, filter) =
+    let (existing_records_map, batch_index, filter, existing_batchlist) =
         prepare_signature_output(&output_sigs, batch_size).await?;
+
+    let completed_batchlist = if batch_size > 0 {
+        Some(Arc::new(Mutex::new(existing_batchlist.unwrap_or_default())))
+    } else {
+        None
+    };
 
     // set up fasta download path
     let download_path = Utf8PathBuf::from(&fasta_location);
@@ -1442,6 +1507,7 @@ pub async fn urlsketch(
         output_sigs.clone(),
         batch_size,
         batch_index,
+        completed_batchlist.clone(),
     );
     // setup handler to catch both ctrl-c and sigterm
     setup_signal_handlers(cancel_token.clone());
@@ -1502,14 +1568,36 @@ pub async fn urlsketch(
         let _ = handle.await;
     }
 
+    // write list of all batches
+    if batch_size > 0 && output_sigs.is_some() && completed_batchlist.is_some() {
+        // write list of all batches
+        let outpath: Utf8PathBuf = output_sigs.clone().unwrap().into();
+        let batch_list_file = outpath.with_extension("batches.txt");
+
+        let batches = completed_batchlist.expect("Failed to get list of completed batches.");
+        let guard = batches.lock().await;
+
+        if !guard.is_empty() {
+            let mut file = std::fs::File::create(&batch_list_file)
+                .with_context(|| format!("Failed to create batch list at {}", batch_list_file))?;
+
+            for batch_path in guard.iter() {
+                use std::io::Write;
+                writeln!(file, "{}", batch_path)?;
+            }
+
+            eprintln!("Wrote list of all batches to '{}'", batch_list_file);
+        }
+    }
+
     if cancel_token.is_cancelled() {
-        let sig_count = download_counter.load(Ordering::Relaxed);
-        bail!("Shutting down early. Completed {sig_count} download(s).");
+        let dl_count = download_counter.load(Ordering::Relaxed);
+        bail!("Shutting down early. Completed {dl_count} download(s).");
     }
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_empty_sigs {
         bail!("No signatures written, exiting.");
     }
 
