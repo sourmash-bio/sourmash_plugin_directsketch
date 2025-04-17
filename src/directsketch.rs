@@ -114,7 +114,6 @@ pub fn process_fastx_from_reader<R: std::io::Read + Send + 'static>(
             let subseq = extract_range_from_record(&record, range)?;
             write_and_add_sequence(&record, &subseq, &mut file, moltype, &mut sigs)?;
         } else {
-            // let full_seq = record.seq();
             write_and_add_sequence(&record, &record.seq(), &mut file, moltype, &mut sigs)?;
         }
     }
