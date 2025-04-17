@@ -32,7 +32,9 @@ use crate::utils::{
     TempFastaFile, ToCsvRow,
 };
 
-use crate::utils::buildutils::{BuildCollection, BuildManifest, MultiSelect, MultiSelection};
+use crate::utils::buildutils::{
+    extract_range_from_record, BuildCollection, BuildManifest, MultiSelect, MultiSelection,
+};
 
 /// Spawns signal handlers that work on both Unix and Windows.
 /// This sets up a trigger to initialize cancellation when Ctrl+C or SIGTERM is received.
@@ -68,6 +70,26 @@ pub fn setup_signal_handlers(cancel_token: CancellationToken) {
     }
 }
 
+fn write_and_add_sequence(
+    record: &SequenceRecord,
+    sequence: &[u8],
+    file: &mut Option<std::fs::File>,
+    moltype: &str,
+    sigs: &mut BuildCollection,
+) -> Result<()> {
+    if let Some(ref mut file) = file {
+        let fasta_entry = format!(
+            ">{}\n{}\n",
+            String::from_utf8_lossy(record.id()),
+            String::from_utf8_lossy(sequence)
+        );
+        file.write_all(fasta_entry.as_bytes())
+            .context("Failed to write FASTA entry")?;
+    }
+
+    sigs.add_sequence(moltype, sequence)
+}
+
 /// Processes FASTX records from the stream. Writes FASTA entries if a file is given
 /// and adds sequences to signatures in the provided `BuildCollection`.
 /// Note, if internal checksum (e.g. CRC32) or decompression issues occur, it will return an error.
@@ -85,24 +107,17 @@ pub fn process_fastx_from_reader<R: std::io::Read + Send + 'static>(
 
     while let Some(record) = fastx_reader.next() {
         let record = record.context("Failed to read FASTX record")?;
-        let subseq = extract_range_from_record(&record, range)?;
 
-        // Optionally write the sequence in FASTA format
-        if let Some(ref mut file) = file {
-            let fasta_entry = format!(
-                ">{}\n{}\n",
-                String::from_utf8_lossy(record.id()),
-                String::from_utf8_lossy(&subseq)
-            );
-            file.write_all(fasta_entry.as_bytes())
-                .context("Failed to write FASTA entry")?;
+        // extract_range_from_record allocates a Vec<u8> for the subsequenc
+        // we want to avoid doing this if we don't have a range, since we can write directly from the borrowed record.seq()
+        if let Some(_) = range {
+            let subseq = extract_range_from_record(&record, range)?;
+            write_and_add_sequence(&record, &subseq, &mut file, moltype, &mut sigs)?;
+        } else {
+            write_and_add_sequence(&record, &record.seq(), &mut file, moltype, &mut sigs)?;
         }
-
-        // Add the sequence to all matching records/signatures. Will not impact empty collection.
-        sigs.add_sequence(moltype, &subseq)?;
     }
 
-    // Update the sig/manifest info once per call. Will not impact empty collection.
     sigs.update_info(name, filename);
     Ok(sigs)
 }
@@ -454,28 +469,6 @@ fn parse_fetch_txt(content: &[u8]) -> Result<HashMap<String, String>> {
     }
 
     Ok(download_links)
-}
-
-/// Extracts a range from a `SequenceRecord`. Returns the specified sequence slice as a `Vec<u8>`.
-fn extract_range_from_record(
-    record: &SequenceRecord,
-    range: Option<(usize, usize)>,
-) -> Result<Vec<u8>> {
-    let full_sequence = record.seq();
-    if let Some((start, end)) = range {
-        let adjusted_start = start.saturating_sub(1); // Adjust for 1-based indexing
-        if adjusted_start >= end || end > full_sequence.len() {
-            return Err(anyhow::anyhow!(
-                "Invalid range: start={}, end={}, sequence length={}",
-                start,
-                end,
-                full_sequence.len()
-            ));
-        }
-        Ok(full_sequence[adjusted_start..end].to_vec())
-    } else {
-        Ok(full_sequence.to_vec())
-    }
 }
 
 fn get_current_directory() -> Result<Utf8PathBuf> {
