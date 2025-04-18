@@ -145,9 +145,9 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
         )
         p.add_argument(
-            "--no-fail-on-empty",
+            "--allow-completed",
             action="store_true",
-            help="Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that can be built.",
+            help="If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -189,6 +189,11 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         if args.batch_size > 0:
             args.no_overwrite_fasta = True
             notify("Batch size is set, enabling --no-overwrite-fasta by default.")
+        else:
+            if args.allow_completed:
+                notify(
+                    "Warning: --allow-completed is set but batch size is not set (not using batching). This will not have any effect."
+                )
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
         # lowercase the param string
@@ -221,7 +226,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.api_key,
             args.verbose,
-            args.no_fail_on_empty,
+            args.allow_completed,
             args.no_overwrite_fasta,
             args.write_urlsketch_csv,
             args.output,
@@ -339,9 +344,9 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             help="Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.",
         )
         p.add_argument(
-            "--no-fail-on-empty",
+            "--allow-completed",
             action="store_true",
-            help="Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that can be built.",
+            help="If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -378,7 +383,10 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         if args.batch_size > 0:
             args.no_overwrite_fasta = True
             notify("Batch size is set, enabling --no-overwrite-fasta by default.")
-
+        if args.allow_completed:
+                notify(
+                    "Warning: --allow-completed is set but batch size is not set (not using batching). This will not have any effect."
+                )
         # convert to a single string for easier rust handling
         args.param_string = "_".join(args.param_string)
         # lowercase the param string
@@ -408,7 +416,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
             args.n_simultaneous_downloads,
             args.force,
             args.verbose,
-            args.no_fail_on_empty,
+            args.allow_completed,
             args.no_overwrite_fasta,
             args.output,
             args.checksum_fail,

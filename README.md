@@ -135,8 +135,7 @@ options:
   --write-urlsketch-csv
                         Write urlsketch-formatted csv with all direct download links. Will be '{input_csv}.urlsketch.csv'.
   --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
-  --no-fail-on-empty    Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that
-                        can be built.
+  --allow-completed     If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```
@@ -211,8 +210,7 @@ options:
   --force               Skip input rows with empty or improper URLs. Warning: these will NOT be added to the failures file.
   -v, --verbose         print progress for every download.
   --no-overwrite-fasta  Requires `--keep-fasta`. If set, do not overwrite existing FASTA files in the --fastas directory. Will still re-download those files if needed for sketching.
-  --no-fail-on-empty    Do not fail if no signatures can be written (output zipfile will not be created). Useful if restarting from batching and there are no more signatures that
-                        can be built.
+  --allow-completed     If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.
   -g, --genomes-only    Download and sketch genome (DNA) files only.
   -m, --proteomes-only  Download and sketch proteome (protein) files only.
 ```

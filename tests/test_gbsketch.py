@@ -592,6 +592,37 @@ def test_gbsketch_bad_acc_fail(runtmp, capfd):
     assert "Error: Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting." in captured.err
 
 
+def test_gbsketch_bad_acc_fail_allow_completed(runtmp, capfd):
+    # allow-completed should have no effect here
+    acc_csv = get_test_data('acc.csv')
+    acc_mod = runtmp.output('acc_mod.csv')
+    with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
+        lines = inF.readlines()
+        outF.write(lines[0])  # write the header line
+        for line in lines:
+            # if this acc exist in line, write bad acc instead
+            if "GCA_000175535.1" in line:
+                mod_line = line.replace('GCA_000175535.1', 'GCA_0001755559.1')  # add extra digit - should not be valid
+                print(mod_line)
+                outF.write(mod_line)
+
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'gbsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000", '--allow-completed')
+
+    print(runtmp.last_result.err)
+    assert "Warning: --allow-completed is set but batch size is not set (not using batching). This will not have any effect." in runtmp.last_result.err
+    captured = capfd.readouterr()
+    print(captured.out)
+    print(captured.err)
+    assert "Error: Failed to retrieve dehydrated download ZIP. Are your accessions valid? Exiting." in captured.err
+
+
 def test_gbsketch_version_bug(runtmp):
     # test for bug where we didn't check version correctly
     acc_csv = get_test_data('acc-version.csv')
@@ -1259,18 +1290,19 @@ def test_gbsketch_simple_batch_restart_nosigstowrite(runtmp, capfd):
     runtmp.sourmash('scripts', 'gbsketch', acc_csv, '-o', output,
                     '--failed', failed, '-r', '3', '--checksum-fail', ch_fail,
                     '--param-str', "dna,k=31,scaled=1000,abund", '-g',
-                    '--batch-size', '1', '--no-fail-on-empty')
+                    '--batch-size', '1', '--allow-completed')
 
     assert os.path.exists(out1)
     assert not os.path.exists(output) # for now, orig output file should be empty.
     captured = capfd.readouterr()
     print(captured.err)
 
+    assert "--allow-completed is set. This will allow success even if no new signatures can be written." in captured.err
     assert "Skipped 2 download(s) due to existing sketches and/or FASTA files." in captured.err
     assert "Wrote list of all batches to " in captured.err
 
 
-def test_gbsketch_simple_batch_restart_nosigstowrite_fail(runtmp, capfd):
+def test_gbsketch_simple_batch_restart_fail_no_allow_completed(runtmp, capfd):
     acc_csv = get_test_data('acc.csv')
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
@@ -1293,6 +1325,7 @@ def test_gbsketch_simple_batch_restart_nosigstowrite_fail(runtmp, capfd):
 
     assert os.path.exists(out1)
     assert not os.path.exists(output) # for now, orig output file should be empty.
+    print(runtmp.last_result.err)
     captured = capfd.readouterr()
     print(captured.err)
 

@@ -453,7 +453,8 @@ def test_urlsketch_bad_acc_fail(runtmp, capfd):
     assert "Error: No signatures written, exiting." in captured.err
 
 
-def test_urlsketch_bad_acc_fail_allow(runtmp, capfd):
+def test_urlsketch_bad_acc_fail_allow_completed(runtmp, capfd):
+    # this should fail bc we don't have any existing batches
     acc_csv = get_test_data('acc-url.csv')
     acc_mod = runtmp.output('acc_mod.csv')
     with open(acc_csv, 'r') as inF, open(acc_mod, 'w') as outF:
@@ -469,14 +470,17 @@ def test_urlsketch_bad_acc_fail_allow(runtmp, capfd):
     output = runtmp.output('simple.zip')
     failed = runtmp.output('failed.csv')
 
-    runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
-                    '--failed', failed, '-r', '4', '--no-fail-on-empty',
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_mod, '-o', output,
+                    '--failed', failed, '-r', '4', '--allow-completed',
                     '--param-str', "dna,k=31,scaled=1000")
 
+    print(runtmp.last_result.err)
+    assert "Warning: --allow-completed is set but batch size is not set (not using batching). This will not have any effect." in runtmp.last_result.err
     captured = capfd.readouterr()
     print(captured.out)
     print(captured.err)
-    assert "Error: No signatures written, exiting." not in captured.err
+    assert "Error: No signatures written, exiting." in captured.err
 
 
 def test_urlsketch_missing_output(runtmp):
@@ -941,6 +945,81 @@ def test_urlsketch_simple_batch_restart_incomplete(runtmp, capfd):
 
     # Verify that the loaded signatures match the expected signatures, order-independent
     assert all_siginfo == expected_siginfo, f"Loaded sigs: {all_siginfo}, expected: {expected_siginfo}"
+
+
+def test_urlsketch_simple_batch_restart_allow_completed(runtmp, capfd):
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 + sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    # need to actually rename it first, so it will match sig that would have been written
+
+    runtmp.sourmash('sig', 'cat', sig2, sig1, '-o', out1)
+    assert os.path.exists(out1)
+
+    runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '5', '-n', "1", '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-g', '--allow-completed',
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "No signatures written" in captured.err
+    assert "exiting" not in captured.err
+    assert "--allow-completed is set. This will allow success even if no new signatures can be written." in captured.err
+    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
+    with open(f"{output}.batches.txt", 'r') as batch_file:
+        batch_lines = batch_file.readlines()
+        print(batch_lines)
+        assert len(batch_lines) == 1
+        assert batch_lines[0] == f"{out1}\n"
+
+
+def test_urlsketch_simple_batch_restart_fail_no_allow_completed(runtmp, capfd):
+    # fail because batches exist, no new sigs can be written (no --allow-completed)
+    acc_csv = get_test_data('acc-url.csv')
+    output = runtmp.output('simple.zip')
+    failed = runtmp.output('failed.csv')
+    ch_fail = runtmp.output('checksum_dl_failed.csv')
+
+    out1 = runtmp.output('simple.1.zip')
+
+    sig1 = get_test_data('GCA_000175535.1.sig.gz')
+    sig2 = get_test_data('GCA_000961135.2.sig.gz')
+
+    # first, cat sig2 + sig2 into an output file that will trick gbsketch into thinking it's a prior batch
+    # need to actually rename it first, so it will match sig that would have been written
+
+    runtmp.sourmash('sig', 'cat', sig2, sig1, '-o', out1)
+    assert os.path.exists(out1)
+
+    with pytest.raises(utils.SourmashCommandFailed):
+        runtmp.sourmash('scripts', 'urlsketch', acc_csv, '-o', output,
+                    '--failed', failed, '-r', '5', '-n', "1", '--checksum-fail', ch_fail,
+                    '--param-str', "dna,k=31,scaled=1000,abund", '-g',
+                    '--batch-size', '1')
+
+    assert os.path.exists(out1)
+    assert not os.path.exists(output) # for now, orig output file should be empty.
+    captured = capfd.readouterr()
+    print(captured.err)
+    assert "No signatures written" in captured.err
+    assert "exiting" in captured.err
+    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
+    with open(f"{output}.batches.txt", 'r') as batch_file:
+        batch_lines = batch_file.readlines()
+        print(batch_lines)
+        assert len(batch_lines) == 1
+        assert batch_lines[0] == f"{out1}\n"
 
 
 def test_urlsketch_simple_batch_restart_nobatch(runtmp, capfd):

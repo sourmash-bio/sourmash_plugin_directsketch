@@ -1145,19 +1145,21 @@ pub async fn process_accession_stream(
 async fn prepare_signature_output(
     output_sigs: &Option<String>,
     batch_size: usize,
+    allow_completed: bool,
 ) -> Result<
     (
         HashMap<String, BuildManifest>,
         usize,
         bool,
         Option<Vec<Utf8PathBuf>>,
+        bool,
     ),
     anyhow::Error,
 > {
     if let Some(ref output_sigs) = output_sigs {
         if batch_size == 0 {
             // No batching, so no need to check existing output
-            return Ok((HashMap::new(), 1, false, None));
+            return Ok((HashMap::new(), 1, false, None, false));
         }
         let outpath = Utf8PathBuf::from(output_sigs);
         if outpath.extension().map_or(true, |ext| ext != "zip") {
@@ -1172,18 +1174,22 @@ async fn prepare_signature_output(
                 max_existing_batch_index,
                 max_existing_batch_index + 1
             );
+            if allow_completed {
+                eprintln!("--allow-completed is set. This will allow success even if no new signatures can be written.");
+            }
             Ok((
                 existing_sigs.build_recordsmap(),
                 max_existing_batch_index + 1,
                 true,
                 Some(existing_batches.clone()),
+                allow_completed, // if we have existing batches, allow user to set allow_completed
             ))
         } else {
             eprintln!("No valid existing signature batches found; building all signatures.");
-            Ok((HashMap::new(), 1, false, None))
+            Ok((HashMap::new(), 1, false, None, false))
         }
     } else {
-        Ok((HashMap::new(), 1, false, None))
+        Ok((HashMap::new(), 1, false, None, false))
     }
 }
 
@@ -1239,14 +1245,14 @@ pub async fn gbsketch(
     concurrency_limit: usize,
     api_key: String,
     verbose: bool,
-    no_fail_on_empty: bool,
+    allow_completed: bool,
     no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let (existing_records_map, batch_index, filter, existing_batchlist) =
-        prepare_signature_output(&output_sigs, batch_size).await?;
+    let (existing_records_map, batch_index, filter, existing_batchlist, allow_completed) =
+        prepare_signature_output(&output_sigs, batch_size, allow_completed).await?;
     // make existing batches sharable/useable by zipwriter_handle
     let completed_batchlist = if batch_size > 0 {
         Some(Arc::new(Mutex::new(existing_batchlist.unwrap_or_default())))
@@ -1457,7 +1463,7 @@ pub async fn gbsketch(
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !no_fail_on_empty {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_completed {
         bail!("No signatures written, exiting.");
     }
 
@@ -1481,14 +1487,14 @@ pub async fn urlsketch(
     concurrency_limit: usize,
     force: bool,
     verbose: bool,
-    no_fail_on_empty: bool,
+    allow_completed: bool,
     no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums_csv: Option<String>,
 ) -> Result<(), anyhow::Error> {
     let batch_size = batch_size as usize;
-    let (existing_records_map, batch_index, filter, existing_batchlist) =
-        prepare_signature_output(&output_sigs, batch_size).await?;
+    let (existing_records_map, batch_index, filter, existing_batchlist, allow_completed) =
+        prepare_signature_output(&output_sigs, batch_size, allow_completed).await?;
 
     let completed_batchlist = if batch_size > 0 {
         Some(Arc::new(Mutex::new(existing_batchlist.unwrap_or_default())))
@@ -1599,7 +1605,7 @@ pub async fn urlsketch(
 
     // critical error flag tracks whether or not we've written any sigs
     // check this here at end. Bail if we wrote expected sigs but wrote none.
-    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !no_fail_on_empty {
+    if critical_error_flag.load(Ordering::SeqCst) & !download_only & !allow_completed {
         bail!("No signatures written, exiting.");
     }
 
