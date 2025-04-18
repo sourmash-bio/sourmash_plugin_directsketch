@@ -49,7 +49,7 @@ fn set_tokio_thread_pool(num_threads: usize) -> PyResult<usize> {
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (input_csv, param_str, failed_csv, failed_checksums, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, n_permits, api_key, verbose, no_overwrite_fasta, write_urlsketch_csv, output_sigs=None))]
+#[pyo3(signature = (input_csv, param_str, failed_csv, failed_checksums, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, n_permits, api_key, verbose, allow_completed, no_overwrite_fasta, write_urlsketch_csv, output_sigs=None))]
 fn do_gbsketch(
     py: Python,
     input_csv: String,
@@ -66,6 +66,7 @@ fn do_gbsketch(
     n_permits: usize,
     api_key: String,
     verbose: bool,
+    allow_completed: bool,
     no_overwrite_fasta: bool,
     write_urlsketch_csv: bool,
     output_sigs: Option<String>,
@@ -86,6 +87,7 @@ fn do_gbsketch(
         n_permits,
         api_key,
         verbose,
+        allow_completed,
         no_overwrite_fasta,
         write_urlsketch_csv,
         output_sigs,
@@ -100,7 +102,7 @@ fn do_gbsketch(
 
 #[pyfunction]
 #[allow(clippy::too_many_arguments)]
-#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, n_permits, force, verbose, no_overwrite_fasta, output_sigs=None, failed_checksums=None))]
+#[pyo3(signature = (input_csv, param_str, failed_csv, retry_times, fasta_location, keep_fastas, genomes_only, proteomes_only, download_only, batch_size, n_permits, force, verbose, allow_completed, no_overwrite_fasta, output_sigs=None, failed_checksums=None))]
 fn do_urlsketch(
     py: Python,
     input_csv: String,
@@ -116,6 +118,7 @@ fn do_urlsketch(
     n_permits: usize,
     force: bool,
     verbose: bool,
+    allow_completed: bool,
     no_overwrite_fasta: bool,
     output_sigs: Option<String>,
     failed_checksums: Option<String>,
@@ -135,6 +138,7 @@ fn do_urlsketch(
         n_permits,
         force,
         verbose,
+        allow_completed,
         no_overwrite_fasta,
         output_sigs,
         failed_checksums,
