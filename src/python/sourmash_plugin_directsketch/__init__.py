@@ -147,7 +147,7 @@ class Download_and_Sketch_Assemblies(CommandLinePlugin):
         p.add_argument(
             "--allow-completed",
             action="store_true",
-            help="If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.",
+            help="If batching and you've restarted but all feasible signatures have already been created (no new signatures can be created/written), exit cleanly anyway.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
@@ -346,7 +346,7 @@ class Download_and_Sketch_Url(CommandLinePlugin):
         p.add_argument(
             "--allow-completed",
             action="store_true",
-            help="If batching and no more signatures can be created/written, exit cleanly anyway. New output zipfile(s) will not be created.",
+            help="If batching and you've restarted but all feasible signatures have already been created (no new signatures can be created/written), exit cleanly anyway.",
         )
         group = p.add_mutually_exclusive_group()
         group.add_argument(
