@@ -800,10 +800,10 @@ def test_urlsketch_simple_batched(runtmp, capfd):
     batch_base = output.split('.zip')[0]
     print(batch_base)
     assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
-    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
+    assert f"Wrote list of all batches to '{output}.batchlist.txt'" in captured.err
 
-    # check all batch files are in the batches.txt file
-    with open(f"{output}.batches.txt", 'r') as batch_file:
+    # check all batch files are in the batchlist.txt file
+    with open(f"{output}.batchlist.txt", 'r') as batch_file:
         batch_lines = batch_file.readlines()
         print(batch_lines)
         assert len(batch_lines) == 3
@@ -976,8 +976,8 @@ def test_urlsketch_simple_batch_restart_allow_completed(runtmp, capfd):
     assert "No signatures written" in captured.err
     assert "exiting" not in captured.err
     assert "--allow-completed is set. This will allow success even if no new signatures can be written." in captured.err
-    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
-    with open(f"{output}.batches.txt", 'r') as batch_file:
+    assert f"Wrote list of all batches to '{output}.batchlist.txt'" in captured.err
+    with open(f"{output}.batchlist.txt", 'r') as batch_file:
         batch_lines = batch_file.readlines()
         print(batch_lines)
         assert len(batch_lines) == 1
@@ -1014,8 +1014,8 @@ def test_urlsketch_simple_batch_restart_fail_no_allow_completed(runtmp, capfd):
     print(captured.err)
     assert "No signatures written" in captured.err
     assert "exiting" in captured.err
-    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
-    with open(f"{output}.batches.txt", 'r') as batch_file:
+    assert f"Wrote list of all batches to '{output}.batchlist.txt'" in captured.err
+    with open(f"{output}.batchlist.txt", 'r') as batch_file:
         batch_lines = batch_file.readlines()
         print(batch_lines)
         assert len(batch_lines) == 1

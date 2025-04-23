@@ -855,10 +855,10 @@ def test_gbsketch_simple_batched_multiple(runtmp, capfd):
     batch_base = output.split('.zip')[0]
     print(batch_base)
     assert f"Sigs in '{batch_base}.1.zip', etc" in runtmp.last_result.err
-    assert f"Wrote list of all batches to '{output}.batches.txt'" in captured.err
+    assert f"Wrote list of all batches to '{output}.batchlist.txt'" in captured.err
 
-    # check all batch files are in the batches.txt file
-    with open(f"{output}.batches.txt", 'r') as batch_file:
+    # check all batch files are in the batchlist.txt file
+    with open(f"{output}.batchlist.txt", 'r') as batch_file:
         batch_lines = batch_file.readlines()
         print(batch_lines)
         assert len(batch_lines) == 2
