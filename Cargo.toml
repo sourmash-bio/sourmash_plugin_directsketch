@@ -28,7 +28,7 @@ tokio-util = {version = "0.7.15", features = ["io", "io-util"]}
 regex = "1.12.1"
 chrono = "0.4.32"
 lazy_static = "1.5.0"
-md5 = "0.7.0"
+md5 = "0.8.0"
 openssl = { version = "0.10", features = ["vendored"] }
 futures = "0.3.31"
 getset = "0.1.6"
